@@ -838,6 +838,9 @@ public static class InstanceHistoryNotes
     // or a token entering a signal end event threw its signal (a row from the end event to
     // itself). The row has no action id, so claim and assignment inheritance ignore it.
     public const string SignalThrown = "signalThrown";
+    // A broadcast created the instance on a signal start event, and its first token left
+    // the start event. It is also the traversal kind of that flow.
+    public const string SignalStart = "signalStart";
 }
 
 public static class ExecutionTokenTerminationReasons

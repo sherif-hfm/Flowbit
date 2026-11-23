@@ -395,7 +395,7 @@ Use a signal when many running instances must react to one announcement, such as
 | | Message catch | Signal catch |
 | --- | --- | --- |
 | Addressed by | Instance ID, plus the catch's external ID when needed. | Signal name, within one workflow family, the instance with one business key in a family, one instance, or all families. |
-| Sent by | An external system over HTTP. | An external system over HTTP, or a workflow's signal throw or end event. |
+| Sent by | An external system over HTTP. | An external system over HTTP, or a workflow's signal throw or end event. A throw to a family or to all workflows can also [start workflows](#start-a-workflow-with-a-signal). |
 | Sender authenticates with | The node's configured client credentials and correlation header. | A JWT with a role from `Signals.RequiredRole`, or a managed API client with `signals.throw`. A workflow needs neither: publishing its definition is the authority. |
 | When no wait exists yet | The delivery is rejected, and the sender can deliver again later. | Nothing is stored: a wait that starts later never receives an earlier signal. |
 | Applied | In the request's transaction. | By the Worker, one recipient per transaction, after the request returns. |
@@ -466,15 +466,15 @@ The throw freezes its recipients in one statement: the signal waits that are com
 
 Delivery happens when the Worker runs each recipient, not at the moment of the throw. A wait that ended in between, for example because a timer boundary fired or the instance was cancelled, is skipped with `subscription_ended`. While no Worker runs, deliveries wait and act when it returns; nothing expires. If a signal is no longer wanted, cancel the broadcast: pending deliveries become `cancelled` and the waits stay subscribed.
 
-A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits is rejected with `400` rather than truncated; narrow its scope or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API are still delivering, a throw returns `409`; wait for one to finish or cancel one. Broadcasts that workflows threw do not count toward that limit.
+A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipients, waits and [signal starts](#start-a-workflow-with-a-signal) together, is rejected with `400` rather than truncated; narrow its scope or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API are still delivering, a throw returns `409`; wait for one to finish or cancel one. Broadcasts that workflows threw do not count toward that limit.
 
 ### Read progress
 
 - Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed.
-- Page through `GET /api/signal-broadcasts/{id}/deliveries`, filtered by `status` or `instanceId`, for each recipient's `resultCode`. A managed client sees only its own broadcasts and no `resultDescription`.
+- Page through `GET /api/signal-broadcasts/{id}/deliveries`, filtered by `status`, `instanceId`, or `kind` (`wait` or `start`), for each recipient's `resultCode`. A start's `instanceId` is the instance it created, and is null until then. A managed client sees only its own broadcasts and no `resultDescription`.
 - `GET /api/signal-broadcasts` lists every thrower's broadcasts; repeat `thrownByKind` (`user`, `client`, or `instance`) to keep only some, for example `thrownByKind=instance` for the broadcasts workflows threw.
 - Instance detail's `signalSubscriptions` lists the signals an instance is waiting for now, armed boundaries included, and its history records each delivered signal as a `signalReceived` row naming the broadcast and its thrower.
-- Before throwing, a user can count the current waits per name and family with `GET /api/signal-subscriptions/summary`, optionally for one `workflowKey` with a `businessKey`, or for one `instanceId`. The count can change before the throw runs.
+- Before throwing, a user can count the current waits per name and family with `GET /api/signal-subscriptions/summary`, optionally for one `workflowKey` with a `businessKey`, or for one `instanceId`. Each row's `startCount` is 1 when the family's default starts on the name; a business-key or instance filter counts no start. The counts can change before the throw runs.
 
 ### Handle failed deliveries
 
@@ -524,7 +524,7 @@ The [order cancellation example](../examples/signals/03-signal-throw-order-cance
 A workflow that receives a signal and throws one that reaches a waiting workflow, its own instance included, can circulate without end. The automatic-activation guard, [`Workflow.Async.MaxConsecutiveAutomaticActivations`](engine-settings.md#workflowasyncmaxconsecutiveautomaticactivations) (default 1,000), bounds such a chain:
 
 - **At the throw.** A broadcast thrown by a workflow stores the throwing token's count of consecutive automatic activations plus one. A throw whose token has reached the limit is refused.
-- **At the delivery.** A delivery gives the receiving token the broadcast's count instead of starting a new chain: the catch's token, the host token of an interrupting boundary, and the new branch of a non-interrupting boundary. A broadcast thrown through the API stores 0, so its deliveries start a new chain as before.
+- **At the delivery.** A delivery gives the receiving token the broadcast's count instead of starting a new chain: the catch's token, the host token of an interrupting boundary, the new branch of a non-interrupting boundary, and the first token of an instance a [signal start](#start-a-workflow-with-a-signal) creates. A broadcast thrown through the API stores 0, so its deliveries start a new chain as before.
 - **Where the work changes tokens.** A conditional boundary's new branch, or the host token it interrupts, continues the count of the step whose values woke it, or of the token that entered its host when the boundary is already true then, and a released conditional catch continues the greater of its own count and that step's. The writes of a multi-instance service, script, or call body count as its own token's step. A call activity's child starts at the calling token's count (entering the call counts one activation), and when the child's result returns the parent's token, or a multi-instance call body's, continues at the greater of its own count and the child's. Forks and joins hand the count on as before.
 - **New chains.** A person's action, a delivered message, a timer, an administrative variable update, and a throw through the API start a new chain, so a throw behind a timer or a user task never reaches the limit.
 - **What it does not see.** A workflow that reaches Flowbit over HTTP from a service task, by throwing through the API or by starting an instance with a message, starts a new chain. Throw from a workflow with a throw or end event instead.
@@ -532,6 +532,26 @@ A workflow that receives a signal and throws one that reaches a waiting workflow
 At the limit the refused throw fails its step, usually a signal delivery, which leaves the receiving instance waiting and shows the reason on the **Signals** page. Raise the setting to allow a longer chain, then use **Retry failed** on the broadcast.
 
 The hand-over through conditional events and call activities applies to every definition, with or without signals: a chain of automatic steps through them can now reach the limit and open an `automatic_loop_limit` incident where it ran without a bound before. See the [upgrade notes](deployment.md#upgrade-and-compatibility-rules).
+
+### Start a workflow with a signal
+
+A [`signalStartEvent`](node-reference.md#signalstartevent) starts its workflow each time a signal with its name is thrown to its family or to all workflows. The thrower does not need to know which workflows react: publishing a definition with a signal start adds one.
+
+- **Who listens.** Only the family's published default listens, from the moment the publish or default change commits; a draft, or a published version that is not the default, does not. Set another default without the signal start to stop a family from listening.
+- **What a throw starts.** A throw with a `workflowKey` or `allWorkflows: true`, or a workflow's throw with the scope kind `thisWorkflow`, `workflow`, or `allWorkflows`, freezes one start for each listening family beside its waits. A throw to one business key or one instance starts nothing. The broadcast's `startCount`, and `startCount` per family in `recipientsByWorkflowKey`, count the starts.
+- **When it starts.** The Worker creates each instance in a transaction of its own, from the version that is the family's published default when the delivery runs, as the fixed system actor `signal`. The payload fills the start variables through the start's mappings, with their defaults and validations. The instance's history begins with a `signalReceived` row whose `eventKind` is `start` and that names the broadcast and its thrower.
+- **Outcomes.** A delivered start has the result `started` and the created `instanceId`. A payload that fails a mapping fails with `signal_payload_invalid`; a business key that an instance already has is skipped with `business_key_conflict`; a family that stopped listening is skipped with `subscription_ended`. Only the failed ones can be retried: **Retry failed** moves them to the family's current default.
+- **Duplicates.** One broadcast starts each family once. To refuse a second instance for the same case across broadcasts, give the start a `businessKey`: a repeated throw for the same case is then skipped. A signal start has no `idempotency`; a throw through the API replays a repeated request by its own `idempotencyKey`.
+- **Who can start.** Whoever may throw the signal: users with a role from `Signals.RequiredRole`, managed clients with `signals.throw`, and every published workflow that throws it. No role is checked when a start is delivered. Review who can throw before publishing a signal start.
+
+| | Message start | Signal start |
+| --- | --- | --- |
+| Addressed by | One workflow family's key, and the start's external ID when needed. | Signal name; every listening family in the throw's scope starts. |
+| Sender authenticates with | The node's configured client credentials and correlation header. | The signal routes' role or scope, or a published workflow that throws. |
+| Reply | The new instance, in the request's transaction. | A broadcast; the Worker creates the instances afterwards. |
+| Retried request | Node-level `idempotency` from a header. | The broadcast's `idempotencyKey`; a business key refuses a repeated case. |
+
+A workflow that starts its own family by signal is refused when it is saved. Families that start each other stop at the [loop guard](#guard-against-signal-loops), because each start continues the broadcast's chain count. A loop that widens, where several families start on one name and throw another onward, is stopped only by `Signals.MaxOpenWorkflowBroadcasts`; set a default without the start on one of them to end it at once.
 
 ### Signals and version changes
 

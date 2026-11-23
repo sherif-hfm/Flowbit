@@ -51,6 +51,47 @@ public static class SignalEventRules
         return ReferenceEquals(flag, HasSignals);
     }
 
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<WorkflowModel, object> StartFlags = new();
+
+    /// <summary>
+    /// Whether a definition contains a signal start, computed once per definition object.
+    /// Only the operations that change a family's published default read it.
+    /// </summary>
+    public static bool HasSignalStarts(WorkflowModel definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        var flag = StartFlags.GetValue(
+            definition,
+            model => (model.FlowNodes ?? []).Any(node => node is not null && BpmnFlowNodeTypes.IsSignalStart(node.Type))
+                ? HasSignals
+                : NoSignals);
+        return ReferenceEquals(flag, HasSignals);
+    }
+
+    /// <summary>
+    /// The signal starts of a definition with a valid name, the first per name in node
+    /// order: the rows its family's subscription table holds while it is the published
+    /// default. Validation rejects a name used twice, so the order matters only for a
+    /// definition inserted without validation.
+    /// </summary>
+    public static IReadOnlyList<SignalStartListing> SignalStarts(WorkflowModel definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        var starts = new List<SignalStartListing>();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var node in (definition.FlowNodes ?? []).Where(node => node is not null).OrderBy(node => node.Id))
+        {
+            if (BpmnFlowNodeTypes.IsSignalStart(node.Type)
+                && IsValidName(node.Signal?.Name)
+                && names.Add(node.Signal!.Name))
+            {
+                starts.Add(new SignalStartListing(node.Signal.Name, node.Id, node.Name ?? string.Empty));
+            }
+        }
+
+        return starts;
+    }
+
     /// <summary>The noun every signal-event message starts with.</summary>
     public static string Label(FlowNodeModel node) =>
         BpmnFlowNodeTypes.IsSignalBoundary(node.Type)
@@ -59,7 +100,42 @@ public static class SignalEventRules
                 ? $"Signal throw event #{node.Id}"
                 : BpmnFlowNodeTypes.IsSignalEnd(node.Type)
                     ? $"Signal end event #{node.Id}"
-                    : $"Signal catch event #{node.Id}";
+                    : BpmnFlowNodeTypes.IsSignalStart(node.Type)
+                        ? $"Signal start event #{node.Id}"
+                        : $"Signal catch event #{node.Id}";
+
+    /// <summary>
+    /// The ordered problems of one signal start that do not depend on its mappings' types:
+    /// its name and mapping count, a scope or payload, and a name that an earlier signal
+    /// start of the definition already starts on. The editor's <c>validateSaveSignalStarts</c>
+    /// reports the same messages in the same order, which <c>SignalStartFixtures</c> checks.
+    /// </summary>
+    public static IReadOnlyList<string> StartProblems(WorkflowModel definition, FlowNodeModel node)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentNullException.ThrowIfNull(node);
+        var label = Label(node);
+        var problems = new List<string>(NodeProblems(node));
+        if (node.Signal is { } signal && (signal.Scope is not null || signal.Payload is not null))
+        {
+            problems.Add($"{label} cannot define signal.scope or signal.payload; only signal throw and end events send a signal.");
+        }
+
+        var name = node.Signal?.Name;
+        if (IsValidName(name)
+            && (definition.FlowNodes ?? []).FirstOrDefault(candidate =>
+                    candidate is not null
+                    && candidate.Id < node.Id
+                    && BpmnFlowNodeTypes.IsSignalStart(candidate.Type)
+                    && string.Equals(candidate.Signal?.Name, name, StringComparison.Ordinal))
+                is { } earlier)
+        {
+            problems.Add(
+                $"{label} starts on '{name}', which signal start event #{earlier.Id} already starts on; a workflow starts once per signal.");
+        }
+
+        return problems;
+    }
 
     public const int MaxPayloadEntries = 100;
 
@@ -130,8 +206,34 @@ public static class SignalEventRules
                 $"{label} throws '{name}' to this instance, but no signal catch or boundary event in this workflow waits for it.");
         }
 
+        if (IsValidName(name)
+            && ScopeIncludesOwnFamily(definition, signal.Scope)
+            && (definition.FlowNodes ?? [])
+                .Where(candidate => candidate is not null && BpmnFlowNodeTypes.IsSignalStart(candidate.Type))
+                .OrderBy(candidate => candidate.Id)
+                .FirstOrDefault(candidate => string.Equals(candidate.Signal?.Name, name, StringComparison.Ordinal))
+                is { } start)
+        {
+            problems.Add(
+                $"{label} throws '{name}' to a scope that includes this workflow, which starts on it at signal start event #{start.Id}; every instance would start another.");
+        }
+
         return problems;
     }
+
+    /// <summary>
+    /// Whether a throw's scope reaches the signal starts of its own family: this workflow,
+    /// all workflows, or a named family that is the definition's own key. The other kinds
+    /// name existing instances and start nothing.
+    /// </summary>
+    private static bool ScopeIncludesOwnFamily(WorkflowModel definition, SignalThrowScopeModel? scope) =>
+        scope?.Kind switch
+        {
+            SignalThrowScopeKinds.ThisWorkflow or SignalThrowScopeKinds.AllWorkflows => true,
+            SignalThrowScopeKinds.Workflow => !string.IsNullOrEmpty(scope.WorkflowKey)
+                                              && string.Equals(scope.WorkflowKey, definition.Id, StringComparison.Ordinal),
+            _ => false
+        };
 
     /// <summary>The name problem of a signal throw or end event, or null when its name is valid.</summary>
     public static string? ThrowEventNameProblem(FlowNodeModel node)
@@ -387,3 +489,6 @@ public static class SignalEventRules
         return problems;
     }
 }
+
+/// <summary>One signal start of a definition: the name it starts on and its event.</summary>
+public sealed record SignalStartListing(string SignalName, int NodeId, string NodeName);

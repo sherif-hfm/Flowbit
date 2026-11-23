@@ -1,6 +1,7 @@
 @using static Flowbit.Ui.Components.Shared.Signals.SignalFormatting
 <div class="summary-grid px-3 pb-3">
-    <div class="summary-item"><span>Recipients</span><strong>@Broadcast.TotalDeliveryCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Recipients</span><strong>@Broadcast.TotalDeliveryCount.ToString("N0")</strong>@if (Broadcast.StartCount > 0)
+        {<span class="data-subtitle signal-start-count">@StartCountText(Broadcast.StartCount)</span>}</div>
     <div class="summary-item"><span>Pending</span><strong>@Broadcast.PendingCount.ToString("N0")</strong></div>
     <div class="summary-item"><span>Delivered</span><strong>@Broadcast.DeliveredCount.ToString("N0")</strong></div>
     <div class="summary-item"><span>Skipped</span><strong>@Broadcast.SkippedCount.ToString("N0")</strong></div>
@@ -38,7 +39,7 @@
         <ul class="signal-families mb-2">
             @foreach (var family in Broadcast.RecipientsByWorkflowKey)
             {
-                <li><code>@family.WorkflowKey</code> · @family.Count.ToString("N0")</li>
+                <li><code>@family.WorkflowKey</code> · @family.Count.ToString("N0")@(family.StartCount > 0 ? $" ({StartCountText(family.StartCount)})" : null)</li>
             }
         </ul>
         @if (Broadcast.RecipientsTruncated)

@@ -136,6 +136,46 @@ public sealed class SignalFormattingTests
     public void ExecutionPositionText_NamesTheSignalWait()
     {
         Assert.Equal("Signal wait", ExecutionPositionText.NodeTypeLabel(BpmnFlowNodeTypes.IntermediateSignalCatchEvent));
+        Assert.Equal("Signal start", ExecutionPositionText.NodeTypeLabel(BpmnFlowNodeTypes.SignalStartEvent));
+    }
+
+    [Fact]
+    public void StartWording_CountsNewInstancesBesideWaits()
+    {
+        Assert.Equal("2 waits", SignalFormatting.CountsText(2, 0));
+        Assert.Equal("1 new instance", SignalFormatting.CountsText(0, 1));
+        Assert.Equal("1 wait and 3 new instances", SignalFormatting.CountsText(1, 3));
+        Assert.Equal("1 start", SignalFormatting.StartCountText(1));
+        Assert.Equal("2 starts", SignalFormatting.StartCountText(2));
+        Assert.Equal("Waits", SignalFormatting.DeliveryKindLabel(SignalDeliveryKinds.Wait));
+        Assert.Equal("Starts", SignalFormatting.DeliveryKindLabel(SignalDeliveryKinds.Start));
+
+        Assert.Equal("No instance is waiting for 'a.b' now.", SignalFormatting.ReachLine("a.b", [], false));
+        Assert.Equal("2 waits in 1 family: orders (2)",
+            SignalFormatting.ReachLine("a.b", [new SignalSubscriptionCountDto("a.b", "orders", 2)], false));
+        Assert.Equal("2 waits and 1 new instance in 2 families: orders (2), recall-notices (1 start) (list truncated)",
+            SignalFormatting.ReachLine("a.b",
+                [new SignalSubscriptionCountDto("a.b", "orders", 2), new SignalSubscriptionCountDto("a.b", "recall-notices", 0, 1)],
+                true));
+        Assert.Equal("1 wait and 1 new instance in 1 family: orders (1 and 1 start)",
+            SignalFormatting.ReachLine("a.b", [new SignalSubscriptionCountDto("a.b", "orders", 1, 1)], false));
+    }
+
+    [Fact]
+    public void ResultLabel_WordsAStartsOutcomesAndKeepsAWaitsWording()
+    {
+        Assert.Equal("Not started yet", SignalFormatting.ResultLabel(null, SignalDeliveryKinds.Start));
+        Assert.Equal("Started an instance", SignalFormatting.ResultLabel(SignalDeliveryResultCodes.Started, SignalDeliveryKinds.Start));
+        Assert.Equal("An instance already has this business key",
+            SignalFormatting.ResultLabel(SignalDeliveryResultCodes.BusinessKeyConflict, SignalDeliveryKinds.Start));
+        Assert.Equal("The workflow no longer starts on this signal",
+            SignalFormatting.ResultLabel(SignalDeliveryResultCodes.SubscriptionEnded, SignalDeliveryKinds.Start));
+        Assert.Equal("The workflow rejected the start",
+            SignalFormatting.ResultLabel(SignalDeliveryResultCodes.DeliveryRejected, SignalDeliveryKinds.Start));
+        Assert.Equal("The payload failed a mapping",
+            SignalFormatting.ResultLabel(SignalDeliveryResultCodes.PayloadInvalid, SignalDeliveryKinds.Start));
+        Assert.Equal("Not delivered yet", SignalFormatting.ResultLabel(null));
+        Assert.Equal("The wait ended before delivery", SignalFormatting.ResultLabel(SignalDeliveryResultCodes.SubscriptionEnded));
     }
 
     private static SignalBroadcastDetailDto Broadcast(string status, int failed) =>

@@ -43,6 +43,21 @@ public static class SignalDeliveryResultCodes
     public const string DeliveryError = "delivery_error";
     public const string LeaseExhausted = "lease_exhausted";
     public const string BroadcastCancelled = "broadcast_cancelled";
+
+    /// <summary>A start delivery created an instance.</summary>
+    public const string Started = "started";
+
+    /// <summary>A start delivery was skipped because an instance already has its business key.</summary>
+    public const string BusinessKeyConflict = "business_key_conflict";
+}
+
+/// <summary>What a frozen recipient is: a wait of an instance, or the start of a workflow family.</summary>
+public static class SignalDeliveryKinds
+{
+    public const string Wait = "wait";
+    public const string Start = "start";
+
+    public static IReadOnlyList<string> All { get; } = [Wait, Start];
 }
 
 public static class SignalThrowerKinds
@@ -93,7 +108,11 @@ public sealed record ThrowSignalRequest(
     string? BusinessKey = null,
     long? InstanceId = null);
 
-public sealed record SignalRecipientCountDto(string WorkflowKey, int Count);
+/// <summary>The recipients of a broadcast in one workflow family.</summary>
+/// <param name="WorkflowKey">The family.</param>
+/// <param name="Count">Its recipients: waits and its start, if any.</param>
+/// <param name="StartCount">1 when the broadcast starts the family, otherwise 0. Entries stored before signal starts existed read as 0.</param>
+public sealed record SignalRecipientCountDto(string WorkflowKey, int Count, int StartCount = 0);
 
 /// <summary>A broadcast in a list, without its payload.</summary>
 /// <param name="Id">The broadcast ID.</param>
@@ -117,6 +136,7 @@ public sealed record SignalRecipientCountDto(string WorkflowKey, int Count);
 /// <param name="ThrownByInstanceId">The throwing instance when thrownByKind is instance; otherwise null.</param>
 /// <param name="ThrownByNodeId">The throw or end event that threw the signal when thrownByKind is instance; otherwise null.</param>
 /// <param name="ThrownByNodeName">That event's name when it threw; otherwise null.</param>
+/// <param name="StartCount">How many of the recipients are starts of a workflow family; each creates an instance when it is delivered.</param>
 public sealed record SignalBroadcastSummaryDto(
     long Id,
     string Name,
@@ -138,7 +158,8 @@ public sealed record SignalBroadcastSummaryDto(
     DateTimeOffset? CompletedAt,
     long? ThrownByInstanceId = null,
     int? ThrownByNodeId = null,
-    string? ThrownByNodeName = null);
+    string? ThrownByNodeName = null,
+    int StartCount = 0);
 
 /// <summary>One broadcast with its counts, thrower, payload, and recipients by workflow family.</summary>
 /// <param name="Id">The broadcast ID.</param>
@@ -169,6 +190,7 @@ public sealed record SignalBroadcastSummaryDto(
 /// <param name="ThrownByInstanceId">The throwing instance when thrownByKind is instance; otherwise null.</param>
 /// <param name="ThrownByNodeId">The throw or end event that threw the signal when thrownByKind is instance; otherwise null.</param>
 /// <param name="ThrownByNodeName">That event's name when it threw; otherwise null.</param>
+/// <param name="StartCount">How many of the recipients are starts of a workflow family; each creates an instance when it is delivered.</param>
 public sealed record SignalBroadcastDetailDto(
     long Id,
     string Name,
@@ -197,17 +219,34 @@ public sealed record SignalBroadcastDetailDto(
     DateTimeOffset? CancelledAt,
     long? ThrownByInstanceId = null,
     int? ThrownByNodeId = null,
-    string? ThrownByNodeName = null);
+    string? ThrownByNodeName = null,
+    int StartCount = 0);
 
 /// <summary>
-/// One recipient of a broadcast. A managed API client receives the result code
-/// without <see cref="ResultDescription"/>, which can quote a validation expression
-/// of the receiving workflow.
+/// One recipient of a broadcast: a wait of an instance, or the start of a workflow family.
+/// A managed API client receives the result code without <see cref="ResultDescription"/>,
+/// which can quote a validation expression of the receiving workflow.
 /// </summary>
+/// <param name="Id">The delivery ID.</param>
+/// <param name="BroadcastId">The broadcast it belongs to.</param>
+/// <param name="InstanceId">The waiting instance for a wait. For a start, the instance it created once it is delivered, and null before that or when it created none.</param>
+/// <param name="WorkflowKey">The recipient's workflow family.</param>
+/// <param name="WorkflowDefinitionId">The version of the wait, or the version that listened for a start. A start that ran names the version it started or tried to start; one skipped because the family no longer starts on the name keeps the version that listened.</param>
+/// <param name="SignalNodeId">The signal catch, boundary, or start event; for a start, of that version.</param>
+/// <param name="AttachedToNodeId">A boundary's host; otherwise null.</param>
+/// <param name="CancelActivity">Whether a boundary interrupts its host; false for a start.</param>
+/// <param name="Status">pending, delivered, skipped, failed, or cancelled.</param>
+/// <param name="ResultCode">How the delivery ended, such as caught, started, or business_key_conflict; null while pending.</param>
+/// <param name="ResultDescription">Why a delivery failed or was skipped; never returned to a managed client.</param>
+/// <param name="AttemptCount">How many times the delivery was tried.</param>
+/// <param name="CreatedAt">When the throw froze it.</param>
+/// <param name="UpdatedAt">The last change.</param>
+/// <param name="CompletedAt">When it finished; null while pending.</param>
+/// <param name="Kind">wait or start.</param>
 public sealed record SignalDeliveryDto(
     long Id,
     long BroadcastId,
-    long InstanceId,
+    long? InstanceId,
     string WorkflowKey,
     long WorkflowDefinitionId,
     int SignalNodeId,
@@ -219,7 +258,8 @@ public sealed record SignalDeliveryDto(
     int AttemptCount,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    string Kind = SignalDeliveryKinds.Wait);
 
 public sealed record CancelSignalBroadcastRequest(string? Reason = null);
 
@@ -229,7 +269,12 @@ public sealed record CancelSignalBroadcastRequest(string? Reason = null);
 /// </summary>
 public sealed record RetrySignalDeliveriesRequest(DateTimeOffset? ExpectedUpdatedAt);
 
-public sealed record SignalSubscriptionCountDto(string Name, string WorkflowKey, int Count);
+/// <summary>What a signal reaches in one workflow family now.</summary>
+/// <param name="Name">The signal name.</param>
+/// <param name="WorkflowKey">The family.</param>
+/// <param name="Count">Its active waits.</param>
+/// <param name="StartCount">1 when the family's published default starts on the signal, otherwise 0; always 0 with a businessKey or instanceId filter, which names existing instances.</param>
+public sealed record SignalSubscriptionCountDto(string Name, string WorkflowKey, int Count, int StartCount = 0);
 
 public sealed record SignalSubscriptionSummaryDto(
     IReadOnlyList<SignalSubscriptionCountDto> Items,

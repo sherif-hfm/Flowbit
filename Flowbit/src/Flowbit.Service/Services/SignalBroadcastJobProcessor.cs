@@ -106,6 +106,18 @@ public sealed class SignalBroadcastJobProcessor(
         {
             throw;
         }
+        catch (SignalStartOutcomeException exception)
+        {
+            await RecordAsync(
+                deliveryId,
+                exception.Status,
+                exception.ResultCode,
+                exception.Message,
+                cancellationToken,
+                exception.WorkflowDefinitionId,
+                exception.SignalNodeId);
+            return null;
+        }
         catch (SignalPayloadException exception)
         {
             await RecordAsync(
@@ -182,24 +194,42 @@ public sealed class SignalBroadcastJobProcessor(
         }
     }
 
+    /// <summary>
+    /// Finishes a delivery that is still pending. A start that tried a version and node gives
+    /// them, so the row names what its description is about.
+    /// </summary>
     private async Task RecordAsync(
         long deliveryId,
         string status,
         string resultCode,
         string description,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long? startDefinitionId = null,
+        int? startNodeId = null)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var broadcasts = scope.ServiceProvider.GetRequiredService<ISignalBroadcastRepository>();
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
-        var finished = await broadcasts.CompleteDeliveryAsync(
-            deliveryId,
-            status,
-            resultCode,
-            UnicodeText.Limit(description, SignalConstraints.MaxResultDescriptionLength),
-            timeProvider.GetUtcNow(),
-            cancellationToken);
+        var limited = UnicodeText.Limit(description, SignalConstraints.MaxResultDescriptionLength);
+        var now = timeProvider.GetUtcNow();
+        var finished = startDefinitionId is long definitionId && startNodeId is int nodeId
+            ? await broadcasts.CompleteStartWithoutInstanceAsync(
+                deliveryId,
+                status,
+                resultCode,
+                limited,
+                definitionId,
+                nodeId,
+                now,
+                cancellationToken)
+            : await broadcasts.CompleteDeliveryAsync(
+                deliveryId,
+                status,
+                resultCode,
+                limited,
+                now,
+                cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         if (finished)
         {

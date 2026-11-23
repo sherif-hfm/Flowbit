@@ -193,15 +193,66 @@ public sealed class SignalSubscriptionRepository(AppDbContext dbContext) : ISign
             query = query.Where(subscription => subscription.InstanceId == instanceId);
         }
 
-        var rows = await query
-            .GroupBy(subscription => new { subscription.SignalName, subscription.WorkflowKey })
-            .Select(group => new { group.Key.SignalName, group.Key.WorkflowKey, Count = group.Count() })
+        var rows = query.Select(subscription => new SummaryRow
+        {
+            SignalName = subscription.SignalName,
+            WorkflowKey = subscription.WorkflowKey,
+            Waits = 1,
+            Starts = 0
+        });
+
+        // A business-key or instance filter names existing instances, which no start is. The
+        // starts join the waits before grouping, ordering, and the limit, so one statement cuts
+        // the merged list and no family past the cut of one list is counted from the other.
+        if (filter.BusinessKey is null && filter.InstanceId is null)
+        {
+            var starts = dbContext.SignalStartSubscriptions.AsNoTracking();
+            if (!string.IsNullOrEmpty(signalName))
+            {
+                starts = starts.Where(start => start.SignalName == signalName);
+            }
+            if (filter.WorkflowKey is { } startKey)
+            {
+                starts = starts.Where(start => start.WorkflowKey == startKey);
+            }
+
+            rows = rows.Concat(starts.Select(start => new SummaryRow
+            {
+                SignalName = start.SignalName,
+                WorkflowKey = start.WorkflowKey,
+                Waits = 0,
+                Starts = 1
+            }));
+        }
+
+        var counted = await rows
+            .GroupBy(row => new { row.SignalName, row.WorkflowKey })
+            .Select(group => new
+            {
+                group.Key.SignalName,
+                group.Key.WorkflowKey,
+                Count = group.Sum(row => row.Waits),
+                StartCount = group.Sum(row => row.Starts)
+            })
             .OrderBy(row => row.SignalName)
             .ThenBy(row => row.WorkflowKey)
             .Take(limit)
             .ToListAsync(cancellationToken);
-        return rows.Select(row => new SignalSubscriptionCountRecord(row.SignalName, row.WorkflowKey, row.Count))
+        return counted
+            .Select(row => new SignalSubscriptionCountRecord(row.SignalName, row.WorkflowKey, row.Count, row.StartCount))
             .ToArray();
+    }
+
+    /// <summary>One wait or one start of the subscription summary, before grouping.</summary>
+    private sealed class SummaryRow
+    {
+        public required string SignalName { get; init; }
+
+        public required string WorkflowKey { get; init; }
+
+        public int Waits { get; init; }
+
+        public int Starts { get; init; }
     }
 
     private static async Task<int> CancelAsync(

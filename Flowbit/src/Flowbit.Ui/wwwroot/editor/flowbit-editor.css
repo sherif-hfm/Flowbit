@@ -1352,7 +1352,8 @@
   .flowbit-editor .node.intermediateSignalCatchEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
   .flowbit-editor .node.intermediateSignalThrowEvent circle.body { fill: var(--node-message-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .flowbit-editor .node.intermediateSignalThrowEvent circle.ring { fill: none; stroke: var(--node-message-stroke); stroke-width: 1.5; }
-  .flowbit-editor .node.messageStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
+  .flowbit-editor .node.messageStartEvent circle.body,
+  .flowbit-editor .node.signalStartEvent circle.body { fill: var(--node-start-fill); stroke: var(--node-message-stroke); stroke-width: 2; }
   .flowbit-editor .node.intermediateLinkThrowEvent circle.body,
   .flowbit-editor .node.intermediateLinkCatchEvent circle.body { fill: var(--node-task-fill); stroke: var(--node-task-stroke); stroke-width: 2; }
   .flowbit-editor .node.intermediateLinkThrowEvent circle.ring,
@@ -1390,6 +1391,7 @@
   .flowbit-editor .node .node-separator { stroke: var(--node-separator); stroke-width: 1; pointer-events: none; }
   .flowbit-editor .node.startEvent .node-icon { color: var(--node-start-icon); }
   .flowbit-editor .node.messageStartEvent .node-icon,
+  .flowbit-editor .node.signalStartEvent .node-icon,
   .flowbit-editor .node.intermediateMessageCatchEvent .node-icon,
   .flowbit-editor .node.timerStartEvent .node-icon,
   .flowbit-editor .node.intermediateTimerCatchEvent .node-icon,

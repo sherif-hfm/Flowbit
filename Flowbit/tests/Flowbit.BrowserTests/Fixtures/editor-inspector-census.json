@@ -111,6 +111,16 @@
         "scope": { "kind": "thisInstance" },
         "payload": [{ "name": "claim", "source": "instanceId" }]
       }
+    },
+    {
+      "id": 36, "name": "Recall started", "type": "signalStartEvent", "laneId": 1, "x": 1660, "y": 640,
+      "signal": {
+        "name": "census.recall-started",
+        "outputMappings": [
+          { "variable": "recallNumber", "path": "recall.number", "dataType": "string", "isArray": false, "required": true, "defaultValue": null, "validation": "Len(recallNumber) > 0" }
+        ]
+      },
+      "businessKey": { "variable": "recallNumber", "uniqueness": "active" }
     }
   ],
   "sequenceFlows": [
@@ -131,6 +141,7 @@
     { "id": 2501, "name": "", "sourceRef": 25, "targetRef": 30 },
     { "id": 3101, "name": "", "sourceRef": 31, "targetRef": 18 },
     { "id": 3201, "name": "", "sourceRef": 32, "targetRef": 34 },
-    { "id": 3401, "name": "", "sourceRef": 34, "targetRef": 35 }
+    { "id": 3401, "name": "", "sourceRef": 34, "targetRef": 35 },
+    { "id": 3601, "name": "", "sourceRef": 36, "targetRef": 35 }
   ]
 }

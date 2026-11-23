@@ -40,7 +40,7 @@ public sealed class SignalsPageTests
         await harness.SetAsync("payloadText", "{ \"version\": 7 }");
         await harness.CallAsync("ReviewAsync");
         var html = await harness.HtmlAsync(component);
-        Assert.Contains("Waiting now", html, StringComparison.Ordinal);
+        Assert.Contains("Reaches now", html, StringComparison.Ordinal);
         Assert.Contains("3 waits", html, StringComparison.Ordinal);
 
         await harness.CallAsync("ThrowAsync");

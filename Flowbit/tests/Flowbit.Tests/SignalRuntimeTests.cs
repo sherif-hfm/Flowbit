@@ -375,7 +375,7 @@ public sealed class SignalRuntimeTests(PostgresApiFixture fixture) : IAsyncLifet
         {
             using var tooMany = await SendAsync(HttpMethod.Post, "/api/signal-broadcasts", new ThrowSignalRequest(signal, model.Id));
             Assert.Equal(HttpStatusCode.BadRequest, tooMany.StatusCode);
-            Assert.Contains("more than 1 waiting subscriptions", await tooMany.Content.ReadAsStringAsync());
+            Assert.Contains("more than 1 recipients", await tooMany.Content.ReadAsStringAsync());
             await using var db = fixture.CreateDbContext();
             Assert.False(await db.SignalBroadcasts.AnyAsync(item => item.SignalName == signal));
         }

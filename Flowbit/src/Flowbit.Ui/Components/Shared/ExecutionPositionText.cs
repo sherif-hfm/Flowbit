@@ -14,6 +14,7 @@ internal static class ExecutionPositionText
         BpmnFlowNodeTypes.StartEvent => "Start event",
         BpmnFlowNodeTypes.TimerStartEvent => "Timer start",
         BpmnFlowNodeTypes.MessageStartEvent => "Message start",
+        BpmnFlowNodeTypes.SignalStartEvent => "Signal start",
         BpmnFlowNodeTypes.UserTask => "User task",
         BpmnFlowNodeTypes.Task => "Automatic task",
         BpmnFlowNodeTypes.ServiceTask => "Service task",

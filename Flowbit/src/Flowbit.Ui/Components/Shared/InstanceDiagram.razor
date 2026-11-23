@@ -90,7 +90,7 @@
                 </p>
                 @if (BpmnFlowNodeTypes.IsSignalEvent(node.Type) && !string.IsNullOrWhiteSpace(node.Signal?.Name))
                 {
-                    <p class="instance-diagram-meta">Signal <code>@node.Signal.Name</code>@(BpmnFlowNodeTypes.IsSignalBoundary(node.Type) ? (node.CancelActivity == false ? " · non-interrupting" : " · interrupting") : null)@(BpmnFlowNodeTypes.ThrowsSignal(node.Type) ? $" · thrown to {Flowbit.Ui.Components.Shared.Signals.SignalFormatting.ThrowScopeLabel(node.Signal.Scope)}" : null)</p>
+                    <p class="instance-diagram-meta">Signal <code>@node.Signal.Name</code>@(BpmnFlowNodeTypes.IsSignalBoundary(node.Type) ? (node.CancelActivity == false ? " · non-interrupting" : " · interrupting") : null)@(BpmnFlowNodeTypes.ThrowsSignal(node.Type) ? $" · thrown to {Flowbit.Ui.Components.Shared.Signals.SignalFormatting.ThrowScopeLabel(node.Signal.Scope)}" : null)@(BpmnFlowNodeTypes.IsSignalStart(node.Type) ? " · starts an instance" : null)</p>
                 }
                 @if (LinkPartners(node) is { Count: > 0 } partners)
                 {

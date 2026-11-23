@@ -6,10 +6,13 @@ of all families, or only in the instance with one business key or ID. A wait
 that starts later does not receive it, and nothing is stored for later. The
 Worker delivers each recipient in its own transaction. Examples 01 and 02 throw
 their signals through the Signals page or the API; examples 03 and 04 throw them
-from a workflow, with a signal throw event and a signal end event.
+from a workflow, with a signal throw event and a signal end event. Example 05
+starts a workflow with a signal: a throw to its family or to all workflows starts
+one instance of each workflow whose published default starts on the name.
 See [signals](../../docs/bpmn-support.md#signals) and the node reference for the
-[catch](../../docs/node-reference.md#intermediatesignalcatchevent) and the
-[throw](../../docs/node-reference.md#intermediatesignalthrowevent).
+[catch](../../docs/node-reference.md#intermediatesignalcatchevent), the
+[throw](../../docs/node-reference.md#intermediatesignalthrowevent), and the
+[start](../../docs/node-reference.md#signalstartevent).
 
 | Example | Start values | Actors and actions | Expected result | Runtime requirements |
 | --- | --- | --- | --- | --- |
@@ -17,6 +20,7 @@ See [signals](../../docs/bpmn-support.md#signals) and the node reference for the
 | [`02-signal-boundaries-recall.json`](02-signal-boundaries-recall.json) | Supply `orderNumber`, for example `ORD-2001`. It is the family's business key, so a second running order with the same number is refused. | Throw `warehouse.price-update` with a `unitPrice` number, as often as you like; complete each **Update the invoice**. Then throw `warehouse.product-recall` with an optional `reason`, or complete **Prepare the shipment** with **Ship**. | A price update adds a branch to **Update the invoice** with `unitPrice` set and leaves the shipment task waiting for the next one. A recall interrupts **Prepare the shipment**, ends both boundary waits, and opens **Stop the shipment** with `recallReason`. Shipping first ends both waits, so later signals reach nothing. | Published definition, API, and `Flowbit.Worker`. The thrower needs a role from `Signals.RequiredRole` (default `admin`) or a managed API client with the `signals.throw` scope. |
 | [`03-signal-throw-order-cancellation.json`](03-signal-throw-order-cancellation.json) | Supply `orderNumber`, for example `ORD-3001`. | Any authenticated user completes **Review the order** with **Cancel the order**, entering the required `cancelReason`, or with **Keep the order**; then completes **Confirm the cancellation** or the open shipment tasks. No one throws a signal by hand. | The order splits into **Prepare the shipment**, which has an interrupting boundary for `orders.cancelled`, and **Review the order**. **Cancel the order** passes the throw event, which throws `orders.cancelled` to this instance with the payload `reason`, and opens **Confirm the cancellation** at once. The Worker then interrupts this order's shipment task and opens **Stop the shipment** with `stopReason`; other orders keep their shipment tasks. **Keep the order** ends the review and leaves the shipment task open. | Published definition, API, and `Flowbit.Worker`; durable publication enabled. No signal role is needed to take the action. |
 | [`04-signal-end-recall-decision.json`](04-signal-end-recall-decision.json) | Supply `orderNumber`, the order of [Example 02](02-signal-boundaries-recall.json) to recall, for example `ORD-4001`. | Any authenticated user completes **Decide on the recall** with **Recall**, entering the required `recallReason`, or with **No recall**. | **Recall** ends the decision at a signal end event that throws `warehouse.product-recall` to the Example 02 instance whose business key is `orderNumber`, with the payload `reason`; the decision completes. The Worker interrupts that order's **Prepare the shipment** and opens **Stop the shipment** with `recallReason`. Other orders are not affected. **No recall** ends without a signal. | Example 02 imported under its own key, `example-signal-boundaries-recall`, and published before this one; API and `Flowbit.Worker`; durable publication enabled. |
+| [`05-signal-start-recall-notice.json`](05-signal-start-recall-notice.json) | None: a signal starts it. Throw `warehouse.recall-announced` with `recallNumber` and `product.name`, and an optional `reason`. | The thrower needs a role from `Signals.RequiredRole` or a managed client with `signals.throw`. Any authenticated user completes **Write the customer notice** with **Send the notice**. | A throw to the family or to all workflows starts one instance, which writes `recallNumber`, `product`, and `reason` (default `Not stated`) and opens **Write the customer notice**. `recallNumber` is the business key with uniqueness `all`, so a second throw with the same number starts nothing and its delivery is skipped. A payload without `product` fails its delivery and starts nothing. A throw to one business key or one instance starts nothing. | Published as the family's default, with durable publication enabled; API and `Flowbit.Worker`. |
 
 ## Example 01: throw a policy change
 
@@ -365,3 +369,85 @@ to that key before importing it.
 4. A decision for an order number that no running Example 02 order has, or for an
    order that has already shipped, completes with `recipientCount` 0 and changes
    nothing. **No recall** ends at a plain end event and throws nothing.
+
+## Example 05: start a recall notice with a signal
+
+The signal start event `#1` starts on `warehouse.recall-announced`. Its mappings
+declare the start variables `recallNumber` and `product`, both required, and
+`reason`, with the default `Not stated`, and `recallNumber` is the business key
+with uniqueness `all`. See the [signal start event](../../docs/node-reference.md#signalstartevent).
+
+1. Import and publish the example with durable publication enabled. Its rows on
+   **Manage → Signals** then list `example-signal-start-recall-notice` with 1 start
+   for `warehouse.recall-announced`.
+2. Throw the signal to the family, from the Signals page or over HTTP with the token
+   of Example 01. The review reads **1 new instance**. When the Worker has delivered
+   it, the delivery reads **Started an instance** and links the instance, whose history
+   starts with **Started by signal**, and **Write the customer notice** is open.
+
+   ```powershell
+   $api = 'http://localhost:5017'
+   $headers = @{ Authorization = "Bearer $env:FLOWBIT_TOKEN" }
+   $definition = Get-Content -Raw 'examples/signals/05-signal-start-recall-notice.json' | ConvertFrom-Json
+   $body = @{ definition = $definition; publish = $true } | ConvertTo-Json -Depth 100
+   Invoke-RestMethod "$api/api/workflows" -Method Post -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+   function Send-Recall($payload, $scope) {
+     $body = (@{ name = 'warehouse.recall-announced'; payload = $payload } + $scope) | ConvertTo-Json -Depth 10
+     $broadcast = Invoke-RestMethod "$api/api/signal-broadcasts" -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+     $deadline = [DateTime]::UtcNow.AddMinutes(1)
+     do {
+       Start-Sleep -Seconds 1
+       $broadcast = Invoke-RestMethod "$api/api/signal-broadcasts/$($broadcast.id)" -Headers $headers
+     } while ($broadcast.status -eq 'delivering' -and [DateTime]::UtcNow -lt $deadline)
+     (Invoke-RestMethod "$api/api/signal-broadcasts/$($broadcast.id)/deliveries" -Headers $headers).items |
+       Select-Object kind, status, resultCode, instanceId, resultDescription
+   }
+   $family = @{ workflowKey = 'example-signal-start-recall-notice' }
+   Send-Recall @{ recallNumber = 'R-1001'; product = @{ name = 'Kettle' } } $family
+   Send-Recall @{ recallNumber = 'R-1002'; product = @{ name = 'Toaster' }; reason = 'Overheating' } @{ allWorkflows = $true }
+   Send-Recall @{ recallNumber = 'R-1001'; product = @{ name = 'Kettle' } } $family
+   Send-Recall @{ recallNumber = 'R-1003' } $family
+   ```
+
+   ```bash
+   set -euo pipefail
+   api='http://localhost:5017'
+   http() {
+     local method="$1" path="$2"
+     shift 2
+     curl --fail-with-body --silent --show-error --request "$method"        --header "Authorization: Bearer $FLOWBIT_TOKEN" "$api$path" "$@"
+   }
+   body=$(jq -n --slurpfile definition examples/signals/05-signal-start-recall-notice.json '{definition: $definition[0], publish: true}')
+   http POST /api/workflows --header 'Content-Type: application/json' --data-binary "$body" >/dev/null
+   send_recall() {
+     local payload="$1" scope="$2" id status
+     body=$(jq -n --argjson payload "$payload" --argjson scope "$scope" '{name: "warehouse.recall-announced", payload: $payload} + $scope')
+     id=$(http POST /api/signal-broadcasts --header 'Content-Type: application/json' --data-binary "$body" | jq -er '.id')
+     deadline=$((SECONDS + 60))
+     while :; do
+       sleep 1
+       status=$(http GET "/api/signal-broadcasts/$id" | jq -r '.status')
+       [[ "$status" != "delivering" || "$SECONDS" -ge "$deadline" ]] && break
+     done
+     http GET "/api/signal-broadcasts/$id/deliveries" | jq '.items[] | {kind, status, resultCode, instanceId, resultDescription}'
+   }
+   family='{"workflowKey":"example-signal-start-recall-notice"}'
+   send_recall '{"recallNumber":"R-1001","product":{"name":"Kettle"}}' "$family"
+   send_recall '{"recallNumber":"R-1002","product":{"name":"Toaster"},"reason":"Overheating"}' '{"allWorkflows":true}'
+   send_recall '{"recallNumber":"R-1001","product":{"name":"Kettle"}}' "$family"
+   send_recall '{"recallNumber":"R-1003"}' "$family"
+   ```
+
+3. The four broadcasts end like this:
+   - `R-1001` to the family: one `start` delivery, `delivered` with `started` and an
+     `instanceId`. The instance has `reason` `Not stated`.
+   - `R-1002` to all workflows: one more instance, with `reason` `Overheating`,
+     besides any waits for the name in other workflows.
+   - `R-1001` again: `skipped` with `business_key_conflict` and the description
+     `Instance #<id> already has this start's business key.`; no instance starts.
+   - `R-1003` without `product`: `failed` with `signal_payload_invalid`; no instance
+     starts, and the broadcast is completed with issues.
+4. A throw to one business key or one instance of this family starts nothing. Set
+   another version without the signal start as the default, and the family stops
+   listening at once: a start that was frozen but not yet delivered is then skipped
+   with `subscription_ended`.

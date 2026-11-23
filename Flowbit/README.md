@@ -831,12 +831,15 @@ the host, and with `cancelActivity: false` it adds a branch at the boundary and
 keeps listening. A signal is thrown through `POST /api/signal-broadcasts`, or by
 a workflow: an `intermediateSignalThrowEvent` throws and follows its one outgoing
 flow, and a `signalEndEvent` throws as its token ends there (see
-[throw and end events](#signal-throw-and-end-events)). Signal start events do not
-exist yet. Authoring is in the node reference for the
+[throw and end events](#signal-throw-and-end-events)). A `signalStartEvent` starts
+its family when a signal is thrown to the family or to all workflows, while its
+version is the published default (see [signal starts](#signal-start-events)).
+Authoring is in the node reference for the
 [catch](../docs/node-reference.md#intermediatesignalcatchevent), the
 [boundary](../docs/node-reference.md#signalboundaryevent), the
 [throw](../docs/node-reference.md#intermediatesignalthrowevent), and the
-[end event](../docs/node-reference.md#signalendevent),
+[end event](../docs/node-reference.md#signalendevent), the
+[start](../docs/node-reference.md#signalstartevent),
 integration in the [developer guide](../docs/developer-guide.md#broadcast-signals),
 routes in the [API reference](../docs/api-guide.md#signals), and rollout in
 [deployment](../docs/deployment.md#signal-events).
@@ -1201,6 +1204,70 @@ version change adds no blocker and the graph analyses need no case; the
 shared-variable access plan of both types is empty. No job kind, completion
 reason, route, or lifecycle event type is added; an instance that ends at a signal
 end event is captured as one that ends at a plain end event.
+
+### Signal start events
+
+A `signalStartEvent` is an entry (`BpmnFlowNodeTypes.IsEntry`, pass-through, not
+`IsStart`, so no request, call, or message start selects it) whose `signal` holds
+a name and typed `outputMappings` that declare its start variables.
+`EntryEventRules` (`Flowbit.Shared`) is the one place that knows where an entry
+declares its start variables (`variables`, `message.outputMappings`, or
+`signal.outputMappings`) and its noun; validation and the engine read it instead
+of branching on the type. `SignalEventRules.StartProblems` gives the name, a scope
+or payload, and a name an earlier start already starts on, and
+`ThrowProblems` ends with the self-start rule: a throw whose scope includes the
+definition's own family cannot throw a name its signal start starts on. The editor
+mirrors both (`SignalStartFixtures`).
+
+- **Listening.** `signal_start_subscriptions` holds one row per family and name
+  while the family's published default has a signal start with it. Only
+  `WorkflowDefinitionRepository` writes it, in the four operations that change a
+  family's default (`AddAsync` of a first version saved as published,
+  `SetPublishedAsync` on the default, `SetDefaultAsync`, and `DeleteAsync` of the
+  default). Each locks the family's rows `FOR UPDATE` right after the exclusive
+  family lock (`LockSignalStartsAsync`), then makes them equal the new default's
+  starts (`SyncSignalStartsAsync`, from `SignalEventRules.SignalStarts`), updating a
+  persisting name's row in place; a deletion syncs before it deletes the version,
+  because the rows reference it. A new operation that changes a default must do
+  the same. No Worker reconciles the table.
+- **Freeze.** For a family or all-workflows scope, `FreezeDeliveriesAsync` runs a
+  second `INSERT ... SELECT ... FOR SHARE OF s` over the rows after the waits, with
+  the allowance the waits left, and returns both counts. The share lock makes an
+  operation that changes the default wait for a throw in flight and then see its
+  pending delivery. Business-key and instance scopes run no second statement. The
+  writer stores `StartDeliveryCount` and a `startCount` per family.
+- **Delivery.** `DeliverSignalAsync` hands a `start` delivery to
+  `StartFromSignalAsync` (`WorkflowEngineService.SignalStarts.cs`): the shared
+  family lock, then the delivery row, then the family's current published default
+  and its start on the name (none: `skipped`, `subscription_ended`), the entry
+  checks every start runs, the mappings through `ResolveStartMappings` in a context
+  without an instance (a failure is `SignalPayloadException`), and
+  `CreateStartedInstanceAsync`, which the message start shares: business-key claim,
+  instance as the actor `signal`, the first token at the broadcast's
+  `AutomaticActivationCount`, variables, a `signalReceived` history row with
+  `eventKind` `start`, and routing with `forceDurableActivities`. The routing
+  step leaving the start records note and traversal kind `signalStart` and the
+  visit's reason `signalReceived`. `CompleteStartDeliveryAsync` then records the
+  instance, version, and node. Once the start has read the family's default,
+  every outcome without an instance throws `SignalStartOutcomeException` with
+  that version and start event: a payload that fails a mapping (`failed`
+  `signal_payload_invalid`), a duplicate business key (`skipped`
+  `business_key_conflict`), and a conflict or a refused start (`failed`
+  `signal_delivery_rejected`). The processor records it after the start's
+  transaction rolls back, through `CompleteStartWithoutInstanceAsync`, so the
+  row names the version its description is about. A start skipped because the
+  family no longer starts on the name keeps the version the throw froze. Routing
+  from a start runs script and service tasks as Worker jobs, so a task's own
+  failure text never reaches a start delivery.
+- **Retry.** `RetryFailedDeliveriesAsync` moves a failed start to the version and
+  node of its family's subscription, share-locking it, or ends it as `skipped`
+  when the family no longer listens; a retry that leaves nothing pending only
+  recounts.
+- **Invariants.** A start delivery locks no existing instance and never the
+  broadcast. A throw waits for no instance; it can wait for one publish, default
+  change, or deletion of a listening family. A definition whose only signal event
+  is a start runs no signal statement in an instance transition
+  (`HasSignalWaits` is false and it throws nothing).
 
 ## Instance-wide flow evidence (`FlowInfo`)
 
@@ -2149,7 +2216,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E24, hosted-editor H1–H17, and runtime R1–R16 scenarios (see the project
+The suite covers editor E1–E25, hosted-editor H1–H18, and runtime R1–R16 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

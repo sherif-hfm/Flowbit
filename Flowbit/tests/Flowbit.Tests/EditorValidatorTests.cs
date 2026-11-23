@@ -903,7 +903,9 @@ public sealed class EditorValidatorTests
             function isSignalThrowEventType(type) { return type === 'intermediateSignalThrowEvent'; }
             function isSignalEndEventType(type) { return type === 'signalEndEvent'; }
             function throwsSignalType(type) { return isSignalThrowEventType(type) || isSignalEndEventType(type); }
-            function isSignalEventType(type) { return isSignalWaitType(type) || throwsSignalType(type); }
+            function isSignalStartEventType(type) { return type === 'signalStartEvent'; }
+            function receivesSignalType(type) { return isSignalWaitType(type) || isSignalStartEventType(type); }
+            function isSignalEventType(type) { return isSignalWaitType(type) || throwsSignalType(type) || isSignalStartEventType(type); }
             function isSingleOutgoingType() { return false; }
             """);
         engine.Execute(match.Value);
@@ -1478,6 +1480,8 @@ public sealed class EditorValidatorTests
             function isSignalBoundaryEventType(type) { return type === 'signalBoundaryEvent'; }
             function isSignalWaitType(type) { return isSignalCatchEventType(type) || isSignalBoundaryEventType(type); }
             function throwsSignalType(type) { return type === 'intermediateSignalThrowEvent' || type === 'signalEndEvent'; }
+            function isSignalStartEventType(type) { return type === 'signalStartEvent'; }
+            function receivesSignalType(type) { return isSignalWaitType(type) || isSignalStartEventType(type); }
             function isStartEventType(type) { return type === NODE_TYPE.START_EVENT; }
             function normalizeMultiInstanceForLoad(value) { return value; }
             function normalizeService(value) { return value; }
@@ -1733,7 +1737,9 @@ public sealed class EditorValidatorTests
             function isSignalThrowEventType(type) { return type === 'intermediateSignalThrowEvent'; }
             function isSignalEndEventType(type) { return type === 'signalEndEvent'; }
             function throwsSignalType(type) { return isSignalThrowEventType(type) || isSignalEndEventType(type); }
-            function isSignalEventType(type) { return isSignalWaitType(type) || throwsSignalType(type); }
+            function isSignalStartEventType(type) { return type === 'signalStartEvent'; }
+            function receivesSignalType(type) { return isSignalWaitType(type) || isSignalStartEventType(type); }
+            function isSignalEventType(type) { return isSignalWaitType(type) || throwsSignalType(type) || isSignalStartEventType(type); }
             function isSingleOutgoingType() { return false; }
             """);
         engine.Execute(match.Value);

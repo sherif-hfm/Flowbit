@@ -250,7 +250,7 @@ public sealed class EditorValidatorCharacterizationTests
             new[]
             {
                 "Workflow id is required and is used as the stable workflow key.",
-                "Workflow must have at least one entry event (startEvent, messageStartEvent, or timerStartEvent)."
+                "Workflow must have at least one entry event (startEvent, messageStartEvent, timerStartEvent, or signalStartEvent)."
             },
             emptyAfterDirty);
     }

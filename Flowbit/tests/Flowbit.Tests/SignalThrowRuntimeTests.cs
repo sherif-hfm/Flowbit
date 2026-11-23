@@ -160,7 +160,7 @@ public sealed partial class SignalThrowRuntimeTests(PostgresApiFixture fixture)
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
             Assert.Contains(
-                "Signal end event #3 would reach more than 1 waiting subscriptions",
+                "Signal end event #3 would reach more than 1 recipients",
                 await response.Content.ReadAsStringAsync());
         }
         finally

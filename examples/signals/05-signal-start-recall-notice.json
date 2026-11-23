@@ -1,0 +1,118 @@
+{
+  "id": "example-signal-start-recall-notice",
+  "name": "Signal Example 05 - Recall Notice Started by a Signal",
+  "initialEventId": null,
+  "variables": [],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Customer care",
+      "externalId": "LANE_CUSTOMER_CARE",
+      "x": 40,
+      "y": 30,
+      "w": 760,
+      "h": 220
+    }
+  ],
+  "flowNodes": [
+    {
+      "id": 1,
+      "name": "Recall announced",
+      "externalId": "START_RECALL_ANNOUNCED",
+      "attributes": [],
+      "type": "signalStartEvent",
+      "laneId": 1,
+      "x": 100,
+      "y": 108,
+      "signal": {
+        "name": "warehouse.recall-announced",
+        "outputMappings": [
+          {
+            "variable": "recallNumber",
+            "path": "recallNumber",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": "Len(recallNumber) > 0"
+          },
+          {
+            "variable": "product",
+            "path": "product.name",
+            "dataType": "string",
+            "isArray": false,
+            "required": true,
+            "defaultValue": null,
+            "validation": null
+          },
+          {
+            "variable": "reason",
+            "path": "reason",
+            "dataType": "string",
+            "isArray": false,
+            "required": false,
+            "defaultValue": "Not stated",
+            "validation": null
+          }
+        ]
+      },
+      "businessKey": {
+        "variable": "recallNumber",
+        "uniqueness": "all"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Write the customer notice",
+      "externalId": "TASK_WRITE_NOTICE",
+      "attributes": [],
+      "type": "userTask",
+      "laneId": 1,
+      "x": 280,
+      "y": 96,
+      "roles": [],
+      "requiresClaim": false,
+      "claimMode": "fresh",
+      "inheritClaimFromNodeId": null,
+      "requiresAssignment": false,
+      "assignmentMode": "fresh",
+      "inheritAssignmentFromNodeId": null,
+      "variables": [],
+      "assignee": null
+    },
+    {
+      "id": 3,
+      "name": "Notice sent",
+      "externalId": "END_NOTICE_SENT",
+      "attributes": [],
+      "type": "endEvent",
+      "laneId": 1,
+      "x": 620,
+      "y": 108,
+      "roles": [],
+      "variables": []
+    }
+  ],
+  "sequenceFlows": [
+    {
+      "id": 101,
+      "name": "",
+      "externalId": null,
+      "attributes": [],
+      "sourceRef": 1,
+      "targetRef": 2,
+      "roles": [],
+      "variables": []
+    },
+    {
+      "id": 201,
+      "name": "Send the notice",
+      "externalId": "FLOW_SEND_NOTICE",
+      "attributes": [],
+      "sourceRef": 2,
+      "targetRef": 3,
+      "roles": [],
+      "variables": []
+    }
+  ]
+}

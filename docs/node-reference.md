@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [BPMN behavior](bpmn-support.md) · [Developer guide](developer-guide.md) · [Example catalog](../examples/README.md)
 
-Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **28 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
+Use this reference when choosing a task, event, or gateway and authoring its Flowbit JSON properties. It covers all **29 supported node types**, their shared and nested configuration, and the sequence flows that supply actions and routing. For execution semantics across a whole process, read [BPMN support](bpmn-support.md); for HTTP requests, read the [API reference](api-guide.md).
 
 The tables describe current authoring contracts and effective defaults. **Required** means needed for that configuration to work and pass validation; **conditional** means required only in the stated situation. Omit optional properties that do not apply to the selected type. The model uses one shared node class: a property existing on that class does not make it meaningful on every node. Some irrelevant legacy fields are cleared during normalization, while explicitly invalid combinations are rejected. Do not rely on normalization to repair newly authored definitions.
 
@@ -42,6 +42,7 @@ JSON blocks below are **fragments**, not standalone workflows, unless stated oth
 | Start | [startEvent](#startevent) | Authenticated user starts with roles and inputs. |
 | Start | [messageStartEvent](#messagestartevent) | Machine-authenticated inbound message starts. |
 | Start | [timerStartEvent](#timerstartevent) | Scheduled instance creation. |
+| Start | [signalStartEvent](#signalstartevent) | Instance creation by a broadcast signal. |
 | Catch | [intermediateMessageCatchEvent](#intermediatemessagecatchevent) | Wait for an inbound message. |
 | Catch | [intermediateTimerCatchEvent](#intermediatetimercatchevent) | Wait for a scheduled trigger. |
 | Catch | [intermediateConditionalCatchEvent](#intermediateconditionalcatchevent) | Wait for a persisted-variable condition. |
@@ -692,6 +693,44 @@ A cron schedule follows the local time of a named zone, such as every weekday at
 
 See the [example catalog](../examples/README.md) for timer workflows.
 
+### signalStartEvent
+
+Starts an instance of its workflow each time a signal with its `signal.name` is thrown to the workflow's family or to all workflows, while its version is the family's published default. Use it when an announcement should open new work in every workflow that reacts to it, and the thrower need not know which ones do. Use a [message start](#messagestartevent) when one caller starts one workflow by key and needs the new instance's ID back.
+
+**Topology:** no incoming flows; exactly one unconditional outgoing flow. **Worker:** required, and the definition publishes only when durable publication is enabled.
+
+| Property | Type | Required / default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `signal` | [signal configuration](#signal-configuration) | Required | The literal signal name and the typed mappings that declare the start variables. `scope` and `payload` are rejected. |
+| `businessKey` | [business-key object](#business-key-configuration) | Optional; absent | References a required scalar-string mapping with an explicit path and no default. Once any entry has one, every start, message start, and signal start needs one. |
+
+```json
+{
+  "id": 1,
+  "name": "Recall announced",
+  "type": "signalStartEvent",
+  "signal": {
+    "name": "warehouse.recall-announced",
+    "outputMappings": [
+      { "variable": "recallNumber", "path": "recallNumber", "dataType": "string", "isArray": false, "required": true },
+      { "variable": "product", "path": "product.name", "dataType": "string", "isArray": false, "required": true },
+      { "variable": "reason", "path": "reason", "dataType": "string", "isArray": false, "required": false, "defaultValue": "Not stated" }
+    ]
+  },
+  "businessKey": { "variable": "recallNumber", "uniqueness": "all" }
+}
+```
+
+- **Who listens.** Only the version that is the family's published default listens. Saving a first version as published, publishing the default, changing the default, and deleting it change what the family listens for in the same transaction. A draft, or a published version that is not the default, listens for nothing.
+- **Which throws start it.** A throw with a `workflowKey` for this family, or with `allWorkflows`, starts one instance per broadcast; from a workflow, the scope kinds `thisWorkflow`, `workflow`, and `allWorkflows` do. A throw to one business key or one instance names existing instances and starts nothing. A family whose default has both a signal start and waits for the name receives both: one start, and each wait.
+- **What it starts.** The Worker creates the instance in its own transaction, from the version that is the published default when the delivery runs, as the fixed system actor `signal`. The mappings read the broadcast's payload, apply their defaults and validations, and become the instance's start variables, then the process variables initialize and the first token follows the outgoing flow. History records a `signalReceived` row on the start event, with `eventKind` `start` and the broadcast and its thrower, before the `signalStart` row that leaves it; the start event's visit completes with reason `signalReceived`. The delivery names the instance it created.
+- **When it starts nothing.** A payload that fails a mapping fails the delivery with `signal_payload_invalid`. A business key that an instance already has skips the delivery with `business_key_conflict` and the description `Instance #42 already has this start's business key.`, never the key itself. A default that no longer starts on the name skips it with `subscription_ended`. A rejected start, such as a refused throw in its first steps, fails it with `signal_delivery_rejected`. **Retry failed** runs a failed start again against the current default, and skips it when the family no longer starts on the name.
+- **Who can start it.** Whoever may throw the signal: users with a role from `Signals.RequiredRole`, managed clients with `signals.throw`, and every published workflow that throws it. No role is checked when the start is delivered, so publishing a signal start is the author's consent to these starters.
+- **Loops.** The first token continues the broadcast's chain count, so families that start each other stop at `Workflow.Async.MaxConsecutiveAutomaticActivations`; a throw through the API starts a new chain. Saving rejects a throw or end event that throws, to a scope that includes its own family, a name a signal start of the same definition starts on: `Signal end event #4 throws 'warehouse.recall-announced' to a scope that includes this workflow, which starts on it at signal start event #1; every instance would start another.`
+- **Other settings.** One definition starts once per name: `Signal start event #5 starts on 'orders.created', which signal start event #1 already starts on; a workflow starts once per signal.` It cannot be `initialEventId`, so a workflow whose only entries are signal starts leaves it null, and no request, call activity, or message start can select it. `idempotency` is rejected: `Signal start event #1 cannot define idempotency; a broadcast starts one instance per workflow, and businessKey rejects a repeated case.` Roles, `variables`, `callOnly`, `message`, async, job, and multi-instance settings are rejected too.
+
+See [signals](bpmn-support.md#signals), [starting a workflow with a signal](developer-guide.md#start-a-workflow-with-a-signal), and the [signal start example](../examples/signals/05-signal-start-recall-notice.json).
+
 ### intermediateMessageCatchEvent
 
 Persists a wait in an existing instance. `POST /api/instances/{instanceId}/message` authenticates the sender, verifies the required header, maps the raw JSON payload into variables, and follows the waiting token's continuation. It is an instance-scoped HTTP integration point, not a cross-instance message bus.
@@ -1202,11 +1241,11 @@ The catch-delivery key is trimmed, nonblank, case-sensitive, and at most 300 Uni
 
 ## Business key configuration
 
-`businessKey` is optional on manual/message starts. Once enabled on any manual/message entry in a definition, it must be configured on every manual/message entry; timer starts are excluded. It identifies a domain case across the stable workflow family, independently of a transport retry key.
+`businessKey` is optional on manual, message, and signal starts. Once enabled on any of them in a definition, it must be configured on every manual, message, and signal start; timer starts are excluded. It identifies a domain case across the stable workflow family, independently of a transport retry key.
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `variable` | string | Required | Exact name of a required scalar `string` start input, or required scalar-string message-start mapping. It must have no `defaultValue`; a message-start mapping must have an explicit payload `path`. It must differ from the idempotency variable. |
+| `variable` | string | Required | Exact name of a required scalar `string` start input, or required scalar-string message-start or signal-start mapping. It must have no `defaultValue`; a mapping must have an explicit payload `path`. It must differ from the idempotency variable. |
 | `uniqueness` | string enum | Required; no implicit default | `active` reserves the case key while its instance is active; completion, cancellation, or fault releases it. `all` reserves it permanently. Recognized casing is canonicalized. |
 
 Input keys are trimmed, nonblank, case-sensitive, and limited to 300 Unicode scalar values. The reservation is workflow-family scoped, across versions and external entry points. Duplicate business identity returns a conflict. Enabling a family's policy also constrains starts through older unkeyed versions; see [business identity and retries](developer-guide.md#separate-retries-from-business-identity). A signal throw can be limited to the family's instance with one business key ([signal scope](developer-guide.md#limit-a-signal-to-one-case)); instances started before the family enabled business keys have none and are never reached that way.
@@ -1374,20 +1413,22 @@ Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`,
 
 ## Signal configuration
 
-The required `signal` object belongs only to the four signal events. On `intermediateSignalCatchEvent` and `signalBoundaryEvent` it names the signal the event waits for and maps its payload; on `intermediateSignalThrowEvent` and `signalEndEvent` it names the signal the event throws, its scope, and its payload.
+The required `signal` object belongs only to the five signal events. On `intermediateSignalCatchEvent` and `signalBoundaryEvent` it names the signal the event waits for and maps its payload; on `signalStartEvent` it names the signal that starts the workflow, and its mappings declare the start variables; on `intermediateSignalThrowEvent` and `signalEndEvent` it names the signal the event throws, its scope, and its payload.
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
 | `name` | string | Required | Literal signal name: 1 to 100 lowercase ASCII letters, digits, `.`, `_`, or `-`, starting with a letter or digit (`^[a-z0-9][a-z0-9._-]{0,99}$`). It is not a template and is not trimmed; throws match it exactly. An uppercase letter is rejected. Prefer a dotted prefix, such as `claims.policy-changed`, so that unrelated workflows do not share a name by accident. |
-| `outputMappings` | [output-mapping array](#output-mappings) | Optional; `[]` | Catch and boundary only: at most 100 typed mappings, in the shape message mappings use. `path` reads the broadcast's JSON payload. `dataType` and `isArray` are required: signals have no untyped legacy form. A throw or end event must leave it missing or empty. |
-| `scope` | [scope object](#signal-scope) | Required on a throw or end event | Which waits the thrown signal reaches. Rejected on a catch or boundary. |
-| `payload` | array of [payload entries](#signal-payload) | Optional on a throw or end event | At most 100 entries, each one member of the payload object. A missing, null, or empty list sends no payload. Rejected on a catch or boundary. |
+| `outputMappings` | [output-mapping array](#output-mappings) | Optional; `[]` | Catch, boundary, and start only: at most 100 typed mappings, in the shape message mappings use. `path` reads the broadcast's JSON payload. `dataType` and `isArray` are required: signals have no untyped legacy form. A throw or end event must leave it missing or empty. |
+| `scope` | [scope object](#signal-scope) | Required on a throw or end event | Which waits and starts the thrown signal reaches. Rejected on a catch, boundary, or start. |
+| `payload` | array of [payload entries](#signal-payload) | Optional on a throw or end event | At most 100 entries, each one member of the payload object. A missing, null, or empty list sends no payload. Rejected on a catch, boundary, or start. |
 
 A mapping writes an instance variable: a declared instance-scoped process variable, whose type, array shape, nullability, and validation then apply, or a new instance variable that the mapping declares. It cannot write a shared-variable alias, and neither its `defaultValue` template, its `validation`, nor the validation of a targeted process variable may read one, because one broadcast would otherwise touch the same shared key from every recipient. Reserved `sys.`, `config.`, `setting.`, and `mi.` names are rejected as for other mappings.
 
+A start's mappings declare start variables instead: each must state `dataType` and `isArray`, needs a `path` unless it has a default, and cannot name a process variable, shared or not (`Entry event #1 variable 'amount' collides with a process variable; a signal start's mappings declare instance start variables only.`). Their messages follow the message start's with the noun `Signal start event #<id>`, for example `Signal start event #1 output mapping for 'product' must have a path unless defaultValue is configured.`
+
 A broadcast without a payload leaves every path missing, so each mapping's default or required check applies. All mappings resolve and validate before anything is written; a failure fails that delivery with `signal_payload_invalid` and leaves the catch waiting, or the boundary listening.
 
-Validation messages start with `Signal catch event #<id>`, `Signal boundary event #<id>`, `Signal throw event #<id>`, or `Signal end event #<id>`, for example `Signal catch event #9 signal.name must be 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit.` A `signal` object on another node type returns `Flow node #<id> defines signal but is not a signal event.` The boundary name rules return `Signal boundary event #15 uses signal 'warehouse.product-recall', which signal boundary event #14 on host #3 already uses.` and `Signal boundary event #14 uses signal 'claims.policy-changed', the signal its host signal catch event #9 waits for.` A catch or boundary with `scope` or `payload` returns `Signal catch event #9 cannot define signal.scope or signal.payload; only signal throw and end events send a signal.`
+Validation messages start with `Signal catch event #<id>`, `Signal boundary event #<id>`, `Signal start event #<id>`, `Signal throw event #<id>`, or `Signal end event #<id>`, for example `Signal catch event #9 signal.name must be 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit.` A `signal` object on another node type returns `Flow node #<id> defines signal but is not a signal event.` The boundary name rules return `Signal boundary event #15 uses signal 'warehouse.product-recall', which signal boundary event #14 on host #3 already uses.` and `Signal boundary event #14 uses signal 'claims.policy-changed', the signal its host signal catch event #9 waits for.` A catch or boundary with `scope` or `payload` returns `Signal catch event #9 cannot define signal.scope or signal.payload; only signal throw and end events send a signal.`
 
 ### Signal scope
 
@@ -1396,17 +1437,19 @@ A throw or end event states one of six scope kinds in `signal.scope.kind`, writt
 | `kind` | Members | Recipients |
 | --- | --- | --- |
 | `thisInstance` | None | The waits with the name in the throwing instance. Saving requires a signal catch or boundary event with the same name in the definition. |
-| `thisWorkflow` | None | The waits with the name in every instance of the throwing instance's workflow family, in every version. |
-| `workflow` | `workflowKey` | The waits with the name in every instance of that family. |
+| `thisWorkflow` | None | The waits with the name in every instance of the throwing instance's workflow family, in every version, and the family's [signal start](#signalstartevent) on the name, if its default has one. |
+| `workflow` | `workflowKey` | The waits with the name in every instance of that family, and its signal start on the name. |
 | `businessKey` | `workflowKey`, `businessKeyVariable` | The waits with the name in the instance of that family whose [business key](#business-key-configuration) is the variable's value. |
 | `ownBusinessKey` | `workflowKey` | The waits with the name in the instance of that family whose business key is the throwing instance's own. |
-| `allWorkflows` | None | Every wait with the name, in every family. |
+| `allWorkflows` | None | Every wait with the name, in every family, and every family's signal start on the name. |
 
 - **`kind`.** Compared exactly; a missing scope, a missing kind, or another value, such as `ThisInstance`, returns `Signal throw event #7 signal.scope.kind must be 'thisInstance', 'thisWorkflow', 'workflow', 'businessKey', 'ownBusinessKey', or 'allWorkflows'.` A member the model does not know, such as a misspelled `businesKeyVariable`, fails binding with its JSON path in the `{"error": ...}` body; the editor names the member before the request is sent.
 - **`workflowKey`.** A literal family key: no surrounding white space, at most 300 characters, and no `${...}`, which is not replaced. It may be the definition's own key, but prefer `thisWorkflow` for the own family: a definition copied or imported under another key would otherwise still throw to the family it was copied from. Publishing a version, creating or updating one with `publish: true`, and setting a default require every other family named here to have a definition: `Signal end event #3 throws to workflow 'shipping', which has no definition.` A draft saves without it, so two workflows that throw to each other can both be saved and then published. At run time nothing is looked up: a family without running instances, or one deleted since, simply has no waits.
 - **`businessKeyVariable`.** A variable the definition declares or produces as a single `string`, matched ignoring letter case, and not a shared-variable alias. When the event throws, its stored value is trimmed as a start trims a business key; a value that is missing, not text, blank, or longer than 300 characters refuses the throw.
 - **`ownBusinessKey`.** The definition's entry events must configure `businessKey`, or saving returns `Signal throw event #7 uses this instance's business key, but this workflow's entry events do not configure businessKey.` An instance without a key, such as one started before business keys were enabled, refuses the throw.
 - **No match.** A scope that names a family without enabled business keys, a key that no running instance has, or a family where nothing waits completes the broadcast with no deliveries; its `recipientCount` of 0 appears in the history row and on the broadcast.
+
+The three kinds that reach a family also start it once when its published default has a signal start on the name, and the recipient limit counts that start. Saving rejects a definition whose own signal start the scope would reach; see [signalStartEvent](#signalstartevent). `thisInstance`, `businessKey`, and `ownBusinessKey` name existing instances and start nothing.
 
 ### Signal payload
 
@@ -1458,7 +1501,7 @@ A throw that cannot be built, or that a limit stops, raises an error whose messa
 | A required payload variable has no value, or holds null | `cannot send payload entry 'reason': variable 'cancelReason' has no value.`, or `... is null.` |
 | The payload is larger than 256 KiB | `payload is 300000 bytes; the limit is 262144.` |
 | `Signals.MaxOpenWorkflowBroadcasts` broadcasts thrown by workflows are still delivering | `was not thrown: 10000 signal broadcasts thrown by workflows are still delivering; see Signals.MaxOpenWorkflowBroadcasts.` |
-| More waits match than `Signals.MaxSubscriptionsPerBroadcast` | `would reach more than 10000 waiting subscriptions; narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.` |
+| More waits and starts match than `Signals.MaxSubscriptionsPerBroadcast` | `would reach more than 10000 recipients; narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.` |
 
 What fails depends on where the step runs:
 

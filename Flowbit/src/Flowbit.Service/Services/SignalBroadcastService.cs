@@ -118,7 +118,7 @@ public sealed class SignalBroadcastService(
         if (written.RecipientLimitExceeded)
         {
             throw new WorkflowDomainException(
-                $"Signal '{name}' would reach more than {maxRecipients} waiting subscriptions; "
+                $"Signal '{name}' would reach more than {maxRecipients} recipients; "
                 + "narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.");
         }
 
@@ -193,11 +193,18 @@ public sealed class SignalBroadcastService(
         long? instanceId,
         int page,
         int pageSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? kind = null)
     {
         if (!string.IsNullOrEmpty(status) && !SignalDeliveryStatuses.All.Contains(status))
         {
             throw new WorkflowDomainException($"Unknown signal delivery status '{status}'.");
+        }
+
+        if (!string.IsNullOrEmpty(kind) && !SignalDeliveryKinds.All.Contains(kind, StringComparer.Ordinal))
+        {
+            throw new WorkflowDomainException(
+                $"Unknown signal delivery kind '{kind}'; use {SignalDeliveryKinds.Wait} or {SignalDeliveryKinds.Start}.");
         }
 
         var broadcast = await broadcasts.GetAsync(broadcastId, false, cancellationToken);
@@ -213,7 +220,8 @@ public sealed class SignalBroadcastService(
                 string.IsNullOrWhiteSpace(status) ? null : status,
                 instanceId,
                 safePage,
-                safeSize),
+                safeSize,
+                string.IsNullOrWhiteSpace(kind) ? null : kind),
             cancellationToken);
         return new PagedResult<SignalDeliveryDto>(
             result.Items.Select(delivery => ToDelivery(delivery, caller)).ToArray(),
@@ -297,25 +305,31 @@ public sealed class SignalBroadcastService(
                 $"Signal broadcast #{broadcastId} changed since it was read. Refresh and try again.");
         }
 
-        var definitionIds = await broadcasts.RetryFailedDeliveriesAsync(broadcastId, now, cancellationToken);
-        if (definitionIds.Count == 0)
+        var retried = await broadcasts.RetryFailedDeliveriesAsync(broadcastId, now, cancellationToken);
+        if (retried.Changed == 0)
         {
             throw new WorkflowConflictException($"Signal broadcast #{broadcastId} has no failed deliveries.");
         }
 
-        await broadcasts.ReopenAsync(broadcastId, now, cancellationToken);
-        await writer.EnqueueDeliveryJobsAsync(
-            broadcastId,
-            definitionIds,
-            SignalBroadcastJobReasons.Retry,
-            caller.Id,
-            now,
-            cancellationToken);
+        // A failed start whose family no longer starts on the name ends as skipped, so a
+        // retry can leave nothing pending; the recount then finishes the broadcast.
+        if (retried.DefinitionIds.Count > 0)
+        {
+            await broadcasts.ReopenAsync(broadcastId, now, cancellationToken);
+            await writer.EnqueueDeliveryJobsAsync(
+                broadcastId,
+                retried.DefinitionIds,
+                SignalBroadcastJobReasons.Retry,
+                caller.Id,
+                now,
+                cancellationToken);
+        }
+
         var updated = await broadcasts.RefreshCountsAsync(broadcastId, now, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         logger.LogInformation(
             "Signal broadcast {BroadcastId} queued its failed deliveries again in {JobCount} jobs.",
-            broadcastId, definitionIds.Count);
+            broadcastId, retried.DefinitionIds.Count);
         return ToDetail(updated!, caller);
     }
 
@@ -330,14 +344,15 @@ public sealed class SignalBroadcastService(
         // where a throw to them is refused.
         var filter = SignalBroadcastScope.SummaryFilter(workflowKey, businessKey, instanceId, out var problem)
             ?? throw new WorkflowDomainException(problem!);
+        var signalName = string.IsNullOrWhiteSpace(name) ? null : name;
         var rows = await subscriptions.SummarizeActiveAsync(
-            string.IsNullOrWhiteSpace(name) ? null : name,
+            signalName,
             filter,
             SignalConstraints.MaxSummaryRows + 1,
             cancellationToken);
         return new SignalSubscriptionSummaryDto(
             rows.Take(SignalConstraints.MaxSummaryRows)
-                .Select(row => new SignalSubscriptionCountDto(row.SignalName, row.WorkflowKey, row.Count))
+                .Select(row => new SignalSubscriptionCountDto(row.SignalName, row.WorkflowKey, row.Count, row.StartCount))
                 .ToArray(),
             rows.Count > SignalConstraints.MaxSummaryRows);
     }
@@ -530,7 +545,8 @@ public sealed class SignalBroadcastService(
             broadcast.CompletedAt,
             broadcast.ThrowerInstanceId,
             broadcast.ThrowerNodeId,
-            broadcast.ThrowerNodeName);
+            broadcast.ThrowerNodeName,
+            broadcast.StartDeliveryCount);
 
     private static readonly string[] KnownThrowerKinds =
         [SignalThrowerKinds.User, SignalThrowerKinds.Client, SignalThrowerKinds.Instance];
@@ -579,7 +595,8 @@ public sealed class SignalBroadcastService(
             broadcast.CancelledAt,
             broadcast.ThrowerInstanceId,
             broadcast.ThrowerNodeId,
-            broadcast.ThrowerNodeName);
+            broadcast.ThrowerNodeName,
+            broadcast.StartDeliveryCount);
     }
 
     private static SignalDeliveryDto ToDelivery(SignalDeliveryRecord delivery, SignalCaller caller) =>
@@ -598,5 +615,6 @@ public sealed class SignalBroadcastService(
             delivery.AttemptCount,
             delivery.CreatedAt,
             delivery.UpdatedAt,
-            delivery.CompletedAt);
+            delivery.CompletedAt,
+            delivery.Kind);
 }

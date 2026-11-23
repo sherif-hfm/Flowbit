@@ -99,6 +99,7 @@ const NODE_TYPE = {
   SIGNAL_THROW_EVENT: "intermediateSignalThrowEvent",
   SIGNAL_END_EVENT: "signalEndEvent",
   MESSAGE_START_EVENT: "messageStartEvent",
+  SIGNAL_START_EVENT: "signalStartEvent",
   LINK_THROW_EVENT: "intermediateLinkThrowEvent",
   LINK_CATCH_EVENT: "intermediateLinkCatchEvent"
 };
@@ -125,6 +126,7 @@ const NODE_TYPE_OPTIONS = [
   { value: NODE_TYPE.SIGNAL_CATCH_EVENT, label: "Signal Catch Event (wait for a broadcast)" },
   { value: NODE_TYPE.SIGNAL_THROW_EVENT, label: "Signal Throw Event (broadcast a signal)" },
   { value: NODE_TYPE.MESSAGE_START_EVENT, label: "Message Start Event (webhook start)" },
+  { value: NODE_TYPE.SIGNAL_START_EVENT, label: "Signal Start Event (start on a broadcast signal)" },
   { value: NODE_TYPE.LINK_THROW_EVENT, label: "Link Throw Event (go to)" },
   { value: NODE_TYPE.LINK_CATCH_EVENT, label: "Link Catch Event (continue here)" }
 ];
@@ -289,6 +291,7 @@ function searchDiagram(candidate, query, limit = 20) {
     startEvent: "Start Event",
     timerStartEvent: "Timer Start Event",
     messageStartEvent: "Message Start Event",
+    signalStartEvent: "Signal Start Event",
     userTask: "User Task",
     task: "Task",
     serviceTask: "Service Task",
@@ -1425,7 +1428,7 @@ function isEventType(type) {
     type === NODE_TYPE.TIMER_START_EVENT || type === NODE_TYPE.TIMER_CATCH_EVENT ||
     type === NODE_TYPE.CONDITIONAL_CATCH_EVENT || type === NODE_TYPE.SIGNAL_CATCH_EVENT ||
     type === NODE_TYPE.SIGNAL_THROW_EVENT || type === NODE_TYPE.SIGNAL_END_EVENT ||
-    isLinkEventType(type);
+    type === NODE_TYPE.SIGNAL_START_EVENT || isLinkEventType(type);
 }
 function isAutomaticType(type) {
   return type === NODE_TYPE.TASK;
@@ -1491,6 +1494,14 @@ function isMessageCatchEventType(type) {
 function isMessageStartEventType(type) {
   return type === NODE_TYPE.MESSAGE_START_EVENT;
 }
+function isSignalStartEventType(type) {
+  return type === NODE_TYPE.SIGNAL_START_EVENT;
+}
+// Every entry event: a plain start and the system-only message, timer, and signal starts.
+function isEntryEventType(type) {
+  return isStartEventType(type) || isMessageStartEventType(type) ||
+    isTimerStartEventType(type) || isSignalStartEventType(type);
+}
 function isTimerCatchEventType(type) {
   return type === NODE_TYPE.TIMER_CATCH_EVENT;
 }
@@ -1520,9 +1531,13 @@ function isSignalEndEventType(type) {
 function throwsSignalType(type) {
   return isSignalThrowEventType(type) || isSignalEndEventType(type);
 }
+// The types whose signal maps a received broadcast's payload: the waits and the start.
+function receivesSignalType(type) {
+  return isSignalWaitType(type) || isSignalStartEventType(type);
+}
 // Every type that carries node.signal.
 function isSignalEventType(type) {
-  return isSignalWaitType(type) || throwsSignalType(type);
+  return isSignalWaitType(type) || throwsSignalType(type) || isSignalStartEventType(type);
 }
 function isTimerEventType(type) {
   return isTimerStartEventType(type) || isTimerCatchEventType(type) ||
@@ -1740,6 +1755,7 @@ function isSingleOutgoingType(type) {
     || type === NODE_TYPE.SIGNAL_CATCH_EVENT
     || type === NODE_TYPE.SIGNAL_THROW_EVENT
     || type === NODE_TYPE.MESSAGE_START_EVENT
+    || type === NODE_TYPE.SIGNAL_START_EVENT
     || type === NODE_TYPE.LINK_CATCH_EVENT;
 }
 function typeLabel(type) {
@@ -1763,7 +1779,7 @@ function nodeSize(node) {
 function isPassThroughType(type) {
   return isAutomaticType(type) || isServiceTaskType(type) || isScriptTaskType(type) ||
     isStartEventType(type) || isMessageStartEventType(type) || isTimerStartEventType(type) ||
-    isGatewayType(type) ||
+    isSignalStartEventType(type) || isGatewayType(type) ||
     isScopedInterruptEventType(type) || isBoundaryEventType(type) || isLinkCatchEventType(type) ||
     isSignalThrowEventType(type);
 }
@@ -1928,7 +1944,11 @@ function applyTypeInvariants(node) {
     delete node.errorCode;
     delete node.errorDescription;
   }
-  if (!isStartEventType(node.type) && !isMessageStartEventType(node.type)) {
+  // A signal start takes part in the entry business key, but has no request header to
+  // read an idempotency key from.
+  if (isSignalStartEventType(node.type)) delete node.idempotency;
+  if (!isStartEventType(node.type) && !isMessageStartEventType(node.type) &&
+      !isSignalStartEventType(node.type)) {
     delete node.businessKey;
     delete node.idempotency;
   } else if (node.businessKey && typeof node.businessKey === "object") {
@@ -2216,6 +2236,25 @@ function applyTypeInvariants(node) {
     delete node.message.deliveryIdempotency;
     delete node.message.deliveryIdempotencyHeaderName;
     normalizeLegacyMessageStartNode(node);
+  } else if (isSignalStartEventType(node.type)) {
+    // A signal start is an entry point that a broadcast starts. Its typed mappings, under
+    // node.signal, declare the start variables.
+    node.requiresClaim = false;
+    node.claimMode = CLAIM_MODE.FRESH;
+    node.inheritClaimFromNodeId = null;
+    node.roles = [];
+    node.variables = [];
+    node.assignee = null;
+    delete node.service;
+    delete node.message;
+    node.assignments = [];
+    delete node.scriptFormat;
+    delete node.script;
+    delete node.attachedToRef;
+    delete node.errorVariable;
+    if (node.signal !== undefined && node.signal !== null) {
+      node.signal = normalizeSignalDefinition(node.signal, model.variables);
+    }
   } else if (isTimerStartEventType(node.type) || isTimerCatchEventType(node.type)) {
     node.requiresClaim = false;
     node.claimMode = CLAIM_MODE.FRESH;
@@ -2440,6 +2479,7 @@ const NODE_ICON_SYMBOL = {
   [NODE_TYPE.START_EVENT]: "icon-start",
   [NODE_TYPE.TIMER_START_EVENT]: "icon-timer",
   [NODE_TYPE.MESSAGE_START_EVENT]: "icon-message",
+  [NODE_TYPE.SIGNAL_START_EVENT]: "icon-signal-catch",
   [NODE_TYPE.END_EVENT]: null,
   [NODE_TYPE.ERROR_END_EVENT]: "icon-error-throw",
   // Throwing events use the filled triangle, as the link throw fills the link catch's arrow.
@@ -3921,7 +3961,7 @@ function addInitialSelector() {
   if (startEvents.length === 0) {
     const note = document.createElement("p");
     note.className = "empty-note";
-    note.textContent = "No user start events are defined (the workflow may be started by a message or timer start event instead).";
+    note.textContent = "No user start events are defined (the workflow may be started by a message, timer, or signal start event instead).";
     f.appendChild(note);
   } else {
     const sel = document.createElement("select");
@@ -3966,7 +4006,8 @@ function changeNodeTypeFromInspector(node, nextType) {
     }
   }
   const businessKeysEnabled = model.flowNodes.some(n =>
-    (isStartEventType(n.type) || isMessageStartEventType(n.type)) && n.businessKey != null);
+    (isStartEventType(n.type) || isMessageStartEventType(n.type) || isSignalStartEventType(n.type)) &&
+    n.businessKey != null);
   const changesGatewaySemantics = previousType !== nextType &&
     (isGatewayType(previousType) || isGatewayType(nextType));
   if (changesGatewaySemantics) {
@@ -3980,6 +4021,33 @@ function changeNodeTypeFromInspector(node, nextType) {
   }
   if (isMessageStartEventType(previousType) && isStartEventType(nextType)) {
     node.variables = materializeMessageStartVariables(node);
+  }
+  // A message start and a signal start both declare their start variables as typed
+  // mappings, so the mappings cross between them. A plain start's variables become mappings
+  // that read the payload member of the same name, and a signal start's mappings become a
+  // plain start's variables.
+  const signalStartMappings = isSignalStartEventType(previousType) && node.signal &&
+    typeof node.signal === "object" && Array.isArray(node.signal.outputMappings)
+    ? node.signal.outputMappings.filter(mapping => mapping && typeof mapping === "object") : [];
+  const crossedStartMappings = isMessageStartEventType(previousType)
+    ? JSON.parse(JSON.stringify(((node.message && node.message.outputMappings) || [])
+        .filter(mapping => mapping && typeof mapping === "object")))
+    : isStartEventType(previousType)
+      ? (node.variables || []).filter(variable => variable && hasText(variable.name)).map(variable => ({
+          variable: variable.name,
+          path: variable.name,
+          dataType: variable.dataType || "string",
+          isArray: !!variable.isArray,
+          required: !!variable.required,
+          defaultValue: variable.defaultValue ?? null,
+          validation: variable.validation ?? null
+        }))
+      : isSignalStartEventType(previousType) ? JSON.parse(JSON.stringify(signalStartMappings)) : [];
+  if (isSignalStartEventType(previousType) && isStartEventType(nextType)) {
+    node.variables = materializeMessageStartVariables({ message: { outputMappings: signalStartMappings } });
+  }
+  if (isSignalStartEventType(previousType) && isMessageStartEventType(nextType)) {
+    node.message = Object.assign(defaultMessage(), { outputMappings: crossedStartMappings });
   }
   node.type = nextType;
   // A type change never reinterprets one multi-instance contract as another:
@@ -4060,6 +4128,9 @@ function changeNodeTypeFromInspector(node, nextType) {
   if (throwsSignalType(nextType) && !throwsSignalType(previousType)) {
     node.signal = { name: keptSignalName, scope: { kind: "" }, payload: [] };
   }
+  if (isSignalStartEventType(nextType) && !isSignalStartEventType(previousType)) {
+    node.signal = { name: keptSignalName, outputMappings: crossedStartMappings };
+  }
   if (isStartEventType(previousType) && !isStartEventType(nextType)) {
     delete node.callOnly;
   }
@@ -4072,7 +4143,8 @@ function changeNodeTypeFromInspector(node, nextType) {
       flow.variables = [];
     });
   }
-  if (businessKeysEnabled && (isStartEventType(nextType) || isMessageStartEventType(nextType)) && node.businessKey == null) {
+  if (businessKeysEnabled && (isStartEventType(nextType) || isMessageStartEventType(nextType) ||
+      isSignalStartEventType(nextType)) && node.businessKey == null) {
     node.businessKey = { variable: "", uniqueness: "active" };
   }
   applyTypeInvariants(node);
@@ -4197,7 +4269,7 @@ function renderNodeInspector() {
   }
 
   // A signal boundary draws its Signal section after its host and interruption fields.
-  if (isSignalCatchEventType(node.type) || throwsSignalType(node.type)) {
+  if (isSignalCatchEventType(node.type) || throwsSignalType(node.type) || isSignalStartEventType(node.type)) {
     renderSignalSection(node);
   }
 
@@ -4518,6 +4590,10 @@ function renderNodeInspector() {
   if (isMessageStartEventType(node.type)) {
     renderMessageSection(node);
     renderIdempotencySection(node);
+    renderBusinessKeySection(node);
+  }
+
+  if (isSignalStartEventType(node.type)) {
     renderBusinessKeySection(node);
   }
 
@@ -5461,11 +5537,16 @@ function renderSignalSection(node) {
     renderSignalThrowSection(node);
     return;
   }
+  const isStart = isSignalStartEventType(node.type);
   const title = document.createElement("h2");
   title.textContent = "Signal";
   title.style.marginTop = "16px";
   inspector.appendChild(title);
-  attachInspectorHelp(title, "signal-event", [
+  attachInspectorHelp(title, isStart ? "signal-start-event" : "signal-event", isStart ? [
+    "Starts a new instance of this workflow each time a signal with this name is thrown to this workflow family or to all workflows, while this version is the published default. One broadcast starts one instance of this workflow. A throw to one business key or one instance starts nothing.",
+    "Anyone who may throw the signal can start this workflow: users with the signal role, API clients allowed to throw signals, and every published workflow that throws it. A workflow cannot throw, to its own family, the signal it starts on.",
+    "A payload that fails a mapping starts nothing and fails that delivery; a business key that an instance already has starts nothing and skips it. Starting needs a running Worker."
+  ] : [
     (isSignalBoundaryEventType(node.type)
       ? "Reacts to a signal with this name while the attached activity is active, then continues along its one outgoing flow. An interrupting boundary cancels the activity first; a non-interrupting one leaves it waiting and reacts to every later signal too. "
       : "Waits until a signal with this name is thrown, then continues along its one outgoing flow. ") +
@@ -5495,6 +5576,11 @@ function renderSignalSection(node) {
     return;
   }
 
+  if (isStart) {
+    renderSignalStartSection(node, signal);
+    return;
+  }
+
   renderSignalNameField(node, signal);
 
   const outTitle = document.createElement("h2");
@@ -5502,6 +5588,64 @@ function renderSignalSection(node) {
   outTitle.style.marginTop = "16px";
   inspector.appendChild(outTitle);
   renderSignalOutputMappings(node, signal, outTitle);
+}
+
+// The start mode of the Signal section: the name, then the mappings that declare the start
+// variables. One status region reports what saving would refuse while the name is edited:
+// another signal start on the name, and a throw of this diagram that would start this workflow.
+function renderSignalStartSection(node, signal) {
+  const notes = document.createElement("div");
+  notes.className = "signal-start-notes";
+  notes.setAttribute("role", "status");
+  notes.setAttribute("aria-live", "polite");
+  notes.id = "signal-start-status-" + String(node.id);
+  const refreshStatus = () => {
+    // The name field's own line reports a missing or invalid name. A name that two starts
+    // share is reported on both, although saving names only the later one.
+    const nameProblem = signalNameProblem(signal.name, signalEventLabel(node));
+    const lines = signalStartProblems(model, node).filter(problem => problem !== nameProblem);
+    lines.push(...signalLaterStartProblemsFor(model, node));
+    lines.push(...signalSelfStartProblemsFor(model, node));
+    notes.replaceChildren(...lines.map(text => {
+      const line = document.createElement("p");
+      line.className = "expression-validation";
+      line.textContent = text;
+      return line;
+    }));
+  };
+
+  renderSignalNameField(node, signal, refreshStatus);
+
+  const outTitle = document.createElement("h2");
+  outTitle.textContent = "Start variables from the payload";
+  outTitle.style.marginTop = "16px";
+  inspector.appendChild(outTitle);
+  renderSignalOutputMappings(node, signal, outTitle, true);
+
+  inspector.appendChild(notes);
+  refreshStatus();
+}
+
+// The duplicate-name problems that saving reports on other signal starts of this diagram and
+// that name this start as the one that already starts on the name.
+function signalLaterStartProblemsFor(candidate, startNode) {
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  const ending = ", which signal start event #" + String(startNode.id) +
+    " already starts on; a workflow starts once per signal.";
+  return nodes
+    .filter(node => node && node !== startNode && isSignalStartEventType(node.type))
+    .flatMap(node => signalStartProblems(candidate, node))
+    .filter(problem => problem.endsWith(ending));
+}
+
+// The self-start problems that saving reports on throws of this diagram and that name this start.
+function signalSelfStartProblemsFor(candidate, startNode) {
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  return nodes
+    .filter(node => node && throwsSignalType(node.type))
+    .map(node => signalThrowSelfStartProblem(candidate, signalEventLabel(node), node.signal))
+    .filter(problem => problem && problem.endsWith(
+      "at signal start event #" + String(startNode.id) + "; every instance would start another."));
 }
 
 // The Signal name field of every signal event, with the names of the diagram's other signal
@@ -5559,10 +5703,13 @@ function renderSignalNameField(node, signal, onChange = null) {
   return nameInput;
 }
 
-// The output mappings of a signal catch or boundary, under their heading.
-function renderSignalOutputMappings(node, signal, outTitle) {
-  attachInspectorHelp(outTitle, "signal-output-mappings",
-    "Each mapping copies a value from the signal's payload into a typed instance variable. A signal reaches many instances at once, so its mappings never write or read shared variables. The payload path may be blank only when a default value is configured.");
+// The output mappings of a signal catch, boundary, or start, under their heading. A start's
+// mappings declare its start variables, so they suggest no declared variable.
+function renderSignalOutputMappings(node, signal, outTitle, startVariables = false) {
+  attachInspectorHelp(outTitle, startVariables ? "signal-start-mappings" : "signal-output-mappings",
+    startVariables
+      ? "Each mapping declares a start variable of the new instance and copies its value from the signal's payload. A required mapping fails the delivery when the payload has no value and no default. Start variables cannot reuse a process variable's name, and they never write or read shared variables."
+      : "Each mapping copies a value from the signal's payload into a typed instance variable. A signal reaches many instances at once, so its mappings never write or read shared variables. The payload path may be blank only when a default value is configured.");
 
   if (!Array.isArray(signal.outputMappings)) {
     const warning = document.createElement("p");
@@ -5616,16 +5763,18 @@ function renderSignalOutputMappings(node, signal, outTitle) {
       "Required final value",
       "Used only when the payload path is absent");
     // Choosing a suggested variable adopts its type in place, so Tab still reaches the next field.
-    attachWritableTargetSuggestions(varInput, match => {
-      if (isSharedProcessVariable(match)) return;
-      mapping.variable = match.name;
-      varInput.value = match.name;
-      mapping.dataType = match.dataType;
-      mapping.isArray = !!match.isArray;
-      typed.typeSelect.value = match.dataType;
-      if (typed.arrayInput) typed.arrayInput.checked = !!match.isArray;
-      mapping.defaultValue = parseDefaultValue(typed.defaultInput.value, mapping);
-    }, false, variable => !isSharedProcessVariable(variable));
+    if (!startVariables) {
+      attachWritableTargetSuggestions(varInput, match => {
+        if (isSharedProcessVariable(match)) return;
+        mapping.variable = match.name;
+        varInput.value = match.name;
+        mapping.dataType = match.dataType;
+        mapping.isArray = !!match.isArray;
+        typed.typeSelect.value = match.dataType;
+        if (typed.arrayInput) typed.arrayInput.checked = !!match.isArray;
+        mapping.defaultValue = parseDefaultValue(typed.defaultInput.value, mapping);
+      }, false, variable => !isSharedProcessVariable(variable));
+    }
 
     const del = document.createElement("button");
     del.type = "button";
@@ -5749,8 +5898,9 @@ function renderSignalThrowSection(node) {
     (isEnd
       ? "When a token enters this event, it broadcasts a signal with this name, then the token ends as at a plain end event. "
       : "When a token reaches this event, it broadcasts a signal with this name and continues along its one outgoing flow at once. ") +
-      "The token never waits for the deliveries: a running Worker delivers the signal to each wait afterwards.",
+      "The token never waits for the deliveries: a running Worker delivers the signal to each wait and start afterwards.",
     "The signal reaches the signal catch and boundary events in its scope that are waiting when it is thrown, including other waits of this instance. A wait that a parallel branch of the same step reaches later does not exist yet, so it is missed.",
+    "A throw to this workflow, another workflow family, or all workflows also starts one instance of each family in the scope whose published default has a signal start event on this name. A workflow cannot throw, to its own family, a signal it starts on.",
     "When a throw cannot be built or a limit refuses it, its step fails: a request returns an error and changes nothing, and a Worker job retries and then opens an incident.",
     "Put an automatic task with `asyncBefore` in front of this event to throw in a later Worker transaction: every wait of the earlier step then exists, and a refused throw never fails a user's action."
   ]);
@@ -5781,6 +5931,8 @@ function renderSignalThrowSection(node) {
     ];
     const waitProblem = signalThrowWaitProblem(model, label, signal);
     if (waitProblem) lines.push(waitProblem);
+    const selfStartProblem = signalThrowSelfStartProblem(model, label, signal);
+    if (selfStartProblem) lines.push(selfStartProblem);
     notes.replaceChildren(...lines.map(text => {
       const line = document.createElement("p");
       line.className = "expression-validation";
@@ -5846,8 +5998,9 @@ function renderSignalThrowScope(signal, notes, refreshStatus) {
     focusScope();
   };
   attachInspectorHelp(scopeSelect.parentNode, "signal-throw-scope", [
-    "Which waits the signal reaches. This instance: the other waits of this instance. This workflow: every instance of this workflow family, in every version. Another workflow family: every instance of the family with the workflow key below.",
+    "Which waits the signal reaches, and which workflows it starts. This instance: the other waits of this instance. This workflow: every instance of this workflow family, in every version. Another workflow family: every instance of the family with the workflow key below.",
     "A business key from a variable: that family's instance whose business key the variable holds. This instance's business key: that family's instance with this instance's own business key. All workflows: every wait with this name.",
+    "This workflow, another workflow family, and all workflows also start one instance of each family in the scope whose published default has a signal start event on this name. The two business-key kinds and this instance name existing instances and start nothing.",
     "A scope needs every setting its kind shows. A missing one is a problem, never another recipient."
   ]);
   if (!scopeIsObject) return;
@@ -8646,6 +8799,20 @@ function getAllAvailableVariables() {
           });
         }
       }
+      if (isSignalStartEventType(node.type) && node.signal && Array.isArray(node.signal.outputMappings)) {
+        node.signal.outputMappings.forEach(mapping => {
+          const name = String(mapping && mapping.variable || "").trim();
+          if (name && !varsMap.has(name)) {
+            varsMap.set(name, {
+              name,
+              dataType: mapping.dataType || "json",
+              isArray: !!mapping.isArray,
+              isProcessVar: false,
+              source: `Signal start: ${node.name || '#' + node.id}`
+            });
+          }
+        });
+      }
     });
   }
   
@@ -10062,10 +10229,14 @@ function renderBusinessKeySection(node) {
   title.style.marginTop = "16px";
   inspector.appendChild(title);
   attachInspectorHelp(title, "business-key",
-    "Prevents two instances in this workflow family from representing the same business object. Once enabled, every start and message-start event must configure a required scalar string variable with no default.");
+    "Prevents two instances in this workflow family from representing the same business object. Once enabled, every start, message-start, and signal-start event must configure a required scalar string variable with no default." +
+    (isSignalStartEventType(node.type)
+      ? " A signal start reads its key from a payload mapping; a broadcast whose key an instance already has starts nothing and is listed as skipped."
+      : ""));
 
-  inspector.appendChild(variableCheckbox("Enable business keys", node.businessKey != null, checked => {
-    const entries = model.flowNodes.filter(n => isStartEventType(n.type) || isMessageStartEventType(n.type));
+  const enable = variableCheckbox("Enable business keys", node.businessKey != null, checked => {
+    const entries = model.flowNodes.filter(n => isStartEventType(n.type) || isMessageStartEventType(n.type) ||
+      isSignalStartEventType(n.type));
     if (checked) {
       entries.forEach(entry => {
         entry.businessKey ??= { variable: "", uniqueness: "active" };
@@ -10074,15 +10245,24 @@ function renderBusinessKeySection(node) {
       entries.forEach(entry => { delete entry.businessKey; });
     }
     renderInspector();
-  }));
+    // The redraw replaced the checkbox; focus its successor, so keyboard work and the hosted
+    // editor's shortcuts continue from it.
+    inspector.querySelector("[data-business-key-toggle]")?.focus();
+  });
+  // variableCheckbox builds field > label > input.
+  enable.children[0].children[0].setAttribute("data-business-key-toggle", "true");
+  inspector.appendChild(enable);
 
   if (node.businessKey == null) return;
+  const typedStart = isMessageStartEventType(node.type) || isSignalStartEventType(node.type);
   const sourceVariables = isMessageStartEventType(node.type)
     ? ((node.message && node.message.outputMappings) || [])
-    : (node.variables || []);
+    : isSignalStartEventType(node.type)
+      ? (Array.isArray(node.signal && node.signal.outputMappings) ? node.signal.outputMappings : [])
+      : (node.variables || []);
   const eligible = sourceVariables
-    .filter(variable => variable.required && !variable.isArray && variable.dataType === "string" &&
-      variable.defaultValue == null && (!isMessageStartEventType(node.type) || String(variable.path || "").trim()))
+    .filter(variable => variable && variable.required && !variable.isArray && variable.dataType === "string" &&
+      variable.defaultValue == null && (!typedStart || String(variable.path || "").trim()))
     .map(variable => ({ value: variable.name || variable.variable, label: variable.name || variable.variable }));
   selectField("Business key variable", [{ value: "", label: "— select required string —" }].concat(eligible),
     node.businessKey.variable ?? "", value => { node.businessKey.variable = value; });
@@ -10749,8 +10929,7 @@ function scopedInterruptTargetProblem(source, target, prospective = false) {
   if (target.id === source.id) {
     return "A scoped interrupt event cannot continue to itself.";
   }
-  if (isStartEventType(target.type) || isMessageStartEventType(target.type) ||
-      isTimerStartEventType(target.type)) {
+  if (isEntryEventType(target.type)) {
     return "A scoped interrupt event cannot continue to an entry event.";
   }
   if (isBoundaryEventType(target.type)) {
@@ -10766,8 +10945,7 @@ function connectionTargetProblem(node) {
   if (!node) return "Drop the connection on a target node.";
   if (isBoundaryEventType(node.type)) return "A boundary event cannot have an incoming sequence flow.";
   if (isLinkCatchEventType(node.type)) return "A link catch event cannot have an incoming sequence flow.";
-  if (isStartEventType(node.type) || isMessageStartEventType(node.type) ||
-      isTimerStartEventType(node.type)) {
+  if (isEntryEventType(node.type)) {
     return "An entry event cannot have an incoming sequence flow.";
   }
   if (isGatewayType(node.type) &&
@@ -12443,6 +12621,7 @@ function validateModelForSave(candidate) {
   validateSaveGateways(ctx);
   validateSaveGraphScopes(ctx);
   validateSaveEntryIdentity(ctx);
+  validateSaveSignalStarts(ctx);
   validateSaveMultiInstance(ctx);
   return ctx.errors;
 }
@@ -14998,6 +15177,7 @@ function signalEventLabel(node) {
   return (type === "signalBoundaryEvent" ? "Signal boundary event #"
     : type === "intermediateSignalThrowEvent" ? "Signal throw event #"
     : type === "signalEndEvent" ? "Signal end event #"
+    : type === "signalStartEvent" ? "Signal start event #"
     : "Signal catch event #") + String(node && node.id);
 }
 // Mirrors SignalEventRules.BoundaryNameProblems, in its order: by boundary id, a later signal
@@ -15134,17 +15314,24 @@ function validateSaveSignalEvents(ctx) {
     }
     const entries = mappings.filter(mapping => mapping !== null);
     validateTypedOutputMappings(ctx, label, entries, "payload", true, true);
+    errors.push(...signalMappingSharedAccessProblems(ctx, label, entries));
+  }
+}
 
-    const shared = ctx.processVariables.filter(variable =>
-      saveIsSharedProcessVariable(variable) && hasText(variable.name));
-    if (shared.length === 0) continue;
+// Mirrors ValidateSignalMappingSharedAccess: a signal mapping writes no shared alias, and its
+// default templates and validations, and a targeted variable's validation, read none.
+function signalMappingSharedAccessProblems(ctx, label, entries) {
+  const problems = [];
+  const shared = ctx.processVariables.filter(variable =>
+    saveIsSharedProcessVariable(variable) && hasText(variable.name));
+  if (shared.length > 0) {
     for (const mapping of entries) {
       if (!mapping || typeof mapping !== "object" || !hasText(mapping.variable)) continue;
       const target = ctx.processByName.get(mapping.variable.trim().toLowerCase());
       // The server's normalization gives a mapping its target's spelling before it reports one.
       const shown = target ? target.name : mapping.variable;
       if (target && saveIsSharedProcessVariable(target)) {
-        errors.push(label + " output mapping '" + shown + "' cannot write shared variable alias '" +
+        problems.push(label + " output mapping '" + shown + "' cannot write shared variable alias '" +
           target.name + "'; signal mappings write instance variables only.");
         continue;
       }
@@ -15171,11 +15358,12 @@ function validateSaveSignalEvents(ctx) {
         if (read) break;
       }
       if (read) {
-        errors.push(label + " output mapping '" + shown + "' cannot read shared variable alias '" +
+        problems.push(label + " output mapping '" + shown + "' cannot read shared variable alias '" +
           read.name + "' in its default or validation.");
       }
     }
   }
+  return problems;
 }
 
 // Mirrors SignalEventRules: a payload member name has no dot, because a receiving mapping's
@@ -15209,7 +15397,8 @@ function isPlainSignalObject(value) {
 function signalThrowHasBusinessKeys(candidate) {
   const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
   return nodes.some(node => node &&
-    ["startEvent", "messageStartEvent", "timerStartEvent"].includes(node.type) && node.businessKey != null);
+    ["startEvent", "messageStartEvent", "timerStartEvent", "signalStartEvent"].includes(node.type) &&
+    node.businessKey != null);
 }
 function signalThrowOwnKeyProblem(label) {
   return label + " uses this instance's business key, but this workflow's entry events do not configure businessKey.";
@@ -15451,6 +15640,161 @@ function validateSaveSignalThrows(ctx) {
     errors.push(...signalThrowPayloadRuleProblems(ctx.candidate, label, signal.payload, declarations));
     const waitProblem = signalThrowWaitProblem(ctx.candidate, label, signal);
     if (waitProblem) errors.push(waitProblem);
+    const selfStartProblem = signalThrowSelfStartProblem(ctx.candidate, label, signal);
+    if (selfStartProblem) errors.push(selfStartProblem);
+  }
+}
+
+// Mirrors the last check of SignalEventRules.ThrowProblems: a throw whose scope includes its
+// own family must not throw a name that a signal start of the same workflow starts on, or
+// every instance would start another. The kinds that name existing instances start nothing.
+function signalThrowSelfStartProblem(candidate, label, signal) {
+  if (!isPlainSignalObject(signal) || !isPlainSignalObject(signal.scope)) return null;
+  const name = signal.name;
+  if (typeof name !== "string" || !SIGNAL_NAME_PATTERN.test(name)) return null;
+  const scope = signal.scope;
+  const ownFamily = scope.kind === "thisWorkflow" || scope.kind === "allWorkflows" ||
+    (scope.kind === "workflow" && typeof scope.workflowKey === "string" && scope.workflowKey !== "" &&
+      candidate && scope.workflowKey === candidate.id);
+  if (!ownFamily) return null;
+  const start = signalStartsOnName(candidate, name);
+  return start ? label + " throws '" + name + "' to a scope that includes this workflow, which starts on it at " +
+    "signal start event #" + String(start.id) + "; every instance would start another." : null;
+}
+
+// The workflow's signal start on a name, the first by id, or null.
+function signalStartsOnName(candidate, name) {
+  const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+  return nodes
+    .filter(node => node && node.type === "signalStartEvent" && isPlainSignalObject(node.signal) &&
+      node.signal.name === name)
+    .sort((left, right) => Number(left.id) - Number(right.id))[0] || null;
+}
+
+// Mirrors SignalEventRules.StartProblems, in its order: the name and the mapping count, a scope
+// or payload, then a name an earlier signal start already starts on.
+function signalStartProblems(candidate, node) {
+  const label = signalEventLabel(node);
+  const problems = [];
+  const signal = isPlainSignalObject(node.signal) ? node.signal : null;
+  const nameProblem = signalNameProblem(signal ? signal.name : undefined, label);
+  if (nameProblem) problems.push(nameProblem);
+  if (signal && Array.isArray(signal.outputMappings) && signal.outputMappings.length > SIGNAL_MAX_OUTPUT_MAPPINGS) {
+    problems.push(label + " defines more than " + String(SIGNAL_MAX_OUTPUT_MAPPINGS) + " output mappings.");
+  }
+  if (signal && ((signal.scope !== undefined && signal.scope !== null) ||
+      (signal.payload !== undefined && signal.payload !== null))) {
+    problems.push(label + " cannot define signal.scope or signal.payload; only signal throw and end events send a signal.");
+  }
+  const name = signal ? signal.name : undefined;
+  if (typeof name === "string" && SIGNAL_NAME_PATTERN.test(name)) {
+    // The first start in document order with a lower id, as the server finds it.
+    const nodes = Array.isArray(candidate && candidate.flowNodes) ? candidate.flowNodes : [];
+    const earlier = nodes.find(other => other && other.type === "signalStartEvent" &&
+      Number(other.id) < Number(node.id) && isPlainSignalObject(other.signal) && other.signal.name === name);
+    if (earlier) {
+      problems.push(label + " starts on '" + name + "', which signal start event #" + String(earlier.id) +
+        " already starts on; a workflow starts once per signal.");
+    }
+  }
+  return problems;
+}
+
+// Mirrors the mapping checks of ValidateSignalStart, in its order and wording: each mapping's
+// declared type, its path or default, and its default's type, in list order; then the rules
+// of ValidateVariables over the whole list, whose owner is the start's mappings. NCalc parsing
+// of a validation rule is the server's.
+function signalStartMappingProblems(label, node, mappings) {
+  const problems = [];
+  const shown = mapping => mapping.variable == null ? "" : String(mapping.variable);
+  for (const mapping of mappings) {
+    const name = shown(mapping);
+    if (mapping.dataType === undefined || mapping.dataType === null || typeof mapping.isArray !== "boolean") {
+      problems.push(label + " output mapping for '" + name + "' must declare dataType and isArray.");
+      continue;
+    }
+    const hasDefault = hasMappingDefault(mapping.defaultValue);
+    if (!hasText(mapping.path) && !hasDefault) {
+      problems.push(label + " output mapping for '" + name + "' must have a path unless defaultValue is configured.");
+    }
+    if (hasDefault && !validTypedValue(mapping.defaultValue, mapping)) {
+      problems.push(label + " output mapping default for '" + name + "' must be " +
+        String(mapping.dataType) + (mapping.isArray ? "[]" : "") + ".");
+    }
+  }
+
+  const owner = "signal start event #" + String(node.id) + " output mappings";
+  const named = mapping => typeof mapping.variable === "string" && hasText(mapping.variable);
+  const firstByKey = new Map();
+  let duplicate = null;
+  for (const mapping of mappings.filter(named)) {
+    const trimmed = trimAttributeKey(mapping.variable);
+    const key = ordinalIgnoreCaseAttributeKey(trimmed);
+    if (!firstByKey.has(key)) {
+      firstByKey.set(key, { name: trimmed, count: 1, order: firstByKey.size });
+    } else {
+      firstByKey.get(key).count += 1;
+    }
+  }
+  for (const entry of firstByKey.values()) {
+    if (entry.count > 1 && (duplicate === null || entry.order < duplicate.order)) duplicate = entry;
+  }
+  if (duplicate) {
+    problems.push("Variable name '" + duplicate.name + "' is duplicated on " + owner +
+      "; variable names are case-insensitive.");
+  }
+  for (const mapping of mappings) {
+    if (!named(mapping)) {
+      problems.push("Variable name is required on " + owner + ".");
+      continue;
+    }
+    const name = mapping.variable;
+    if (Array.from(name).length > 300) {
+      problems.push("Variable '" + name + "' on " + owner + " must contain at most 300 characters.");
+    } else if (/^(sys|config|setting|mi)\./i.test(name)) {
+      problems.push("Variable '" + name + "' on " + owner + " uses a reserved context prefix.");
+    } else if (!supportedVariableTypes.has(mapping.dataType)) {
+      problems.push("Variable '" + name + "' on " + owner + " has unsupported type '" +
+        String(mapping.dataType ?? "") + "'.");
+    }
+    if (mapping.validation != null && typeof mapping.validation !== "string") {
+      problems.push(label + " output mapping validation for '" + name + "' must be an NCalc string.");
+    }
+  }
+  return problems;
+}
+
+// Mirrors ValidateSignalStart, which runs after the shared entry rules: the problems of
+// signalStartProblems, then the start-variable mappings, which read no shared alias. It runs
+// after validateSaveEntries and validateSaveEntryIdentity, so a start's topology and business
+// key come before its own problems, as on the server.
+function validateSaveSignalStarts(ctx) {
+  const errors = ctx.errors;
+  const starts = ctx.nodes.filter(candidate => candidate && candidate.type === "signalStartEvent");
+  for (const node of starts) {
+    const label = signalEventLabel(node);
+    const configured = node.signal !== undefined && node.signal !== null;
+    if (configured && !isPlainSignalObject(node.signal)) {
+      errors.push(label + " signal must be an object with a name and output mappings.");
+      continue;
+    }
+    errors.push(...signalStartProblems(ctx.candidate, node));
+    if (!configured) continue;
+    const mappings = node.signal.outputMappings;
+    if (mappings !== undefined && mappings !== null && !Array.isArray(mappings)) {
+      errors.push(label + " signal.outputMappings must be a list.");
+      continue;
+    }
+    const list = Array.isArray(mappings) ? mappings : [];
+    if (list.some(mapping => mapping === null || mapping === undefined)) {
+      errors.push(label + " output mappings cannot contain null entries.");
+      continue;
+    }
+    errors.push(...signalStartMappingProblems(label, node, list));
+    // A mapping that names a process variable is validateSaveEntries' collision; the rest
+    // read no shared alias.
+    errors.push(...signalMappingSharedAccessProblems(ctx, label, list.filter(mapping =>
+      !(hasText(mapping.variable) && ctx.processByName.has(mapping.variable.trim().toLowerCase())))));
   }
 }
 
@@ -15489,6 +15833,14 @@ function validateSaveMessageStarts(ctx) {
   }
 }
 
+// The typed mappings that declare a message or signal start's variables; [] for others.
+function saveEntryStartMappings(entry) {
+  const container = entry && entry.type === "messageStartEvent" ? entry.message
+    : entry && entry.type === "signalStartEvent" ? entry.signal : null;
+  const mappings = container && typeof container === "object" ? container.outputMappings : null;
+  return Array.isArray(mappings) ? mappings.filter(mapping => mapping && typeof mapping === "object") : [];
+}
+
 function validateSaveEntries(ctx) {
   const errors = ctx.errors;
   const nodes = ctx.nodes;
@@ -15497,10 +15849,10 @@ function validateSaveEntries(ctx) {
   const processByName = ctx.processByName;
   const entries = nodes.filter(node => node &&
     (node.type === "startEvent" || node.type === "messageStartEvent" ||
-     node.type === "timerStartEvent"));
+     node.type === "timerStartEvent" || node.type === "signalStartEvent"));
   if (entries.length === 0) {
     errors.push("Workflow must have at least one entry event " +
-      "(startEvent, messageStartEvent, or timerStartEvent).");
+      "(startEvent, messageStartEvent, timerStartEvent, or signalStartEvent).");
   }
   if (candidate && candidate.initialEventId != null) {
     const initial = nodes.find(node => node && node.id === candidate.initialEventId);
@@ -15511,7 +15863,8 @@ function validateSaveEntries(ctx) {
   for (const entry of entries) {
     const label = (entry.type === "messageStartEvent"
       ? "Message start event #"
-      : entry.type === "timerStartEvent" ? "Timer start event #" : "Start event #") + entry.id;
+      : entry.type === "timerStartEvent" ? "Timer start event #"
+      : entry.type === "signalStartEvent" ? "Signal start event #" : "Start event #") + entry.id;
     const incoming = flows.filter(flow => flow && flow.targetRef === entry.id);
     const outgoing = flows.filter(flow => flow && flow.sourceRef === entry.id);
     if (incoming.length > 0) errors.push(label + " cannot have incoming sequence flows.");
@@ -15527,8 +15880,8 @@ function validateSaveEntries(ctx) {
 
     const entryTargets = entry.type === "timerStartEvent"
       ? []
-      : entry.type === "messageStartEvent"
-      ? ((entry.message && entry.message.outputMappings) || []).map(mapping => ({
+      : entry.type === "messageStartEvent" || entry.type === "signalStartEvent"
+      ? saveEntryStartMappings(entry).map(mapping => ({
           name: mapping && mapping.variable,
           dataType: mapping && mapping.dataType,
           isArray: !!(mapping && mapping.isArray)
@@ -15542,7 +15895,12 @@ function validateSaveEntries(ctx) {
       if (!hasText(target.name)) continue;
       const processVariable = processByName.get(target.name.trim().toLowerCase());
       if (!processVariable) continue;
-      if (!saveIsSharedProcessVariable(processVariable)) {
+      if (entry.type === "signalStartEvent") {
+        // A broadcast reaches one start per family; a shared alias would let it write one
+        // deployment-wide value from every family it starts.
+        errors.push("Entry event #" + entry.id + " variable '" + target.name.trim() +
+          "' collides with a process variable; a signal start's mappings declare instance start variables only.");
+      } else if (!saveIsSharedProcessVariable(processVariable)) {
         errors.push("Entry event #" + entry.id + " variable '" + target.name.trim() +
           "' collides with a process variable; only a compatible readWrite shared binding may be an entry output target.");
       } else if (!saveIsWritableProcessVariable(processVariable)) {
@@ -15648,7 +16006,7 @@ function validateSaveLinkEvents(ctx) {
 }
 
 const supportedNodeTypes = new Set([
-  "startEvent", "messageStartEvent", "timerStartEvent", "userTask", "task", "serviceTask",
+  "startEvent", "messageStartEvent", "timerStartEvent", "signalStartEvent", "userTask", "task", "serviceTask",
   "scriptTask", "callActivity", "exclusiveGateway", "parallelGateway", "inclusiveGateway",
   "complexGateway", "scopedInterruptEvent", "endEvent", "terminateEndEvent",
   "errorEndEvent", "signalEndEvent", "errorBoundaryEvent", "timerBoundaryEvent", "conditionalBoundaryEvent",
@@ -15682,7 +16040,7 @@ function validateSaveNodeTypes(ctx) {
         " can define conditional only when its type is a conditional catch or boundary event.");
     }
     if (!["intermediateSignalCatchEvent", "signalBoundaryEvent", "intermediateSignalThrowEvent",
-        "signalEndEvent"].includes(node.type) && node.signal != null) {
+        "signalEndEvent", "signalStartEvent"].includes(node.type) && node.signal != null) {
       errors.push("Flow node #" + String(node.id) + " defines signal but is not a signal event.");
     }
   }
@@ -15884,7 +16242,8 @@ function validateSaveGraphScopes(ctx) {
         errors.push(label + " continuation must reference an existing target node.");
       } else if (target.id === interrupt.id) {
         errors.push(label + " cannot continue to itself.");
-      } else if (target.type === "startEvent" || target.type === "messageStartEvent") {
+      } else if (target.type === "startEvent" || target.type === "messageStartEvent" ||
+          target.type === "timerStartEvent" || target.type === "signalStartEvent") {
         errors.push(label + " cannot continue directly to an entry event.");
       } else if (target.type === "errorBoundaryEvent") {
         errors.push(label + " cannot continue directly to an error boundary event.");
@@ -15925,8 +16284,12 @@ function validateSaveEntryIdentity(ctx) {
   const errors = ctx.errors;
   const entries = ctx.nodes.filter(node => node &&
     (node.type === "startEvent" || node.type === "messageStartEvent" ||
-     node.type === "timerStartEvent"));
-  for (const node of entries.filter(entry => entry.idempotency != null)) {
+     node.type === "timerStartEvent" || node.type === "signalStartEvent"));
+  for (const node of entries.filter(entry => entry.idempotency != null && entry.type === "signalStartEvent")) {
+    errors.push("Signal start event #" + String(node.id) +
+      " cannot define idempotency; a broadcast starts one instance per workflow, and businessKey rejects a repeated case.");
+  }
+  for (const node of entries.filter(entry => entry.idempotency != null && entry.type !== "signalStartEvent")) {
     const config = node.idempotency;
     const label = "Entry event #" + String(node.id);
     const headerName = typeof config.headerName === "string" ? config.headerName.trim() : "";
@@ -15962,8 +16325,11 @@ function validateSaveEntryIdentity(ctx) {
 
   const businessKeyEntries = entries.filter(node => node.type !== "timerStartEvent");
   const keyedEntries = businessKeyEntries.filter(node => node.businessKey != null);
-  if (keyedEntries.length > 0 && keyedEntries.length !== businessKeyEntries.length) {
-    errors.push("Every startEvent and messageStartEvent must configure businessKey once business keys are enabled.");
+  // Mirrors ValidateBusinessKeys: the first entry without a key, then each keyed entry.
+  const unkeyed = keyedEntries.length > 0 ? businessKeyEntries.find(node => node.businessKey == null) : null;
+  if (unkeyed) {
+    errors.push("Entry event #" + String(unkeyed.id) +
+      " must configure businessKey because business keys are enabled for this workflow.");
   }
   for (const node of keyedEntries) {
     const config = node.businessKey;
@@ -15975,14 +16341,16 @@ function validateSaveEntryIdentity(ctx) {
     if (!["active", "all"].includes(config.uniqueness)) {
       errors.push(label + " has unsupported businessKey.uniqueness '" + String(config.uniqueness) + "'.");
     }
-    if (node.type === "messageStartEvent") {
-      const mapping = (node.message && Array.isArray(node.message.outputMappings)
-        ? node.message.outputMappings : [])
+    if (node.type === "messageStartEvent" || node.type === "signalStartEvent") {
+      const mapping = saveEntryStartMappings(node)
         .find(candidate => candidate && candidate.variable === config.variable);
-      if (!mapping || !mapping.required || mapping.isArray || mapping.dataType !== "string" ||
+      if (!mapping) {
+        errors.push(label + " businessKey variable '" + config.variable + "' is not a typed output mapping on the " +
+          (node.type === "messageStartEvent" ? "message start event" : "signal start event") + ".");
+      } else if (!mapping.required || mapping.isArray !== false || mapping.dataType !== "string" ||
           mapping.defaultValue != null || !hasText(mapping.path)) {
         errors.push(label + " businessKey mapping '" + config.variable +
-          "' must be an exactly named required scalar string with an explicit path and no defaultValue.");
+          "' must be a required scalar string with an explicit path and no defaultValue.");
       }
       if (node.idempotency && hasText(node.idempotency.variable) &&
           node.idempotency.variable.toLowerCase() === config.variable.toLowerCase()) {
@@ -15991,9 +16359,11 @@ function validateSaveEntryIdentity(ctx) {
     } else {
       const variable = (Array.isArray(node.variables) ? node.variables : [])
         .find(candidate => candidate && candidate.name === config.variable);
-      if (!variable || !variable.required || variable.isArray || variable.dataType !== "string" || variable.defaultValue != null) {
+      if (!variable) {
+        errors.push(label + " businessKey variable '" + config.variable + "' is not a declared start variable on the node.");
+      } else if (!variable.required || variable.isArray || variable.dataType !== "string" || variable.defaultValue != null) {
         errors.push(label + " businessKey variable '" + config.variable +
-          "' must be an exactly named required scalar string with no defaultValue.");
+          "' must be a required scalar string with no defaultValue.");
       }
     }
   }
@@ -16428,7 +16798,7 @@ function prepareWorkflowExport(candidate = model) {
     if (isConditionalEventType(node.type) && node.conditional != null) {
       node.conditional = normalizeConditionalDefinition(node.conditional);
     }
-    if (isSignalWaitType(node.type) && node.signal != null) {
+    if (receivesSignalType(node.type) && node.signal != null) {
       node.signal = normalizeSignalDefinition(node.signal, exportModel.variables);
     } else if (throwsSignalType(node.type) && node.signal != null) {
       node.signal = normalizeSignalThrowDefinition(node.signal);
@@ -16483,7 +16853,8 @@ function prepareWorkflowExport(candidate = model) {
       normalizeVariableBinding(variable, false);
       canonicalizeVariablePresentation(variable);
     });
-    if (isMessageStartEventType(node.type) || isTimerStartEventType(node.type)) {
+    if (isMessageStartEventType(node.type) || isTimerStartEventType(node.type) ||
+        isSignalStartEventType(node.type)) {
       delete node.variables;
     }
     if (node.callOnly !== true) delete node.callOnly;
@@ -16795,7 +17166,9 @@ function normalizeLoadedModel(obj) {
         laneId: s.laneId ?? null,
         x: typeof s.x === "number" ? s.x : 100 + (i % 4) * 220,
         y: typeof s.y === "number" ? s.y : 80 + Math.floor(i / 4) * 160,
-        roles: normalizeRoles(s.roles),
+        // A signal start takes no roles or input variables; the server's migrator drops them
+        // too, so only a raw request reports them.
+        roles: isSignalStartEventType(s.type) ? [] : normalizeRoles(s.roles),
         rolesVariable: s.rolesVariable == null ? undefined :
           typeof s.rolesVariable === "string" ? s.rolesVariable.trim() : s.rolesVariable,
         requiresClaim: !!s.requiresClaim,
@@ -16805,7 +17178,7 @@ function normalizeLoadedModel(obj) {
         assignmentMode: ASSIGNMENT_MODE_OPTIONS.some(o => o.value === s.assignmentMode)
           ? s.assignmentMode : ASSIGNMENT_MODE.FRESH,
         inheritAssignmentFromNodeId: s.inheritAssignmentFromNodeId ?? null,
-        variables: (s.variables || []).map(normalizeVariable),
+        variables: isSignalStartEventType(s.type) ? [] : (s.variables || []).map(normalizeVariable),
         assignee: (typeof s.assignee === "string" && s.assignee.trim()) ? s.assignee : null,
         inboxVisibilityCondition: (s.type ?? "userTask") === "userTask"
           ? (s.inboxVisibilityCondition === undefined
@@ -16861,8 +17234,8 @@ function normalizeLoadedModel(obj) {
           ? normalizeMessage(s.message, isMessageStartEventType(s.type), loadedProcessVariables) : undefined,
         conditional: ["intermediateConditionalCatchEvent", "conditionalBoundaryEvent"].includes(s.type)
           ? normalizeConditionalDefinition(s.conditional) : undefined,
-        // A wait and a throw each normalize their own form; neither crosses into the other.
-        signal: isSignalWaitType(s.type)
+        // A wait or start and a throw each normalize their own form; neither crosses into the other.
+        signal: receivesSignalType(s.type)
           ? normalizeSignalDefinition(s.signal, loadedProcessVariables)
           : throwsSignalType(s.type)
             ? normalizeSignalThrowDefinition(s.signal == null ? s.signal : JSON.parse(JSON.stringify(s.signal)))
@@ -16873,7 +17246,8 @@ function normalizeLoadedModel(obj) {
           ? undefined
           : JSON.parse(JSON.stringify(s.callActivity)),
         callOnly: s.callOnly === false ? undefined : s.callOnly,
-        businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.businessKey !== undefined
+        businessKey: (isStartEventType(s.type) || isMessageStartEventType(s.type) || isSignalStartEventType(s.type)) &&
+          s.businessKey !== undefined
           ? normalizeBusinessKeyForLoad(s.businessKey) : undefined,
         idempotency: (isStartEventType(s.type) || isMessageStartEventType(s.type)) && s.idempotency !== undefined
           ? normalizeIdempotencyForLoad(s.idempotency) : undefined

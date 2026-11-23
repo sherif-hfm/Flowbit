@@ -51,7 +51,7 @@ public sealed class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
             await page.Locator("#signal-payload").PressAsync("Tab");
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
             await Assertions.Expect(page.Locator("section[aria-labelledby='signal-review-heading']"))
-                .ToContainTextAsync("Waiting now101 waits");
+                .ToContainTextAsync("Reaches now101 waits");
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
             await Assertions.Expect(page.Locator(".alert-success"))
                 .ToContainTextAsync(new Regex(@"Broadcast #\d+ froze 101 recipients; the Worker is delivering it\."));
@@ -223,7 +223,7 @@ public sealed class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
             var review = page.Locator("section[aria-labelledby='signal-review-heading']");
             await Assertions.Expect(review).ToContainTextAsync($"{workflow.WorkflowKey} · business key C-001");
-            await Assertions.Expect(review).ToContainTextAsync("Waiting now1 wait");
+            await Assertions.Expect(review).ToContainTextAsync("Reaches now1 wait");
             await CaptureAsync(scenario, "s6-business-key-review");
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
             await Assertions.Expect(page.Locator(".alert-success")).ToContainTextAsync("froze 1 recipient; the Worker is delivering it.");
@@ -497,6 +497,327 @@ public sealed class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
         });
     }
 
+    /// <summary>
+    /// S10 (EVENT-04C): Example 05 under its own family and signal name. The Signals page reviews one new
+    /// instance, a throw to the family starts it, and the delivery links the instance, whose history names
+    /// the broadcast. A throw to all workflows starts a second.
+    /// </summary>
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(390, 844)]
+    public async Task S10_ThrowToTheFamilyStartsAnInstanceAndAllWorkflowsStartsAnother(int width, int height)
+    {
+        await using var scenario = await Stack.CreateScenario(
+            $"signal-s10-{width}x{height}", width, height, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("signal start", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var (notices, signal) = await PublishRecallNoticeAsync("s10");
+            var page = scenario.Page;
+
+            await scenario.OpenUiAsync("signals");
+            await FillSignalUntilAsync(page, signal, "new instance in 1 family");
+            await Assertions.Expect(page.GetByText($"1 new instance in 1 family: {notices.WorkflowKey} (1 start)")).ToBeVisibleAsync();
+            await page.Locator("#signal-workflow-key").FillAsync(notices.WorkflowKey);
+            await page.Locator("#signal-workflow-key").PressAsync("Tab");
+            await page.Locator("#signal-payload").FillAsync("{ \"recallNumber\": \"R-1001\", \"product\": { \"name\": \"Kettle\" } }");
+            await page.Locator("#signal-payload").PressAsync("Tab");
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
+            await Assertions.Expect(page.Locator("section[aria-labelledby='signal-review-heading']"))
+                .ToContainTextAsync("Reaches now1 new instance");
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "s10-review");
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
+            await Assertions.Expect(page.Locator(".alert-success"))
+                .ToContainTextAsync(new Regex(@"Broadcast #\d+ froze 1 new instance; the Worker is delivering it\."));
+            var broadcastId = long.Parse(Regex.Match(await page.Locator(".alert-success").InnerTextAsync(), @"#(\d+)").Groups[1].Value);
+
+            // The page follows the broadcast until the Worker has started the instance.
+            var current = page.Locator("section[aria-labelledby='signal-current-heading']");
+            await Assertions.Expect(current.Locator(".status-badge, .badge").First)
+                .ToHaveTextAsync("Completed", new LocatorAssertionsToHaveTextOptions { Timeout = 90_000f });
+            var row = current.Locator("tbody tr").First;
+            await Assertions.Expect(row).ToContainTextAsync("Started an instance");
+            await Assertions.Expect(row).ToContainTextAsync("Start");
+            await Assertions.Expect(current).ToContainTextAsync("1 start");
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "s10-delivered");
+
+            // The kind filter keeps the start under Starts and hides it under Waits.
+            await page.Locator(".signal-kind-filter").SelectOptionAsync(SignalDeliveryKinds.Wait);
+            await Assertions.Expect(current).ToContainTextAsync("0 matching deliveries");
+            await page.Locator(".signal-kind-filter").SelectOptionAsync(SignalDeliveryKinds.Start);
+            await Assertions.Expect(current).ToContainTextAsync("1 matching deliveries");
+
+            // The started instance runs the notice task, and its history starts with the signal.
+            var link = current.Locator("tbody tr a").First;
+            var instanceId = long.Parse(Regex.Match(await link.InnerTextAsync(), @"#(\d+)").Groups[1].Value);
+            var started = await actor.Runtime.GetInstanceAsync(instanceId);
+            Assert.Equal(notices.Id, started.Workflow.Id);
+            Assert.Equal("R-1001", LatestText(started, "recallNumber"));
+            Assert.Equal("Kettle", LatestText(started, "product"));
+            Assert.Equal("Not stated", LatestText(started, "reason"));
+            Assert.Contains(await actor.Runtime.GetInboxAsync(instanceId), item => item.CurrentNodeId == 2);
+            await link.ClickAsync();
+            await Assertions.Expect(page.Locator("#history"))
+                .ToContainTextAsync($"Started by signal '{signal}' from signal-operator (broadcast #{broadcastId})");
+            await Assertions.Expect(page.Locator("section[aria-labelledby='instance-summary-heading']"))
+                .ToContainTextAsync("Write the customer notice");
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "s10-instance");
+            await page.Locator("#history").GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { Name = $"Broadcast #{broadcastId}" }).ClickAsync();
+            await Assertions.Expect(page.Locator("section[aria-labelledby='signal-current-heading']"))
+                .ToContainTextAsync($"Broadcast #{broadcastId}");
+
+            // A throw to all workflows starts a second notice.
+            var all = await ThrowAsync(actor.Http, new ThrowSignalRequest(signal, AllWorkflows: true,
+                Payload: JsonSerializer.SerializeToElement(new { recallNumber = "R-1002", product = new { name = "Toaster" }, reason = "Overheating" })));
+            Assert.Equal((1, 1), (all.TotalDeliveryCount, all.StartCount));
+            var second = await StartedInstanceAsync(actor.Http, all.Id);
+            Assert.NotEqual(instanceId, second);
+            Assert.Equal("Overheating", LatestText(await actor.Runtime.GetInstanceAsync(second), "reason"));
+        });
+    }
+
+    /// <summary>
+    /// S11 (EVENT-04C): the first recall number again is skipped because an instance has the business key,
+    /// and a payload without the product fails its mapping. Neither starts an instance.
+    /// </summary>
+    [Fact]
+    public async Task S11_DuplicateBusinessKeyIsSkippedAndAMissingProductFails()
+    {
+        await using var scenario = await Stack.CreateScenario("signal-s11", 1440, 900, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("signal start outcomes", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var (notices, signal) = await PublishRecallNoticeAsync("s11");
+            var recall = JsonSerializer.SerializeToElement(new { recallNumber = "R-1001", product = new { name = "Kettle" } });
+            var first = await ThrowAsync(actor.Http, new ThrowSignalRequest(signal, notices.WorkflowKey, Payload: recall));
+            var owner = await StartedInstanceAsync(actor.Http, first.Id);
+
+            // The same recall number again: skipped, naming the instance that has the key.
+            var again = await ThrowAsync(actor.Http, new ThrowSignalRequest(signal, notices.WorkflowKey, Payload: recall));
+            var skipped = await UntilAsync(() => GetAsync<SignalBroadcastDetailDto>(actor.Http, $"/api/signal-broadcasts/{again.Id}"),
+                item => item.Status != SignalBroadcastStatuses.Delivering, "the duplicate start to finish");
+            Assert.Equal((1, 0), (skipped.SkippedCount, skipped.DeliveredCount));
+            var page = scenario.Page;
+            await scenario.OpenUiAsync($"signals?broadcastId={again.Id}");
+            var current = page.Locator("section[aria-labelledby='signal-current-heading']");
+            var row = current.Locator("tbody tr").First;
+            await Assertions.Expect(row).ToContainTextAsync("An instance already has this business key");
+            await Assertions.Expect(row).ToContainTextAsync("No instance");
+            await Assertions.Expect(row.Locator(".signal-result-description")).ToContainTextAsync($"Instance #{owner} already has this start's business key.");
+            await CaptureAsync(scenario, "s11-skipped");
+
+            // A payload without the product fails its mapping; the broadcast completes with issues.
+            var missing = await ThrowAsync(actor.Http, new ThrowSignalRequest(signal, notices.WorkflowKey,
+                Payload: JsonSerializer.SerializeToElement(new { recallNumber = "R-1003" })));
+            var failed = await UntilAsync(() => GetAsync<SignalBroadcastDetailDto>(actor.Http, $"/api/signal-broadcasts/{missing.Id}"),
+                item => item.Status != SignalBroadcastStatuses.Delivering, "the failing start to finish");
+            Assert.Equal((SignalBroadcastStatuses.CompletedWithIssues, 1), (failed.Status, failed.FailedCount));
+            await scenario.OpenUiAsync($"signals?broadcastId={missing.Id}");
+            await Assertions.Expect(current.Locator(".status-badge, .badge").First).ToHaveTextAsync("Completed with issues");
+            await Assertions.Expect(current.Locator("tbody tr").First).ToContainTextAsync("The payload failed a mapping");
+            await AssertNoHorizontalOverflowAsync(page);
+            await CaptureAsync(scenario, "s11-failed");
+
+            var family = await actor.Runtime.ListInstancesAsync(workflowId: notices.Id);
+            Assert.Equal(1, family.TotalCount);
+        });
+    }
+
+    /// <summary>
+    /// S12 (EVENT-04C): with the Worker stopped, a throw freezes a start of the family; a new default whose task
+    /// has another name is set before the Worker starts, and the start runs it. A default without the signal
+    /// start set the same way leaves the next frozen start skipped.
+    /// </summary>
+    [Fact]
+    public async Task S12_AStartRunsTheDefaultOfItsDeliveryOrIsSkippedWhenTheFamilyStoppedListening()
+    {
+        await using var scenario = await Stack.CreateScenario("signal-s12", 1440, 900, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("signal start default change", async () =>
+        {
+            await Stack.StopWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var (v1, signal) = await PublishRecallNoticeAsync("s12");
+            var first = await ThrowAsync(actor.Http, new ThrowSignalRequest(signal, v1.WorkflowKey,
+                Payload: JsonSerializer.SerializeToElement(new { recallNumber = "R-1201", product = new { name = "Kettle" } })));
+            Assert.Equal(1, first.StartCount);
+
+            // Version 2 renames the task and becomes the default before any delivery.
+            var renamed = await LoadRecallNoticeAsync(v1.WorkflowKey, signal);
+            renamed.FlowNodes.Single(node => node.Id == 2).Name = "Write the updated notice";
+            var v2 = await actor.Runtime.CreateAndPublishAsync(renamed);
+            await SetDefaultAsync(actor.Http, v2.Id);
+            await Stack.StartWorkerAsync();
+            var started = await actor.Runtime.GetInstanceAsync(await StartedInstanceAsync(actor.Http, first.Id));
+            Assert.Equal(v2.Id, started.Workflow.Id);
+            Assert.Contains(started.ExecutionPositions, position => position.NodeId == 2 && position.TokenStatus == "active");
+            var delivery = Assert.Single((await GetAsync<PagedResult<SignalDeliveryDto>>(actor.Http,
+                $"/api/signal-broadcasts/{first.Id}/deliveries?kind=start")).Items);
+            Assert.Equal(v2.Id, delivery.WorkflowDefinitionId);
+            await scenario.OpenUiAsync($"instances/{started.Id}");
+            await Assertions.Expect(scenario.Page.Locator("section[aria-labelledby='instance-summary-heading']"))
+                .ToContainTextAsync("Write the updated notice");
+            await CaptureAsync(scenario, "s12-new-default");
+
+            // Version 3 starts by hand; the family stops listening when it becomes the default.
+            await Stack.StopWorkerAsync();
+            var second = await ThrowAsync(actor.Http, new ThrowSignalRequest(signal, v1.WorkflowKey,
+                Payload: JsonSerializer.SerializeToElement(new { recallNumber = "R-1202", product = new { name = "Toaster" } })));
+            Assert.Equal(1, second.StartCount);
+            var manual = await LoadRecallNoticeAsync(v1.WorkflowKey, signal);
+            var entry = manual.FlowNodes.Single(node => node.Id == 1);
+            entry.Type = BpmnFlowNodeTypes.StartEvent;
+            entry.Signal = null;
+            entry.Variables =
+            [
+                new VariableModel
+                {
+                    Id = 1, Name = "recallNumber", DataType = WorkflowVariableTypes.String, IsArray = false, Required = true,
+                },
+            ];
+            manual.InitialEventId = 1;
+            var v3 = await actor.Runtime.CreateAndPublishAsync(manual);
+            await SetDefaultAsync(actor.Http, v3.Id);
+            await Stack.StartWorkerAsync();
+            var ended = await UntilAsync(() => GetAsync<SignalBroadcastDetailDto>(actor.Http, $"/api/signal-broadcasts/{second.Id}"),
+                item => item.Status != SignalBroadcastStatuses.Delivering, "the frozen start to be skipped");
+            Assert.Equal((1, 0), (ended.SkippedCount, ended.DeliveredCount));
+            await scenario.OpenUiAsync($"signals?broadcastId={second.Id}");
+            var row = scenario.Page.Locator("section[aria-labelledby='signal-current-heading'] tbody tr").First;
+            await Assertions.Expect(row).ToContainTextAsync("The workflow no longer starts on this signal");
+            await CaptureAsync(scenario, "s12-stopped-listening");
+            var summary = await GetAsync<SignalSubscriptionSummaryDto>(actor.Http,
+                $"/api/signal-subscriptions/summary?name={Uri.EscapeDataString(signal)}");
+            Assert.Empty(summary.Items);
+        });
+    }
+
+    /// <summary>
+    /// S13 (EVENT-04C): a recall decision of Example 04 ends in a signal end event that throws to this run's
+    /// copy of Example 05. Completing the decision starts a notice; the broadcast and the notice's history name
+    /// the deciding instance. The run's copy of Example 05 reads the product from a plain payload member,
+    /// because a workflow's payload copies whole variables.
+    /// </summary>
+    [Fact]
+    public async Task S13_SignalEndEventOfAnotherWorkflowStartsANotice()
+    {
+        await using var scenario = await Stack.CreateScenario("signal-s13", 1440, 900, scenarioTimeout: ScenarioBudget);
+        await scenario.RunAsync("workflow signal start", async () =>
+        {
+            await Stack.StartWorkerAsync();
+            await using var actor = await ApplyActorAsync(scenario, "signal-operator", OperatorRoles);
+            var suffix = Guid.NewGuid().ToString("N")[..8];
+            var signal = $"accept.s13-recall-{suffix}";
+            var noticeModel = await LoadRecallNoticeAsync($"signal-s13-notices-{suffix}", signal);
+            noticeModel.FlowNodes.Single(node => node.Id == 1).Signal!.OutputMappings
+                .Single(mapping => mapping.Variable == "product").Path = "product";
+            var notices = await Stack.SetupClient.CreateAndPublishAsync(noticeModel);
+            var decisionModel = JsonSerializer.Deserialize<WorkflowModel>(await File.ReadAllTextAsync(
+                Path.Combine(Stack.RepositoryRoot, "examples", "signals", "04-signal-end-recall-decision.json"),
+                ScenarioCancellation.Token), JsonOptions)!;
+            decisionModel.Id = $"signal-s13-decision-{suffix}";
+            var end = decisionModel.FlowNodes.Single(node => node.Id == 3).Signal!;
+            end.Name = signal;
+            end.Scope = new SignalThrowScopeModel { Kind = SignalThrowScopeKinds.Workflow, WorkflowKey = notices.WorkflowKey };
+            end.Payload =
+            [
+                new SignalPayloadEntryModel { Name = "recallNumber", Variable = "orderNumber" },
+                new SignalPayloadEntryModel { Name = "product", Variable = "recallReason" },
+                new SignalPayloadEntryModel { Name = "reason", Variable = "recallReason" },
+            ];
+            var decisions = await Stack.SetupClient.CreateAndPublishAsync(decisionModel);
+
+            var decision = (await StartManyAsync(actor, decisions.Id, 1, "orderNumber"))[0];
+            var task = (await actor.Runtime.GetInboxAsync(decision)).Single(item => item.CurrentNodeId == 2);
+            await actor.Runtime.TakeUserTaskFlowAsync(task.UserTaskId, 201, new Dictionary<string, JsonElement>
+            {
+                ["recallReason"] = JsonSerializer.SerializeToElement("Faulty thermostat"),
+            });
+            var finished = await actor.Runtime.GetInstanceAsync(decision);
+            Assert.Equal("completed", finished.Status);
+            var thrown = Assert.Single(finished.History, item => item.Note == "signalThrown");
+            var broadcastId = thrown.Payload!["broadcastId"].GetInt64();
+            Assert.Equal(1, thrown.Payload["startCount"].GetInt32());
+
+            var noticeId = await StartedInstanceAsync(actor.Http, broadcastId);
+            var broadcast = await GetAsync<SignalBroadcastDetailDto>(actor.Http, $"/api/signal-broadcasts/{broadcastId}");
+            Assert.Equal((SignalThrowerKinds.Instance, decision), (broadcast.ThrownByKind, broadcast.ThrownByInstanceId));
+            var notice = await actor.Runtime.GetInstanceAsync(noticeId);
+            Assert.Equal(("C-001", "Faulty thermostat"), (LatestText(notice, "recallNumber"), LatestText(notice, "product")));
+            var received = Assert.Single(notice.History, item => item.Note == "signalReceived");
+            Assert.Equal(decision, received.Payload!["thrownByInstanceId"].GetInt64());
+
+            await scenario.OpenUiAsync($"instances/{noticeId}");
+            await Assertions.Expect(scenario.Page.Locator("#history"))
+                .ToContainTextAsync($"Started by signal '{signal}' from instance #{decision} (broadcast #{broadcastId})");
+            await CaptureAsync(scenario, "s13-notice");
+            await scenario.OpenUiAsync($"instances/{decision}");
+            await Assertions.Expect(scenario.Page.Locator("#history"))
+                .ToContainTextAsync($"Ended and threw signal '{signal}' to workflow {notices.WorkflowKey}");
+            await CaptureAsync(scenario, "s13-decision");
+        });
+    }
+
+    private async Task<(WorkflowSummaryDto Workflow, string Signal)> PublishRecallNoticeAsync(string scenarioName)
+    {
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var signal = $"accept.{scenarioName}-recall-{suffix}";
+        var model = await LoadRecallNoticeAsync($"signal-{scenarioName}-notices-{suffix}", signal);
+        return (await Stack.SetupClient.CreateAndPublishAsync(model), signal);
+    }
+
+    private async Task<WorkflowModel> LoadRecallNoticeAsync(string workflowKey, string signal)
+    {
+        var path = Path.Combine(Stack.RepositoryRoot, "examples", "signals", "05-signal-start-recall-notice.json");
+        var model = JsonSerializer.Deserialize<WorkflowModel>(
+            await File.ReadAllTextAsync(path, ScenarioCancellation.Token), JsonOptions)!;
+        model.Id = workflowKey;
+        model.FlowNodes.Single(node => node.Id == 1).Signal!.Name = signal;
+        return model;
+    }
+
+    // Waits for the broadcast's start delivery and returns the instance it created.
+    private static async Task<long> StartedInstanceAsync(HttpClient http, long broadcastId)
+    {
+        var delivery = await UntilAsync(async () => (await GetAsync<PagedResult<SignalDeliveryDto>>(http,
+                $"/api/signal-broadcasts/{broadcastId}/deliveries?kind=start")).Items.SingleOrDefault(),
+            item => item is not null && item.Status != SignalDeliveryStatuses.Pending,
+            $"the start of broadcast #{broadcastId} to be delivered", TimeSpan.FromSeconds(60));
+        Assert.True(delivery!.Status == SignalDeliveryStatuses.Delivered,
+            $"The start ended {delivery.Status} with {delivery.ResultCode}: {delivery.ResultDescription}");
+        Assert.Equal(SignalDeliveryResultCodes.Started, delivery.ResultCode);
+        return delivery.InstanceId!.Value;
+    }
+
+    private static async Task SetDefaultAsync(HttpClient http, long workflowId)
+    {
+        using var response = await http.PostAsync($"/api/workflows/{workflowId}/set-default", null, ScenarioCancellation.Token);
+        Assert.True(response.StatusCode == HttpStatusCode.NoContent,
+            $"POST set-default: {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+    }
+
+    private static string? LatestText(InstanceDetailDto detail, string name) => detail.Variables
+        .Where(variable => variable.VariableName == name)
+        .MaxBy(variable => variable.Id)?.Value.GetString();
+
+    private static async Task FillSignalUntilAsync(IPage page, string signal, string expected)
+    {
+        // The circuit may not handle the first change yet; type again until the count appears.
+        var name = page.Locator("#signal-name");
+        var matched = page.GetByText(expected);
+        for (var attempt = 0; attempt < 20 && await matched.CountAsync() == 0; attempt++)
+        {
+            await name.FillAsync(signal);
+            await name.PressAsync("Tab");
+            await Task.Delay(1_000, ScenarioCancellation.Token);
+        }
+        await Assertions.Expect(matched).ToHaveCountAsync(1);
+    }
+
     private static async Task<long> OpenWorkflowBroadcastsAsync(HttpClient http) =>
         (await GetAsync<PagedResult<SignalBroadcastSummaryDto>>(http,
             $"/api/signal-broadcasts?status={SignalBroadcastStatuses.Delivering}&thrownByKind={SignalThrowerKinds.Instance}&page=1&pageSize=1")).TotalCount;
@@ -510,7 +831,7 @@ public sealed class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
         await page.Locator("#signal-payload").FillAsync(payload);
         await page.Locator("#signal-payload").PressAsync("Tab");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
-        await Assertions.Expect(page.Locator("section[aria-labelledby='signal-review-heading']")).ToContainTextAsync("Waiting now1 wait");
+        await Assertions.Expect(page.Locator("section[aria-labelledby='signal-review-heading']")).ToContainTextAsync("Reaches now1 wait");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
         await Assertions.Expect(page.Locator(".alert-success")).ToContainTextAsync("froze 1 recipient; the Worker is delivering it.");
     }

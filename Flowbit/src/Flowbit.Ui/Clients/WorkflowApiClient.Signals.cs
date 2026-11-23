@@ -63,7 +63,8 @@ public sealed partial class WorkflowApiClient
         string? status = null,
         int page = 1,
         int pageSize = 50,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? kind = null)
     {
         var parameters = new List<string>
         {
@@ -71,6 +72,7 @@ public sealed partial class WorkflowApiClient
             $"pageSize={Math.Clamp(pageSize, 1, 200)}"
         };
         AddQueryValue(parameters, "status", status);
+        AddQueryValue(parameters, "kind", kind);
         using var response = await httpClient.GetAsync(
             $"/api/signal-broadcasts/{broadcastId}/deliveries?{string.Join("&", parameters)}",
             cancellationToken);

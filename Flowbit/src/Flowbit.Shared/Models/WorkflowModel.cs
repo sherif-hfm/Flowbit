@@ -344,7 +344,9 @@ public sealed class FlowNodeModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<VariableModel>? SerializedVariables
     {
-        get => BpmnFlowNodeTypes.IsMessageStart(Type) || BpmnFlowNodeTypes.IsTimerStart(Type)
+        get => BpmnFlowNodeTypes.IsMessageStart(Type)
+               || BpmnFlowNodeTypes.IsTimerStart(Type)
+               || BpmnFlowNodeTypes.IsSignalStart(Type)
             ? null
             : Variables;
         set => Variables = value ?? [];
@@ -379,7 +381,8 @@ public sealed class FlowNodeModel
     public SignalEventModel? Signal { get; set; }
 
     /// <summary>
-    /// Optional domain business-key configuration for a start or message-start event.
+    /// Optional domain business-key configuration for a start, message-start, or
+    /// signal-start event.
     /// </summary>
     [JsonPropertyName("businessKey")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -2093,7 +2096,8 @@ public sealed class MessageCatchModel
 /// for and maps a broadcast's payload into instance variables; its mappings have the
 /// shape of message catch mappings, and their paths read the payload. A throw or end
 /// event names the signal it throws, the scope it reaches, and the payload it sends,
-/// and has no mappings.
+/// and has no mappings. A start names the signal that starts its workflow, and its
+/// mappings declare the start variables, as a message start's mappings do.
 /// </summary>
 public sealed class SignalEventModel
 {
@@ -2871,6 +2875,11 @@ public static class BpmnFlowNodeTypes
     // End event that broadcasts a signal when a token enters it, then ends the token
     // as a plain endEvent does.
     public const string SignalEndEvent = "signalEndEvent";
+    // Entry event that a broadcast signal with its name starts, when its family's
+    // published default contains it and the throw's scope includes the family. Its
+    // typed signal.outputMappings are the start-variable declarations. System-only:
+    // IsStart is false, so no request starts it. Pass-through like a message start.
+    public const string SignalStartEvent = "signalStartEvent";
 
     public static bool IsStart(string type) =>
         string.Equals(type, StartEvent, StringComparison.Ordinal);
@@ -2994,14 +3003,20 @@ public static class BpmnFlowNodeTypes
     public static bool ThrowsSignal(string type) =>
         IsSignalThrow(type) || IsSignalEnd(type);
 
+    // The entry event that a broadcast signal starts. It owns no instance subscription:
+    // its family listens through signal_start_subscriptions while its version is the
+    // published default.
+    public static bool IsSignalStart(string type) =>
+        string.Equals(type, SignalStartEvent, StringComparison.Ordinal);
+
     // Every node type that carries a signal configuration.
     public static bool IsSignalEvent(string type) =>
-        IsSignalWait(type) || ThrowsSignal(type);
+        IsSignalWait(type) || ThrowsSignal(type) || IsSignalStart(type);
 
-    // Either kind of entry event: a user-facing startEvent or a system-only
-    // messageStartEvent. A workflow must have at least one entry event.
+    // Every kind of entry event: a user-facing startEvent, or a system-only message,
+    // timer, or signal start. A workflow must have at least one entry event.
     public static bool IsEntry(string type) =>
-        IsStart(type) || IsMessageStart(type) || IsTimerStart(type);
+        IsStart(type) || IsMessageStart(type) || IsTimerStart(type) || IsSignalStart(type);
 
     public static bool IsAsyncCapableTask(string type) =>
         IsUserTask(type) || IsAutomatic(type) || IsServiceTask(type) || IsScriptTask(type);
@@ -3019,7 +3034,7 @@ public static class BpmnFlowNodeTypes
     // follows its one outgoing flow. A signal throw event throws, then follows
     // its one outgoing flow.
     public static bool IsPassThrough(string type) =>
-        IsStart(type) || IsMessageStart(type) || IsTimerStart(type)
+        IsStart(type) || IsMessageStart(type) || IsTimerStart(type) || IsSignalStart(type)
         || IsAutomatic(type) || IsServiceTask(type)
         || IsScriptTask(type) || IsGateway(type) || IsErrorBoundary(type)
         || IsTimerBoundary(type) || IsConditionalBoundary(type) || IsSignalBoundary(type)
@@ -3036,7 +3051,7 @@ public static class BpmnFlowNodeTypes
             or IntermediateConditionalCatchEvent or MessageStartEvent
             or IntermediateLinkThrowEvent or IntermediateLinkCatchEvent
             or IntermediateSignalCatchEvent or SignalBoundaryEvent
-            or IntermediateSignalThrowEvent or SignalEndEvent;
+            or IntermediateSignalThrowEvent or SignalEndEvent or SignalStartEvent;
 }
 
 public static class WorkflowVariableTypes

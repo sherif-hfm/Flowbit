@@ -1,0 +1,33 @@
+{
+  "id": "browser-signal-start",
+  "name": "Browser signal start",
+  "initialEventId": 1,
+  "variables": [],
+  "lanes": [
+    { "id": 1, "name": "Recalls", "x": 30, "y": 40, "w": 1000, "h": 380 }
+  ],
+  "flowNodes": [
+    {
+      "id": 1, "name": "Manual notice", "type": "startEvent", "laneId": 1, "x": 80, "y": 80, "roles": [],
+      "variables": [
+        { "id": 1, "name": "recallNumber", "dataType": "string", "isArray": false, "required": true, "defaultValue": null, "validation": null }
+      ]
+    },
+    {
+      "id": 2, "name": "Recall announced", "type": "startEvent", "laneId": 1, "x": 80, "y": 200, "roles": [],
+      "variables": [
+        { "id": 2, "name": "recallNumber", "dataType": "string", "isArray": false, "required": true, "defaultValue": null, "validation": null },
+        { "id": 3, "name": "product", "dataType": "string", "isArray": false, "required": false, "defaultValue": null, "validation": null }
+      ]
+    },
+    { "id": 5, "name": "Recall updated", "type": "startEvent", "laneId": 1, "x": 80, "y": 320, "roles": [], "variables": [] },
+    { "id": 3, "name": "Notify customers", "type": "userTask", "laneId": 1, "x": 360, "y": 188, "roles": [], "variables": [] },
+    { "id": 4, "name": "Done", "type": "endEvent", "laneId": 1, "x": 760, "y": 200 }
+  ],
+  "sequenceFlows": [
+    { "id": 101, "name": "", "sourceRef": 1, "targetRef": 3 },
+    { "id": 201, "name": "", "sourceRef": 2, "targetRef": 3 },
+    { "id": 501, "name": "", "sourceRef": 5, "targetRef": 3 },
+    { "id": 301, "name": "Notified", "sourceRef": 3, "targetRef": 4 }
+  ]
+}

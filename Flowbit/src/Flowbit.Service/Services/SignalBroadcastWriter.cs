@@ -15,14 +15,17 @@ public sealed record SignalBroadcastWrite(
     string RequestedBy);
 
 /// <summary>
-/// The outcome of a write. When <see cref="RecipientLimitExceeded"/> is true nothing was
-/// kept: the broadcast and its frozen deliveries were deleted in the same transaction.
+/// The outcome of a write. <see cref="RecipientCount"/> counts waits and family starts, of
+/// which <see cref="StartCount"/> are starts. When <see cref="RecipientLimitExceeded"/> is
+/// true nothing was kept: the broadcast and its frozen deliveries were deleted in the same
+/// transaction.
 /// </summary>
 public sealed record SignalBroadcastWriteResult(
     long BroadcastId,
     int RecipientCount,
     int FamilyCount,
-    bool RecipientLimitExceeded);
+    bool RecipientLimitExceeded,
+    int StartCount = 0);
 
 /// <summary>
 /// Writes one broadcast inside the caller's transaction: it inserts the broadcast, freezes
@@ -60,27 +63,32 @@ public sealed class SignalBroadcastWriter(
             write.Broadcast.Scope,
             write.MaxRecipients,
             cancellationToken);
-        if (frozen > write.MaxRecipients)
+        var total = frozen.Total;
+        if (total > write.MaxRecipients)
         {
             // The limit is known only after the freeze. Deleting here means a caller that
             // catches the refusal and commits keeps no part of the broadcast.
             await broadcasts.DeleteAsync(broadcast.Id, cancellationToken);
-            return new SignalBroadcastWriteResult(broadcast.Id, frozen, 0, RecipientLimitExceeded: true);
+            return new SignalBroadcastWriteResult(broadcast.Id, total, 0, RecipientLimitExceeded: true);
         }
 
         var recipients = await broadcasts.ListRecipientDefinitionsAsync(broadcast.Id, cancellationToken);
         var families = recipients
             .GroupBy(recipient => recipient.WorkflowKey, StringComparer.Ordinal)
-            .Select(group => new SignalRecipientCountDto(group.Key, group.Sum(recipient => recipient.Count)))
+            .Select(group => new SignalRecipientCountDto(
+                group.Key,
+                group.Sum(recipient => recipient.Count),
+                group.Sum(recipient => recipient.StartCount)))
             .OrderByDescending(family => family.Count)
             .ThenBy(family => family.WorkflowKey, StringComparer.Ordinal)
             .ToList();
         await broadcasts.SetRecipientsAsync(
             broadcast.Id,
-            frozen,
+            total,
+            frozen.Starts,
             JsonSerializer.Serialize(families.Take(SignalConstraints.MaxRecipientFamilies), JsonOptions),
             families.Count > SignalConstraints.MaxRecipientFamilies,
-            frozen == 0 ? SignalBroadcastStatuses.Completed : SignalBroadcastStatuses.Delivering,
+            total == 0 ? SignalBroadcastStatuses.Completed : SignalBroadcastStatuses.Delivering,
             write.Broadcast.CreatedAt,
             cancellationToken);
         await EnqueueDeliveryJobsAsync(
@@ -90,7 +98,12 @@ public sealed class SignalBroadcastWriter(
             write.RequestedBy,
             write.Broadcast.CreatedAt,
             cancellationToken);
-        return new SignalBroadcastWriteResult(broadcast.Id, frozen, families.Count, RecipientLimitExceeded: false);
+        return new SignalBroadcastWriteResult(
+            broadcast.Id,
+            total,
+            families.Count,
+            RecipientLimitExceeded: false,
+            StartCount: frozen.Starts);
     }
 
     /// <summary>Enqueues one delivery job per workflow definition, for a throw or a retry.</summary>
@@ -108,7 +121,10 @@ public sealed class SignalBroadcastWriter(
         }
 
         var records = await definitions.GetManyAsync(definitionIds, cancellationToken);
-        foreach (var definitionId in definitionIds.Order())
+        // One insert of all jobs and one of their links: a throw to every workflow can reach
+        // a definition per listening family, and a save per job made it grow with their square.
+        var ordered = definitionIds.Order().ToArray();
+        var creates = ordered.Select(definitionId =>
         {
             var definition = records.GetValueOrDefault(definitionId)
                 ?? throw new InvalidOperationException($"Workflow definition #{definitionId} does not exist.");
@@ -117,34 +133,32 @@ public sealed class SignalBroadcastWriter(
             var anchor = definition.Definition.FlowNodes.FirstOrDefault(node =>
                              node.Id == definition.Definition.InitialEventId)
                          ?? definition.Definition.FlowNodes.First();
-            var job = await jobs.EnqueueAsync(
-                new WorkflowJobCreateRecord
-                {
-                    WorkflowDefinitionId = definition.Id,
-                    WorkflowKey = definition.WorkflowKey,
-                    ActivationId = Guid.NewGuid(),
-                    NodeId = anchor.Id,
-                    NodeName = anchor.Name,
-                    NodeType = anchor.Type,
-                    Kind = WorkflowJobKinds.SignalBroadcastDeliver,
-                    QueueClass = WorkflowJobClasses.Activity,
-                    Phase = DeliverPhase,
-                    DueAt = now,
-                    MaxAttempts = DeliveryRetryDelays.Length + 1,
-                    RetryDelays = DeliveryRetryDelays,
-                    FailureHandling = WorkflowJobFailureHandling.RetryFirst,
-                    Payload = JsonSerializer.SerializeToElement(
-                        new SignalBroadcastJobPayload(broadcastId, definition.Id))
-                },
-                cancellationToken);
-            await broadcasts.AddJobLinkAsync(
-                broadcastId,
-                definition.Id,
-                job.Id,
-                reason,
-                requestedBy,
-                now,
-                cancellationToken);
-        }
+            return new WorkflowJobCreateRecord
+            {
+                WorkflowDefinitionId = definition.Id,
+                WorkflowKey = definition.WorkflowKey,
+                ActivationId = Guid.NewGuid(),
+                NodeId = anchor.Id,
+                NodeName = anchor.Name,
+                NodeType = anchor.Type,
+                Kind = WorkflowJobKinds.SignalBroadcastDeliver,
+                QueueClass = WorkflowJobClasses.Activity,
+                Phase = DeliverPhase,
+                DueAt = now,
+                MaxAttempts = DeliveryRetryDelays.Length + 1,
+                RetryDelays = DeliveryRetryDelays,
+                FailureHandling = WorkflowJobFailureHandling.RetryFirst,
+                Payload = JsonSerializer.SerializeToElement(
+                    new SignalBroadcastJobPayload(broadcastId, definition.Id))
+            };
+        }).ToList();
+        var created = await jobs.EnqueueManyAsync(creates, cancellationToken);
+        await broadcasts.AddJobLinksAsync(
+            broadcastId,
+            created.Select(job => (job.WorkflowDefinitionId, job.Id)).ToList(),
+            reason,
+            requestedBy,
+            now,
+            cancellationToken);
     }
 }

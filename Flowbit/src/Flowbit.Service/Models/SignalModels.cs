@@ -279,7 +279,7 @@ public sealed record SignalSubscriptionRecord(
     public bool IsBoundary => AttachedToNodeId is not null;
 }
 
-public sealed record SignalSubscriptionCountRecord(string SignalName, string WorkflowKey, int Count);
+public sealed record SignalSubscriptionCountRecord(string SignalName, string WorkflowKey, int Count, int StartCount);
 
 /// <summary>
 /// A broadcast to insert. A throw from a workflow sets <see cref="ThrownByKind"/> to
@@ -332,7 +332,8 @@ public sealed record SignalBroadcastRecord(
     long? ThrowerInstanceId = null,
     int? ThrowerNodeId = null,
     string? ThrowerNodeName = null,
-    int AutomaticActivationCount = 0)
+    int AutomaticActivationCount = 0,
+    int StartDeliveryCount = 0)
 {
     public int PendingCount =>
         Math.Max(0, TotalDeliveryCount - DeliveredCount - SkippedCount - FailedCount - CancelledCount);
@@ -345,21 +346,51 @@ public sealed record SignalBroadcastCountsRecord(
     int Failed,
     int Cancelled);
 
-/// <summary>The recipients a throw froze for one workflow definition.</summary>
+/// <summary>
+/// The recipients a throw froze for one workflow definition: <see cref="Count"/> in all, of
+/// which <see cref="StartCount"/> are starts of the family.
+/// </summary>
 public sealed record SignalRecipientDefinitionRecord(
     long WorkflowDefinitionId,
     string WorkflowKey,
-    int Count);
+    int Count,
+    int StartCount = 0);
 
+/// <summary>How many waits and family starts one freeze inserted.</summary>
+public sealed record SignalFreezeResult(int Waits, int Starts)
+{
+    public int Total => Waits + Starts;
+}
+
+/// <summary>
+/// What a retry changed: the definitions whose deliveries are pending again, and how many
+/// failed deliveries it changed in all, including starts it ended as skipped.
+/// </summary>
+public sealed record SignalRetryResult(IReadOnlyList<long> DefinitionIds, int Changed);
+
+/// <summary>One family that starts on a signal, through its published default's start event.</summary>
+public sealed record SignalStartSubscriptionRecord(
+    long Id,
+    string WorkflowKey,
+    string SignalName,
+    long WorkflowDefinitionId,
+    int SignalNodeId,
+    string SignalNodeName);
+
+/// <summary>
+/// One frozen recipient. A <c>wait</c> names its subscription, instance, token, and
+/// activation. A <c>start</c> names its family and the version and event that listened when
+/// the signal was thrown; <see cref="InstanceId"/> is the instance it created, once delivered.
+/// </summary>
 public sealed record SignalDeliveryRecord(
     long Id,
     long BroadcastId,
-    long SubscriptionId,
-    long InstanceId,
+    long? SubscriptionId,
+    long? InstanceId,
     long WorkflowDefinitionId,
     string WorkflowKey,
-    long TokenId,
-    Guid ActivationId,
+    long? TokenId,
+    Guid? ActivationId,
     int SignalNodeId,
     int? AttachedToNodeId,
     bool CancelActivity,
@@ -369,7 +400,11 @@ public sealed record SignalDeliveryRecord(
     string? ResultDescription,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    string Kind = SignalDeliveryKinds.Wait)
+{
+    public bool IsStart => string.Equals(Kind, SignalDeliveryKinds.Start, StringComparison.Ordinal);
+}
 
 /// <summary>
 /// A page of broadcasts. <see cref="ThrownByKind"/> with <see cref="ThrownBy"/> limits a
@@ -391,7 +426,8 @@ public sealed record SignalDeliveryQuery(
     string? Status,
     long? InstanceId,
     int Page,
-    int PageSize);
+    int PageSize,
+    string? Kind = null);
 
 /// <summary>The job payload of a <c>signalBroadcastDeliver</c> job.</summary>
 public sealed record SignalBroadcastJobPayload(long BroadcastId, long WorkflowDefinitionId);

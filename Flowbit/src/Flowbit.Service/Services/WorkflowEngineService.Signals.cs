@@ -152,10 +152,21 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
             return new SignalDeliveryOutcome(preview.Status, preview.ResultCode, null);
         }
 
+        if (preview.IsStart)
+        {
+            return await StartFromSignalAsync(preview, cancellationToken);
+        }
+
+        if (preview.InstanceId is not long waitingInstanceId || preview.SubscriptionId is not long subscriptionId)
+        {
+            throw new SignalDeliveryInvariantException(
+                $"Signal delivery #{deliveryId} is a wait without its instance or subscription.");
+        }
+
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         // Lock order: the instance hierarchy, then the subscription, then the delivery.
-        var instance = await runtime.GetInstanceForUpdateAsync(preview.InstanceId, true, cancellationToken);
-        var subscription = await signalSubscriptions.GetForUpdateAsync(preview.SubscriptionId, cancellationToken);
+        var instance = await runtime.GetInstanceForUpdateAsync(waitingInstanceId, true, cancellationToken);
+        var subscription = await signalSubscriptions.GetForUpdateAsync(subscriptionId, cancellationToken);
         var delivery = await signalBroadcasts.GetDeliveryForUpdateAsync(deliveryId, cancellationToken)
             ?? throw new InvalidOperationException($"Signal delivery #{deliveryId} does not exist.");
         if (delivery.Status != SignalDeliveryStatuses.Pending)

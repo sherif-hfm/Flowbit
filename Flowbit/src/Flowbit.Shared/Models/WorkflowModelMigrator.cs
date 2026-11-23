@@ -626,6 +626,13 @@ public static class WorkflowModelMigrator
                 BusinessKeyUniqueness.All);
         }
 
+        // A signal start has no request header to read a key from. Authoring rejects
+        // idempotency on it before normalization.
+        if (BpmnFlowNodeTypes.IsSignalStart(node.Type))
+        {
+            node.Idempotency = null;
+        }
+
         if (BpmnFlowNodeTypes.IsEntry(node.Type)
             && !BpmnFlowNodeTypes.IsTimerStart(node.Type)
             && node.Idempotency is not null)
@@ -994,6 +1001,30 @@ public static class WorkflowModelMigrator
             node.Message.DeliveryIdempotency = false;
             node.Message.DeliveryIdempotencyHeaderName = null;
             NormalizeMessageStartMappings(node);
+        }
+        else if (BpmnFlowNodeTypes.IsSignalStart(node.Type))
+        {
+            // A signal start is an entry point that a broadcast starts. Its only
+            // authored data is node.Signal, whose typed mappings declare the start
+            // variables, and the entry business key. The name is never rewritten, and
+            // a mapping without dataType or isArray stays that way for validation.
+            node.RequiresClaim = false;
+            node.ClaimMode = ClaimModes.Fresh;
+            node.InheritClaimFromNodeId = null;
+            node.Roles = [];
+            node.Variables = [];
+            node.Service = null;
+            node.Message = null;
+            node.Assignments = [];
+            node.Script = null;
+            node.AssigneeExpression = null;
+            node.AttachedToRef = null;
+            node.ErrorVariable = null;
+            if (node.Signal is { } signal)
+            {
+                signal.OutputMappings ??= [];
+                NormalizeSignalMappings(signal.OutputMappings, processVariables);
+            }
         }
         else if (BpmnFlowNodeTypes.IsUserTask(node.Type))
         {

@@ -139,7 +139,7 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             .ExecuteDeleteAsync(cancellationToken);
     }
 
-    public Task<int> FreezeDeliveriesAsync(
+    public async Task<SignalFreezeResult> FreezeDeliveriesAsync(
         long broadcastId,
         string signalName,
         SignalBroadcastScope scope,
@@ -147,6 +147,70 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         CancellationToken cancellationToken)
     {
         var take = limit + 1;
+        var waits = await FreezeWaitsAsync(broadcastId, signalName, scope, take, cancellationToken);
+        // A business-key or instance scope names existing instances and starts nothing.
+        if (waits >= take
+            || scope.Kind is not (SignalBroadcastScopeKind.Family or SignalBroadcastScopeKind.AllWorkflows))
+        {
+            return new SignalFreezeResult(waits, 0);
+        }
+
+        var starts = await FreezeStartsAsync(broadcastId, signalName, scope, take - waits, cancellationToken);
+        return new SignalFreezeResult(waits, starts);
+    }
+
+    /// <summary>
+    /// One start delivery per family that starts on the name, within the scope. Unlike the
+    /// waits, it share-locks the subscription rows it reads: an operation that changes a
+    /// family's published default locks its rows for update first, so it waits for this
+    /// throw and then sees its pending deliveries, or this throw waits for it and then reads
+    /// the rows as it left them. The rows belong to families, not instances, so the throw
+    /// still waits for no instance.
+    /// </summary>
+    private Task<int> FreezeStartsAsync(
+        long broadcastId,
+        string signalName,
+        SignalBroadcastScope scope,
+        int take,
+        CancellationToken cancellationToken) =>
+        scope.Kind == SignalBroadcastScopeKind.Family
+            ? dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO flowbit.signal_deliveries
+                    ("BroadcastId", "Kind", "WorkflowDefinitionId", "WorkflowKey", "SignalNodeId",
+                     "CancelActivity", "Status", "AttemptCount", "CreatedAt", "UpdatedAt")
+                SELECT {broadcastId}, 'start', s."WorkflowDefinitionId", s."WorkflowKey", s."SignalNodeId",
+                       FALSE, 'pending', 0, now(), now()
+                FROM flowbit.signal_start_subscriptions s
+                WHERE s."SignalName" = {signalName}
+                  AND s."WorkflowKey" = {scope.WorkflowKey}
+                ORDER BY s."Id"
+                LIMIT {take}
+                FOR SHARE OF s
+                """,
+                cancellationToken)
+            : dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO flowbit.signal_deliveries
+                    ("BroadcastId", "Kind", "WorkflowDefinitionId", "WorkflowKey", "SignalNodeId",
+                     "CancelActivity", "Status", "AttemptCount", "CreatedAt", "UpdatedAt")
+                SELECT {broadcastId}, 'start', s."WorkflowDefinitionId", s."WorkflowKey", s."SignalNodeId",
+                       FALSE, 'pending', 0, now(), now()
+                FROM flowbit.signal_start_subscriptions s
+                WHERE s."SignalName" = {signalName}
+                ORDER BY s."Id"
+                LIMIT {take}
+                FOR SHARE OF s
+                """,
+                cancellationToken);
+
+    private Task<int> FreezeWaitsAsync(
+        long broadcastId,
+        string signalName,
+        SignalBroadcastScope scope,
+        int take,
+        CancellationToken cancellationToken)
+    {
         // One literal statement per scope, so each keeps a stable plan. Each is one
         // statement without a locking clause: the recipients are exactly the
         // subscriptions committed and active in its snapshot, and no transaction that
@@ -243,10 +307,17 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         var rows = await dbContext.SignalDeliveries.AsNoTracking()
             .Where(delivery => delivery.BroadcastId == broadcastId)
             .GroupBy(delivery => new { delivery.WorkflowDefinitionId, delivery.WorkflowKey })
-            .Select(group => new { group.Key.WorkflowDefinitionId, group.Key.WorkflowKey, Count = group.Count() })
+            .Select(group => new
+            {
+                group.Key.WorkflowDefinitionId,
+                group.Key.WorkflowKey,
+                Count = group.Count(),
+                StartCount = group.Count(delivery => delivery.Kind == SignalDeliveryKinds.Start)
+            })
             .OrderBy(row => row.WorkflowDefinitionId)
             .ToListAsync(cancellationToken);
-        return rows.Select(row => new SignalRecipientDefinitionRecord(row.WorkflowDefinitionId, row.WorkflowKey, row.Count))
+        return rows.Select(row => new SignalRecipientDefinitionRecord(
+                row.WorkflowDefinitionId, row.WorkflowKey, row.Count, row.StartCount))
             .ToArray();
     }
 
@@ -269,6 +340,7 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
     public Task SetRecipientsAsync(
         long broadcastId,
         int total,
+        int startCount,
         string recipientsJson,
         bool recipientsTruncated,
         string status,
@@ -280,6 +352,7 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             .Where(broadcast => broadcast.Id == broadcastId)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(broadcast => broadcast.TotalDeliveryCount, total)
+                .SetProperty(broadcast => broadcast.StartDeliveryCount, startCount)
                 .SetProperty(broadcast => broadcast.RecipientsJson, recipientsJson)
                 .SetProperty(broadcast => broadcast.RecipientsTruncated, recipientsTruncated)
                 .SetProperty(broadcast => broadcast.Status, status)
@@ -288,28 +361,35 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                 cancellationToken);
     }
 
-    public async Task AddJobLinkAsync(
+    public async Task AddJobLinksAsync(
         long broadcastId,
-        long workflowDefinitionId,
-        long jobId,
+        IReadOnlyList<(long WorkflowDefinitionId, long JobId)> links,
         string reason,
         string requestedBy,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var entity = new SignalBroadcastJobEntity
+        if (links.Count == 0)
+        {
+            return;
+        }
+
+        var entities = links.Select(link => new SignalBroadcastJobEntity
         {
             BroadcastId = broadcastId,
-            WorkflowDefinitionId = workflowDefinitionId,
-            JobId = jobId,
-            OriginalJobId = jobId,
+            WorkflowDefinitionId = link.WorkflowDefinitionId,
+            JobId = link.JobId,
+            OriginalJobId = link.JobId,
             Reason = reason,
             RequestedBy = requestedBy,
             CreatedAt = now
-        };
-        dbContext.SignalBroadcastJobs.Add(entity);
+        }).ToList();
+        dbContext.SignalBroadcastJobs.AddRange(entities);
         await dbContext.SaveChangesAsync(cancellationToken);
-        dbContext.Entry(entity).State = EntityState.Detached;
+        foreach (var entity in entities)
+        {
+            dbContext.Entry(entity).State = EntityState.Detached;
+        }
     }
 
     public async Task<SignalBroadcastRecord?> GetAsync(
@@ -388,6 +468,10 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         if (query.InstanceId is long instanceId)
         {
             source = source.Where(delivery => delivery.InstanceId == instanceId);
+        }
+        if (!string.IsNullOrEmpty(query.Kind))
+        {
+            source = source.Where(delivery => delivery.Kind == query.Kind);
         }
 
         var total = await source.LongCountAsync(cancellationToken);
@@ -528,6 +612,61 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         return entity is null ? null : MapDelivery(entity);
     }
 
+    public async Task<bool> CompleteStartDeliveryAsync(
+        long deliveryId,
+        long instanceId,
+        long workflowDefinitionId,
+        int signalNodeId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var affected = await dbContext.SignalDeliveries
+            .Where(delivery =>
+                delivery.Id == deliveryId
+                && delivery.Kind == SignalDeliveryKinds.Start
+                && delivery.Status == SignalDeliveryStatuses.Pending)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(delivery => delivery.Status, SignalDeliveryStatuses.Delivered)
+                .SetProperty(delivery => delivery.ResultCode, SignalDeliveryResultCodes.Started)
+                .SetProperty(delivery => delivery.ResultDescription, (string?)null)
+                .SetProperty(delivery => delivery.InstanceId, instanceId)
+                .SetProperty(delivery => delivery.WorkflowDefinitionId, workflowDefinitionId)
+                .SetProperty(delivery => delivery.SignalNodeId, signalNodeId)
+                .SetProperty(delivery => delivery.AttemptCount, delivery => delivery.AttemptCount + 1)
+                .SetProperty(delivery => delivery.CompletedAt, now)
+                .SetProperty(delivery => delivery.UpdatedAt, now),
+                cancellationToken);
+        return affected == 1;
+    }
+
+    public async Task<bool> CompleteStartWithoutInstanceAsync(
+        long deliveryId,
+        string status,
+        string resultCode,
+        string? resultDescription,
+        long workflowDefinitionId,
+        int signalNodeId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var affected = await dbContext.SignalDeliveries
+            .Where(delivery =>
+                delivery.Id == deliveryId
+                && delivery.Kind == SignalDeliveryKinds.Start
+                && delivery.Status == SignalDeliveryStatuses.Pending)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(delivery => delivery.Status, status)
+                .SetProperty(delivery => delivery.ResultCode, resultCode)
+                .SetProperty(delivery => delivery.ResultDescription, resultDescription)
+                .SetProperty(delivery => delivery.WorkflowDefinitionId, workflowDefinitionId)
+                .SetProperty(delivery => delivery.SignalNodeId, signalNodeId)
+                .SetProperty(delivery => delivery.AttemptCount, delivery => delivery.AttemptCount + 1)
+                .SetProperty(delivery => delivery.CompletedAt, now)
+                .SetProperty(delivery => delivery.UpdatedAt, now),
+                cancellationToken);
+        return affected == 1;
+    }
+
     public async Task<bool> CompleteDeliveryAsync(
         long deliveryId,
         string status,
@@ -566,16 +705,16 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                 .SetProperty(delivery => delivery.UpdatedAt, now),
                 cancellationToken);
 
-    public async Task<IReadOnlyList<long>> RetryFailedDeliveriesAsync(
+    public async Task<SignalRetryResult> RetryFailedDeliveriesAsync(
         long broadcastId,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        // A retried delivery moves to the version its instance runs now: a version change
+        // A retried wait moves to the version its instance runs now: a version change
         // since the throw may have left no instance on the earlier version, which can then
         // be deleted, and a delivery job needs an existing version. Instances are never
         // deleted, so the current version always exists.
-        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+        var changed = await dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"""
             UPDATE flowbit.signal_deliveries AS delivery
             SET "Status" = 'pending',
@@ -589,13 +728,66 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                      WHERE instance."Id" = delivery."InstanceId"),
                     delivery."WorkflowDefinitionId")
             WHERE delivery."BroadcastId" = {broadcastId}
+              AND delivery."Kind" = 'wait'
               AND delivery."Status" = 'failed'
+            """,
+            cancellationToken);
+
+        // A retried start moves to the version and event its family listens through now,
+        // and share-locks that subscription as a freeze does, so the version cannot be
+        // retired before the retry commits.
+        changed += await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            WITH listening AS (
+                SELECT s."WorkflowKey", s."WorkflowDefinitionId", s."SignalNodeId"
+                FROM flowbit.signal_start_subscriptions AS s
+                WHERE s."SignalName" = (
+                        SELECT broadcast."SignalName"
+                        FROM flowbit.signal_broadcasts AS broadcast
+                        WHERE broadcast."Id" = {broadcastId})
+                  AND s."WorkflowKey" IN (
+                        SELECT failed."WorkflowKey"
+                        FROM flowbit.signal_deliveries AS failed
+                        WHERE failed."BroadcastId" = {broadcastId}
+                          AND failed."Kind" = 'start'
+                          AND failed."Status" = 'failed')
+                ORDER BY s."Id"
+                FOR SHARE OF s
+            )
+            UPDATE flowbit.signal_deliveries AS delivery
+            SET "Status" = 'pending',
+                "ResultCode" = NULL,
+                "ResultDescription" = NULL,
+                "CompletedAt" = NULL,
+                "UpdatedAt" = {now},
+                "WorkflowDefinitionId" = listening."WorkflowDefinitionId",
+                "SignalNodeId" = listening."SignalNodeId"
+            FROM listening
+            WHERE delivery."BroadcastId" = {broadcastId}
+              AND delivery."Kind" = 'start'
+              AND delivery."Status" = 'failed'
+              AND delivery."WorkflowKey" = listening."WorkflowKey"
+            """,
+            cancellationToken);
+
+        // A family that no longer starts on the name has nothing to retry.
+        changed += await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            UPDATE flowbit.signal_deliveries
+            SET "Status" = 'skipped',
+                "ResultCode" = 'subscription_ended',
+                "ResultDescription" = 'The workflow no longer starts on this signal.',
+                "CompletedAt" = {now},
+                "UpdatedAt" = {now}
+            WHERE "BroadcastId" = {broadcastId}
+              AND "Kind" = 'start'
+              AND "Status" = 'failed'
             """,
             cancellationToken);
 
         // Only a delivering broadcast has pending deliveries, and the caller retries a
         // finished one under its row lock, so the pending rows are exactly those retried.
-        return await dbContext.SignalDeliveries.AsNoTracking()
+        var definitionIds = await dbContext.SignalDeliveries.AsNoTracking()
             .Where(delivery =>
                 delivery.BroadcastId == broadcastId
                 && delivery.Status == SignalDeliveryStatuses.Pending)
@@ -603,6 +795,7 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             .Distinct()
             .OrderBy(id => id)
             .ToListAsync(cancellationToken);
+        return new SignalRetryResult(definitionIds, changed);
     }
 
     public Task MarkCancelledAsync(
@@ -683,7 +876,8 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             entity.ThrowerInstanceId,
             entity.ThrowerNodeId,
             entity.ThrowerNodeName,
-            entity.AutomaticActivationCount);
+            entity.AutomaticActivationCount,
+            entity.StartDeliveryCount);
 
     private static SignalDeliveryRecord MapDelivery(SignalDeliveryEntity entity) =>
         new(
@@ -704,5 +898,6 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             entity.ResultDescription,
             entity.CreatedAt,
             entity.UpdatedAt,
-            entity.CompletedAt);
+            entity.CompletedAt,
+            entity.Kind);
 }

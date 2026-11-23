@@ -691,6 +691,78 @@ public sealed class HostedEditorSmokeTests(BrowserStackFixture stack)
         });
     }
 
+    [Fact]
+    public async Task H18_SignalStartIsAuthoredSavedAndTheClosedGateRefusesPublishing()
+    {
+        await using var scenario = await stack.CreateScenario("h18-hosted-signal-start", 1440, 900);
+        await scenario.RunAsync("hosted-signal-start", async () =>
+        {
+            var json = JsonNode.Parse(await File.ReadAllTextAsync(
+                EditorInteractions.FixturePath("editor-signal-start.json")))!.AsObject();
+            var key = "hosted-signal-start-" + Guid.NewGuid().ToString("N");
+            json["id"] = key;
+            var model = json.Deserialize<WorkflowModel>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            var workflow = await stack.SetupClient.CreateUnpublishedAsync(model);
+            await RuntimeSupport.ApplyIdentityAsync(scenario, "editor-admin", ["admin"]);
+            var page = await scenario.OpenUiAsync($"workflows/{workflow.Id}/edit");
+            await ReadyAsync(page);
+            var editor = page.Locator("#workflow-editor-root");
+            ILocator Labeled(string label) =>
+                editor.Locator("#inspector").GetByLabel(label, new LocatorGetByLabelOptions { Exact = true });
+            await EditorInteractions.PinInspectorOpenAsync(page);
+
+            // Inside the application's styles the start's name, rows, and status line behave as standalone.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "signalStartEvent");
+            var startNode = editor.Locator("#nodes .node[data-id='2']");
+            await Assertions.Expect(startNode).ToHaveClassAsync(new Regex("signalStartEvent"));
+            await Assertions.Expect(editor.Locator("[data-signal-mapping='1']")).ToHaveValueAsync("product");
+            await Labeled("Signal name").FillAsync("Recalls.Announced");
+            await Assertions.Expect(editor.Locator("#signal-name-status-2")).ToContainTextAsync("Use lowercase letters");
+            await Labeled("Signal name").FillAsync("recalls.announced");
+            await Labeled("Signal name").PressAsync("Tab");
+            await Assertions.Expect(editor.Locator("#signal-name-status-2")).ToHaveTextAsync(string.Empty);
+            await Assertions.Expect(editor.Locator("#signal-start-status-2")).ToHaveTextAsync(string.Empty);
+            await Assertions.Expect(page.Locator("#editor-status")).Not.ToHaveTextAsync("Saved");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-signal-start.png"),
+            });
+
+            // The version saves unpublished, and the server reads back the start as authored.
+            await page.Locator("#save-workflow-version").ClickAsync();
+            await Assertions.Expect(page.Locator("#editor-notice")).ToContainTextAsync("Saved unpublished version 2");
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+            var savedId = long.Parse(Regex.Match(page.Url, @"/workflows/(\d+)/edit").Groups[1].Value);
+            var saved = await stack.SetupClient.GetWorkflowAsync(savedId);
+            var start = saved.Definition.FlowNodes.Single(node => node.Id == 2);
+            Assert.Equal((BpmnFlowNodeTypes.SignalStartEvent, "recalls.announced"), (start.Type, start.Signal!.Name));
+            Assert.Equal(["recallNumber", "product"], start.Signal.OutputMappings.Select(mapping => mapping.Variable));
+            Assert.Equal(["recallNumber", "product"], start.Signal.OutputMappings.Select(mapping => mapping.Path));
+            Assert.True(start.Variables is null || start.Variables.Count == 0);
+            Assert.Null(start.Signal.Scope);
+
+            // At phone width the hosted page stays within the viewport.
+            await page.SetViewportSizeAsync(390, 844);
+            await page.WaitForFunctionAsync("document.querySelector('#primary-navigation').getBoundingClientRect().right <= 0");
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "hosted-signal-start-narrow.png"),
+            });
+            await page.SetViewportSizeAsync(1440, 900);
+            await Assertions.Expect(page.Locator("#editor-status")).ToHaveTextAsync("Saved");
+
+            // The smoke stack runs without a Worker, so its closed gate refuses a definition with a signal start.
+            var workflows = await scenario.OpenUiAsync("workflows");
+            await workflows.Locator(".accordion-button", new PageLocatorOptions { HasText = key }).ClickAsync();
+            await workflows.Locator("tr", new PageLocatorOptions { HasText = "v2" })
+                .GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Publish", Exact = true }).ClickAsync();
+            await Assertions.Expect(workflows.Locator(".alert-danger")).ToContainTextAsync("PublicationEnabled is false");
+            Assert.False((await stack.SetupClient.GetWorkflowAsync(savedId)).IsPublished);
+        });
+    }
+
     // The page also loads Bootstrap, whose .badge would stop the summary wrapping.
     [Theory]
     [InlineData(1440, 900)]

@@ -30,6 +30,26 @@ public sealed class SignalSubscriptionEntity
 }
 
 /// <summary>
+/// One signal name that a workflow family starts on, while the family's published default
+/// has a signal start with it. Written only by the operations that change the family's
+/// default, under the family's exclusive lock, and updated in place for a name the old and
+/// the new default both start on. A throw scoped to the family or to every family freezes
+/// one start delivery from each row it reads and share-locks the row, so an operation that
+/// changes the default waits for a throw in flight.
+/// </summary>
+public sealed class SignalStartSubscriptionEntity
+{
+    public long Id { get; set; }
+    public string WorkflowKey { get; set; } = string.Empty;
+    public string SignalName { get; set; } = string.Empty;
+    public long WorkflowDefinitionId { get; set; }
+    public WorkflowDefinitionEntity? WorkflowDefinition { get; set; }
+    public int SignalNodeId { get; set; }
+    public string SignalNodeName { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>
 /// One thrown signal with its frozen recipient count and outcome counters. Its
 /// deliveries are frozen in the throw's transaction. Its scope is every family
 /// (<see cref="WorkflowKey"/> null), one family, the instance with one
@@ -47,6 +67,9 @@ public sealed class SignalBroadcastEntity
     public string? PayloadJson { get; set; }
     public string Status { get; set; } = "delivering";
     public int TotalDeliveryCount { get; set; }
+
+    /// <summary>How many of <see cref="TotalDeliveryCount"/> are starts of a workflow family.</summary>
+    public int StartDeliveryCount { get; set; }
     public int DeliveredCount { get; set; }
     public int SkippedCount { get; set; }
     public int FailedCount { get; set; }
@@ -84,21 +107,25 @@ public sealed class SignalBroadcastEntity
 }
 
 /// <summary>
-/// One frozen recipient of a broadcast. It names its subscription, instance, and
-/// token by plain ids: a foreign key would make the throw wait for every
-/// recipient whose transaction holds its instance and token locks.
+/// One frozen recipient of a broadcast: a wait, or the start of a workflow family. A wait
+/// names its subscription, instance, and token by plain ids: a foreign key would make the
+/// throw wait for every recipient whose transaction holds its instance and token locks. A
+/// start names none of them; its instance is the one it created, once it is delivered.
 /// </summary>
 public sealed class SignalDeliveryEntity
 {
     public long Id { get; set; }
     public long BroadcastId { get; set; }
     public SignalBroadcastEntity? Broadcast { get; set; }
-    public long SubscriptionId { get; set; }
-    public long InstanceId { get; set; }
+
+    /// <summary><c>wait</c> or <c>start</c>.</summary>
+    public string Kind { get; set; } = "wait";
+    public long? SubscriptionId { get; set; }
+    public long? InstanceId { get; set; }
     public long WorkflowDefinitionId { get; set; }
     public string WorkflowKey { get; set; } = string.Empty;
-    public long TokenId { get; set; }
-    public Guid ActivationId { get; set; }
+    public long? TokenId { get; set; }
+    public Guid? ActivationId { get; set; }
     public int SignalNodeId { get; set; }
     public int? AttachedToNodeId { get; set; }
     public bool CancelActivity { get; set; }

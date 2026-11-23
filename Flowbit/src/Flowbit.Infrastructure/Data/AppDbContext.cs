@@ -140,9 +140,23 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<SignalBroadcastEntity> SignalBroadcasts => Set<SignalBroadcastEntity>();
 
+    public DbSet<SignalStartSubscriptionEntity> SignalStartSubscriptions => Set<SignalStartSubscriptionEntity>();
+
     public DbSet<SignalDeliveryEntity> SignalDeliveries => Set<SignalDeliveryEntity>();
 
     public DbSet<SignalBroadcastJobEntity> SignalBroadcastJobs => Set<SignalBroadcastJobEntity>();
+
+    /// <summary>
+    /// The shape of a delivery by kind. AddSignalStartEvents adds it NOT VALID and
+    /// ValidateSignalStartConstraints validates it outside a transaction.
+    /// </summary>
+    internal const string SignalDeliveryKindShape =
+        "\"Kind\" IN ('wait', 'start') AND ("
+        + "(\"Kind\" = 'wait' AND \"SubscriptionId\" IS NOT NULL AND \"InstanceId\" IS NOT NULL "
+        + "AND \"TokenId\" IS NOT NULL AND \"ActivationId\" IS NOT NULL) "
+        + "OR (\"Kind\" = 'start' AND \"SubscriptionId\" IS NULL AND \"TokenId\" IS NULL "
+        + "AND \"ActivationId\" IS NULL AND \"AttachedToNodeId\" IS NULL AND NOT \"CancelActivity\" "
+        + "AND ((\"Status\" = 'delivered') = (\"InstanceId\" IS NOT NULL))))";
 
     public DbSet<LifecycleEventEntity> LifecycleEvents => Set<LifecycleEventEntity>();
 
@@ -2425,10 +2439,35 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
+        modelBuilder.Entity<SignalStartSubscriptionEntity>(entity =>
+        {
+            entity.ToTable("signal_start_subscriptions");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.SignalName)
+                .HasMaxLength(SignalEventRules.MaxNameLength)
+                .UseCollation("C")
+                .IsRequired();
+            entity.Property(e => e.SignalNodeName).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+            // One row per family and name. The freeze reads it by name, alone or with a
+            // family; an operation that changes a default reads the family's rows.
+            entity.HasIndex(e => new { e.SignalName, e.WorkflowKey }).IsUnique();
+            entity.HasIndex(e => e.WorkflowKey);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany()
+                .HasForeignKey(e => new { e.WorkflowDefinitionId, e.WorkflowKey })
+                .HasPrincipalKey(e => new { e.Id, e.WorkflowKey })
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<SignalBroadcastEntity>(entity =>
         {
             entity.ToTable("signal_broadcasts", table =>
             {
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_start_count",
+                    "\"StartDeliveryCount\" BETWEEN 0 AND \"TotalDeliveryCount\"");
                 table.HasCheckConstraint(
                     "CK_signal_broadcasts_status",
                     "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'cancelled')");
@@ -2485,6 +2524,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .UseCollation("C");
             entity.Property(e => e.ThrowerNodeName).HasMaxLength(300);
             entity.Property(e => e.AutomaticActivationCount).HasDefaultValue(0);
+            entity.Property(e => e.StartDeliveryCount).HasDefaultValue(0);
             entity.Property(e => e.CancelledBy).HasMaxLength(300);
             entity.Property(e => e.CancellationReason).HasMaxLength(SignalConstraints.MaxReasonLength);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
@@ -2516,8 +2556,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_signal_deliveries_attempts",
                     "\"AttemptCount\" >= 0");
+                // A wait names its subscription, instance, token, and activation. A start
+                // names none of them until it is delivered, and then only its instance.
+                table.HasCheckConstraint(
+                    "CK_signal_deliveries_kind_shape",
+                    SignalDeliveryKindShape);
             });
             entity.HasKey(e => e.Id);
+            entity.Property(e => e.Kind).HasMaxLength(16).IsRequired().HasDefaultValue("wait");
             entity.Property(e => e.WorkflowKey).HasMaxLength(300).IsRequired();
             entity.Property(e => e.Status).HasMaxLength(32).IsRequired();
             entity.Property(e => e.ResultCode).HasMaxLength(64);
@@ -2526,6 +2572,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
             entity.HasIndex(e => new { e.BroadcastId, e.SubscriptionId }).IsUnique();
+            // One start per broadcast and family.
+            entity.HasIndex(e => new { e.BroadcastId, e.WorkflowKey })
+                .HasDatabaseName("IX_signal_deliveries_start")
+                .IsUnique()
+                .HasFilter("\"Kind\" = 'start'");
             entity.HasIndex(e => new { e.BroadcastId, e.WorkflowDefinitionId, e.Status, e.Id });
             entity.HasIndex(e => new { e.BroadcastId, e.Status, e.Id });
             entity.HasIndex(e => new { e.InstanceId, e.Id });

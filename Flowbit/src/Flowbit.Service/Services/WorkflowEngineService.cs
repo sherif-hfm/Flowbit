@@ -1362,7 +1362,6 @@ public sealed partial class WorkflowEngineService(
             ?? throw new WorkflowDomainException($"Message start event #{startEvent.Id} has no message configuration.");
 
         var actor = authentication.Actor;
-        var performedBy = actor.User;
         var authContext = authentication.AuthContext;
 
         var idempotency = ResolveIdempotencyInput(startEvent, message.Headers);
@@ -1382,18 +1381,87 @@ public sealed partial class WorkflowEngineService(
             }
         }
 
-        // Extract supplied payload values. Message-start required/default semantics
-        // are resolved from the typed mappings after the optional idempotency header
-        // is added to the validation context.
-        var suppliedValues = ExtractMessageStartOutputs(startEvent, messageConfig, message.Payload);
-
-        var mappingVariables = messageConfig.OutputMappings.Select(ToMessageStartVariable).ToList();
+        // Message-start required/default semantics are resolved from the typed mappings
+        // after the optional idempotency header is added to the validation context.
         var resolutionContext = new Dictionary<string, JsonElement>(authContext, StringComparer.OrdinalIgnoreCase);
         if (idempotency is not null)
         {
             resolutionContext[idempotency.Variable] = idempotency.Value;
         }
 
+        var (normalizedStart, mappedValues) = ResolveStartMappings(
+            startEvent,
+            messageConfig.OutputMappings,
+            message.Payload,
+            resolutionContext,
+            idempotency);
+        var instance = await CreateStartedInstanceAsync(
+            workflow,
+            startEvent,
+            actor,
+            idempotency,
+            normalizedStart,
+            mappedValues,
+            new StartedInstanceOptions(),
+            cancellationToken);
+        var ack = await BuildStartAckAsync(instance, definition, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        logger.LogInformation("Successfully started workflow instance {InstanceId} by message correlation. Status: {Status}, resting on node {CurrentStepId}",
+            instance.Id, instance.Status, instance.CurrentStepId);
+
+        return ack;
+    }
+
+    // Builds the slim start ack: only the resting node identity + status, no
+    // definition/variables/history (the message-start endpoint is AllowAnonymous).
+    private async Task<MessageStartAckDto> BuildStartAckAsync(
+        WorkflowInstanceRecord instance,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var node = GetFlowNode(definition, instance.CurrentStepId);
+        var projection = await projections.BuildExecutionAsync(instance, includeHistory: false, cancellationToken);
+        return new MessageStartAckDto(
+            instance.Id,
+            node.Id,
+            node.Name,
+            node.ExternalId,
+            instance.Status,
+            instance.CreatedAt,
+            RuntimeProjectionMapper.ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
+        {
+            ExecutionPositions = projection.ExecutionPositions,
+            Completion = projection.Completion
+        };
+    }
+
+    /// <summary>
+    /// Options of <see cref="CreateStartedInstanceAsync"/> that only some starts use.
+    /// </summary>
+    /// <param name="ForceDurableActivities">Route as a Worker job does: automatic activities with asyncBefore are queued.</param>
+    /// <param name="AutomaticActivationCount">The chain count the first token continues; 0 starts a new chain.</param>
+    /// <param name="BeforeRouting">Runs after the variables are written and before the first token is routed.</param>
+    private sealed record StartedInstanceOptions(
+        bool ForceDurableActivities = false,
+        int AutomaticActivationCount = 0,
+        Func<WorkflowInstanceRecord, Task>? BeforeRouting = null);
+
+    /// <summary>
+    /// Resolves the typed mappings that declare a message or signal start's variables
+    /// against a payload, in memory: strict types, then defaults in mapping order, then the
+    /// required check, the business key's normalization, and every validation against the
+    /// final values. Nothing is reserved or written.
+    /// </summary>
+    private static (BusinessKeyStartInput Start, Dictionary<string, JsonElement> Values) ResolveStartMappings(
+        FlowNodeModel startEvent,
+        IReadOnlyList<MessageOutputMappingModel> mappings,
+        JsonElement? payload,
+        Dictionary<string, JsonElement> resolutionContext,
+        IdempotencyStartInput? idempotency)
+    {
+        var suppliedValues = ExtractStartMappingOutputs(startEvent, mappings, payload);
+        var mappingVariables = mappings.Select(ToMessageStartVariable).ToList();
         var resolvedValues = ResolveVariables(mappingVariables, suppliedValues, resolutionContext);
         ValidateVariableValues(mappingVariables, resolvedValues);
         ValidateMessageStartTypes(startEvent, mappingVariables, resolvedValues);
@@ -1408,7 +1476,27 @@ public sealed partial class WorkflowEngineService(
             mappedValues[idempotency.Variable] = idempotency.Value;
         }
         ValidateResolvedVariableRules(mappingVariables, mappedValues, resolutionContext);
+        return (normalizedStart, mappedValues);
+    }
 
+    /// <summary>
+    /// Creates an instance on a system entry event, inside the caller's transaction and
+    /// after the caller has taken the family lock: it reserves the business key, creates
+    /// the instance as the actor, binds its keys, writes the start and process variables,
+    /// and routes the first token until it rests. A duplicate business key throws
+    /// <see cref="BusinessKeyConflictException"/> before anything is written.
+    /// </summary>
+    private async Task<WorkflowInstanceRecord> CreateStartedInstanceAsync(
+        WorkflowDefinitionRecord workflow,
+        FlowNodeModel startEvent,
+        ActorContext actor,
+        IdempotencyStartInput? idempotency,
+        BusinessKeyStartInput normalizedStart,
+        Dictionary<string, JsonElement> mappedValues,
+        StartedInstanceOptions options,
+        CancellationToken cancellationToken)
+    {
+        var definition = workflow.Definition;
         if (normalizedStart.BusinessKey is not null)
         {
             var reservation = await runtime.ReserveBusinessKeyAsync(
@@ -1424,8 +1512,8 @@ public sealed partial class WorkflowEngineService(
             }
         }
 
-        // Start the instance on the message-start node (pass-through: the loop
-        // auto-advances off it on the next hop). Mirror StartInstanceAsync.
+        // Start the instance on the entry node (pass-through: the loop auto-advances off
+        // it on the next hop). Mirror StartInstanceAsync.
         var instance = await runtime.AddInstanceAsync(
             workflow.Id,
             workflow.WorkflowKey,
@@ -1433,10 +1521,23 @@ public sealed partial class WorkflowEngineService(
             normalizedStart.BusinessKey,
             normalizedStart.Uniqueness,
             ToSnapshot(startEvent),
-            performedBy,
+            actor.User,
             SnapshotRoles(actor.Roles),
             cancellationToken,
             actorClaims: actor.AuditClaims);
+
+        // A start that a workflow's signal caused continues that signal's chain, so a loop
+        // of starts is counted. Set before routing, which reads the count.
+        if (options.AutomaticActivationCount > 0
+            && instance.ActiveTokenId is long firstTokenId
+            && await runtime.GetExecutionTokenAsync(firstTokenId, false, cancellationToken) is { } firstToken
+            && !await runtime.SetExecutionTokenAutomaticActivationCountAsync(
+                firstToken.Id, firstToken.ActivationId, options.AutomaticActivationCount, cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                "The first token changed while its automatic chain was being continued.");
+        }
+
         if (idempotency is not null)
         {
             await runtime.BindIdempotencyKeyAsync(
@@ -1496,43 +1597,25 @@ public sealed partial class WorkflowEngineService(
             cancellationToken);
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
+        if (options.BeforeRouting is not null)
+        {
+            await options.BeforeRouting(instance);
+        }
+
         var flowInfo = await LoadSequenceFlowInfoAsync(
             instance.Id, definition, cancellationToken);
         instance = await ResolvePassThroughAsync(
-            instance, definition, actor, flowInfo, cancellationToken);
+            instance,
+            definition,
+            actor,
+            flowInfo,
+            instance.ActiveTokenId,
+            cancellationToken,
+            forceDurableActivities: options.ForceDurableActivities);
         await EnsureMultiInstanceInitializedAsync(instance, definition, actor, cancellationToken);
         instance = await ApplyUserTaskOwnershipInheritanceAsync(instance, definition, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        var ack = await BuildStartAckAsync(instance, definition, cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        logger.LogInformation("Successfully started workflow instance {InstanceId} by message correlation. Status: {Status}, resting on node {CurrentStepId}",
-            instance.Id, instance.Status, instance.CurrentStepId);
-
-        return ack;
-    }
-
-    // Builds the slim start ack: only the resting node identity + status, no
-    // definition/variables/history (the message-start endpoint is AllowAnonymous).
-    private async Task<MessageStartAckDto> BuildStartAckAsync(
-        WorkflowInstanceRecord instance,
-        WorkflowModel definition,
-        CancellationToken cancellationToken)
-    {
-        var node = GetFlowNode(definition, instance.CurrentStepId);
-        var projection = await projections.BuildExecutionAsync(instance, includeHistory: false, cancellationToken);
-        return new MessageStartAckDto(
-            instance.Id,
-            node.Id,
-            node.Name,
-            node.ExternalId,
-            instance.Status,
-            instance.CreatedAt,
-            RuntimeProjectionMapper.ToFault(instance.Status, instance.FaultCode, instance.FaultDescription, node.Name))
-        {
-            ExecutionPositions = projection.ExecutionPositions,
-            Completion = projection.Completion
-        };
+        return instance;
     }
 
     private static FlowNodeModel SelectMessageStartEvent(
@@ -5018,13 +5101,13 @@ public sealed partial class WorkflowEngineService(
         byte[] EnvelopeSalt,
         byte[] EnvelopeHash);
 
-    // Message-start mappings are typed start-variable declarations. A missing path
-    // is not an extraction failure here: defaults and final required checks run in
-    // declaration order after extraction. A supplied value, however, must already
-    // have the declared JSON type and never falls back to the default.
-    private static Dictionary<string, JsonElement> ExtractMessageStartOutputs(
+    // Message- and signal-start mappings are typed start-variable declarations. A
+    // missing path is not an extraction failure here: defaults and final required
+    // checks run in declaration order after extraction. A supplied value, however, must
+    // already have the declared JSON type and never falls back to the default.
+    private static Dictionary<string, JsonElement> ExtractStartMappingOutputs(
         FlowNodeModel node,
-        MessageCatchModel message,
+        IReadOnlyList<MessageOutputMappingModel> mappings,
         JsonElement? payload)
     {
         var result = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
@@ -5033,7 +5116,7 @@ public sealed partial class WorkflowEngineService(
             return result;
         }
 
-        foreach (var mapping in message.OutputMappings)
+        foreach (var mapping in mappings)
         {
             if (string.IsNullOrWhiteSpace(mapping.Path)
                 || !ServiceTaskTemplating.TryExtract(body, mapping.Path, out var value))
@@ -5045,7 +5128,7 @@ public sealed partial class WorkflowEngineService(
             if (!TypedOutputValueValidator.IsValid(value, variable.DataType, variable.IsArray))
             {
                 throw new WorkflowDomainException(
-                    $"Message start event #{node.Id} output mapping '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+                    $"{EntryEventRules.Label(node)} output mapping '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
             }
             result[mapping.Variable] = value.Clone();
         }
@@ -5078,7 +5161,7 @@ public sealed partial class WorkflowEngineService(
             if (!TypedOutputValueValidator.IsValid(value, variable.DataType, variable.IsArray))
             {
                 throw new WorkflowDomainException(
-                    $"Message start event #{node.Id} output mapping '{variable.Name}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+                    $"{EntryEventRules.Label(node)} output mapping '{variable.Name}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
             }
         }
     }
@@ -6003,6 +6086,7 @@ public sealed partial class WorkflowEngineService(
             {
                 var t when BpmnFlowNodeTypes.IsStart(t) => "start",
                 var t when BpmnFlowNodeTypes.IsMessageStart(t) => "messageStart",
+                var t when BpmnFlowNodeTypes.IsSignalStart(t) => InstanceHistoryNotes.SignalStart,
                 var t when BpmnFlowNodeTypes.IsExclusiveGateway(t) => "gateway",
                 var t when BpmnFlowNodeTypes.IsScopedInterrupt(t) => "scopedInterruptSkipped",
                 var t when BpmnFlowNodeTypes.IsLinkCatch(t) => InstanceHistoryNotes.LinkCatch,
@@ -8124,6 +8208,7 @@ public sealed partial class WorkflowEngineService(
             "scopedInterrupt" => NodeExecutionCompletionReasons.ScopedInterrupt,
             "scopedInterruptSkipped" => NodeExecutionCompletionReasons.ScopedInterruptSkipped,
             "messageStart" => NodeExecutionCompletionReasons.MessageDelivery,
+            InstanceHistoryNotes.SignalStart => NodeExecutionCompletionReasons.SignalReceived,
             "timer" => NodeExecutionCompletionReasons.TimerFired,
             InstanceHistoryNotes.ConditionalTriggered =>
                 NodeExecutionCompletionReasons.ConditionalTriggered,
@@ -8919,11 +9004,9 @@ public sealed partial class WorkflowEngineService(
 
         if (outgoing.Count != 1)
         {
-            var kind = BpmnFlowNodeTypes.IsStart(node.Type)
-                ? "Start event"
-                : BpmnFlowNodeTypes.IsMessageStart(node.Type)
-                    ? "Message start event"
-                    : BpmnFlowNodeTypes.IsServiceTask(node.Type)
+            var kind = BpmnFlowNodeTypes.IsEntry(node.Type)
+                ? EntryEventRules.Kind(node.Type)
+                : BpmnFlowNodeTypes.IsServiceTask(node.Type)
                         ? "Service task"
                         : BpmnFlowNodeTypes.IsScriptTask(node.Type)
                             ? "Script task"
@@ -8996,9 +9079,7 @@ public sealed partial class WorkflowEngineService(
 
     private static void EnsureEntryRuntimeContract(WorkflowModel definition, FlowNodeModel entry)
     {
-        var kind = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
-            ? "Message start event"
-            : "Start event";
+        var kind = EntryEventRules.Kind(entry.Type);
         var incoming = definition.SequenceFlows.Count(flow => flow.TargetRef == entry.Id);
         var outgoing = definition.SequenceFlows.Where(flow => flow.SourceRef == entry.Id).ToList();
 
@@ -9031,10 +9112,7 @@ public sealed partial class WorkflowEngineService(
         var processNames = definition.Variables
             .Select(variable => variable.Name)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var entryNames = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
-            ? entry.Message?.OutputMappings.Select(mapping => mapping.Variable) ?? []
-            : entry.Variables.Select(variable => variable.Name);
-        var collision = entryNames
+        var collision = EntryEventRules.DeclaredNames(entry)
             .Concat(entry.Idempotency is null ? [] : [entry.Idempotency.Variable])
             .Concat(entry.BusinessKey is null ? [] : [entry.BusinessKey.Variable])
             .FirstOrDefault(processNames.Contains);
@@ -11532,6 +11610,7 @@ public sealed partial class WorkflowEngineService(
     {
         var type when BpmnFlowNodeTypes.IsStart(type) => "start",
         var type when BpmnFlowNodeTypes.IsMessageStart(type) => "messageStart",
+        var type when BpmnFlowNodeTypes.IsSignalStart(type) => InstanceHistoryNotes.SignalStart,
         var type when BpmnFlowNodeTypes.IsExclusiveGateway(type) => "gateway",
         var type when BpmnFlowNodeTypes.IsParallelGateway(type) => "parallelGateway",
         var type when BpmnFlowNodeTypes.IsInclusiveGateway(type) => "inclusiveGateway",

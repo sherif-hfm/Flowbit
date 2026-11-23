@@ -49,7 +49,7 @@ Each item is a follow-up subtask with its own page. The list is in the [recommen
 
 1. [EVENT-04A](event-04a-signal-scope-by-business-key-or-instance.md): limiting a signal to one business key or one instance. Done.
 2. [EVENT-04B](event-04b-signal-throw-and-end-events.md): intermediate signal throw events and signal end events. A throw from a workflow creates the same broadcast inside the throwing instance's transaction. Done.
-3. [EVENT-04C](event-04c-signal-start-events.md): signal start events.
+3. [EVENT-04C](event-04c-signal-start-events.md): signal start events. A workflow family listens through its published default, and a throw to the family or to all workflows starts one instance per listening family. Done.
 4. [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md): lifecycle webhook event types for broadcasts.
 5. [EVENT-04E](event-04e-signal-broadcast-expiry.md): an expiry time for a broadcast, after which undelivered work is skipped.
 6. [EVENT-04F](event-04f-signal-catalog.md): a catalog of signal definitions with declared payload contracts and permissions per signal.

@@ -26,7 +26,7 @@ public static class SignalEndpoints
             .Accepts<ThrowSignalRequest>("application/json")
             .WithMetadata(new RequestSizeLimitAttribute(MaxThrowBodyBytes))
             .WithSummary("Throw a signal")
-            .WithDescription("Freezes the signal subscriptions that are active now as the recipients and queues their delivery. State one scope: a workflowKey, a workflowKey with a businessKey, allWorkflows set to true, or an instanceId alone. A repeated idempotencyKey returns the first broadcast with 200.")
+            .WithDescription("Freezes the signal subscriptions that are active now and, for a workflowKey or allWorkflows scope, one start of each family whose published default starts on the name, as the recipients, and queues their delivery. State one scope: a workflowKey, a workflowKey with a businessKey, allWorkflows set to true, or an instanceId alone. A repeated idempotencyKey returns the first broadcast with 200.")
             .Produces<SignalBroadcastDetailDto>(StatusCodes.Status202Accepted)
             .Produces<SignalBroadcastDetailDto>()
             .Produces(StatusCodes.Status400BadRequest)
@@ -56,7 +56,7 @@ public static class SignalEndpoints
         group.MapGet("/{id:long}/deliveries", ListDeliveries)
             .RequireAuthorization(SignalAuthorizationPolicies.Read)
             .WithSummary("List a broadcast's deliveries")
-            .WithDescription("In ascending id; pageSize is clamped to 1-200. A managed API client receives result codes without descriptions.")
+            .WithDescription("In ascending id; pageSize is clamped to 1-200. Filter by kind (wait or start), status, or instanceId; a start's instanceId is the instance it created. A managed API client receives result codes without descriptions.")
             .Produces<PagedResult<SignalDeliveryDto>>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -81,7 +81,7 @@ public static class SignalEndpoints
             .Accepts<RetrySignalDeliveriesRequest>("application/json")
             .WithMetadata(new RequestSizeLimitAttribute(MaxCommandBodyBytes))
             .WithSummary("Retry a broadcast's failed deliveries")
-            .WithDescription("Allowed only for a broadcast that finished with issues, with its current updatedAt. A delivery whose wait has ended meanwhile is skipped.")
+            .WithDescription("Allowed only for a broadcast that finished with issues, with its current updatedAt. A wait that has ended meanwhile is skipped; a start runs the family's published default, or is skipped when that no longer starts on the name.")
             .Produces<SignalBroadcastDetailDto>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -92,8 +92,8 @@ public static class SignalEndpoints
         app.MapGet("/api/signal-subscriptions/summary", Summary)
             .WithTags("Signals")
             .RequireAuthorization(SignalAuthorizationPolicies.Summary)
-            .WithSummary("Count active signal subscriptions by signal name and workflow family")
-            .WithDescription("Optionally for one family, the instance with one businessKey in a family, or one instanceId. At most 200 rows, with truncated set when more exist. Users only.")
+            .WithSummary("Count active signal subscriptions and signal starts by signal name and workflow family")
+            .WithDescription("count is the waits and startCount the families that start on the name. Optionally for one family, the instance with one businessKey in a family, or one instanceId; the last two count no start. At most 200 rows, with truncated set when more exist. Users only.")
             .Produces<SignalSubscriptionSummaryDto>()
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
@@ -159,6 +159,7 @@ public static class SignalEndpoints
         [FromQuery] long? instanceId,
         [FromQuery] int? page,
         [FromQuery] int? pageSize,
+        [FromQuery] string? kind,
         CancellationToken cancellationToken)
     {
         var deliveries = await service.ListDeliveriesAsync(
@@ -168,7 +169,8 @@ public static class SignalEndpoints
             instanceId,
             page ?? 1,
             pageSize ?? 50,
-            cancellationToken);
+            cancellationToken,
+            kind);
         return deliveries is null ? Results.NotFound() : Results.Ok(deliveries);
     }
 

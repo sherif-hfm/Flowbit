@@ -10,7 +10,7 @@
 <PageTitle>Signals · Flowbit</PageTitle>
 
 <PageHeader Eyebrow="Manage" Title="Signals"
-            Description="Throw a named signal to every waiting signal event and follow its deliveries.">
+            Description="Throw a named signal to every waiting signal event, start the workflows that listen for it, and follow its deliveries.">
     <Actions>
         <button class="btn btn-outline-secondary" @onclick="RefreshAllAsync" disabled="@loading"><AppIcon Name="refresh" /> Refresh</button>
     </Actions>
@@ -19,6 +19,7 @@
 <div class="alert alert-info" role="note">
     <strong>A signal reaches only the waits that exist when it is thrown.</strong>
     Each waiting signal event receives it once, when the Worker delivers it. A wait that starts later does not receive it, and nothing is stored for later.
+    A throw to a workflow family or to all workflows also starts one instance of each workflow whose published default starts on the signal.
     Use a message for something that must not be missed.
 </div>
 
@@ -125,7 +126,7 @@ else
             <div>
                 <span class="page-eyebrow">2</span>
                 <h2 id="signal-payload-heading">Payload</h2>
-                <p>Optional JSON object. Each waiting event copies the values its output mappings name.</p>
+                <p>Optional JSON object. Each waiting event, and each workflow the signal starts, copies the values its output mappings name.</p>
             </div>
         </div>
         <label class="form-label" for="signal-payload">Payload (JSON object)</label>
@@ -155,7 +156,7 @@ else
             <dl class="row">
                 <dt class="col-md-3">Signal</dt><dd class="col-md-9"><code>@review.Name</code></dd>
                 <dt class="col-md-3">Scope</dt><dd class="col-md-9 signal-scope">@ScopeLabel(review.WorkflowKey, review.BusinessKey, review.InstanceId)</dd>
-                <dt class="col-md-3">Waiting now</dt><dd class="col-md-9">@review.Waiting.ToString("N0") @(review.Waiting == 1 ? "wait" : "waits")@(review.Truncated ? " or more" : null)</dd>
+                <dt class="col-md-3">Reaches now</dt><dd class="col-md-9 signal-review-reach">@CountsText(review.Waiting, review.Starts)@(review.Truncated ? " or more" : null)</dd>
                 <dt class="col-md-3">Payload</dt>
                 <dd class="col-md-9">
                     @if (review.Payload is null)
@@ -168,7 +169,7 @@ else
                     }
                 </dd>
             </dl>
-            <p class="form-text">The waits may change before the request runs. The signal reaches the waits that are active at that moment.</p>
+            <p class="form-text">The waits and the listening workflows may change before the request runs. The signal reaches those that exist at that moment.</p>
             <div class="d-flex flex-wrap gap-2">
                 <button class="btn btn-primary" @onclick="ThrowAsync" disabled="@throwing">Throw signal</button>
                 <button class="btn btn-outline-secondary" @onclick="ClearReview" disabled="@throwing">Back</button>
@@ -204,12 +205,18 @@ else
                 }
             </div>
             <div class="border-top px-3 pt-3">
-                <div class="section-heading">
+                <div class="section-heading signal-history-heading">
                     <div><h3 class="h6 mb-0">Paged deliveries</h3><p>@(deliveries is null ? "Loading deliveries…" : $"{deliveries.TotalCount:N0} matching deliveries")</p></div>
-                    <select class="form-select signal-status-filter" value="@deliveryStatus" @onchange="OnDeliveryStatusChangedAsync" aria-label="Filter deliveries by status">
-                        <option value="">All statuses</option>
-                        @foreach (var status in SignalDeliveryStatuses.All) { <option value="@status">@DeliveryStatusLabel(status)</option> }
-                    </select>
+                    <div class="signal-delivery-filters">
+                        <select class="form-select signal-status-filter" value="@deliveryStatus" @onchange="OnDeliveryStatusChangedAsync" aria-label="Filter deliveries by status">
+                            <option value="">All statuses</option>
+                            @foreach (var status in SignalDeliveryStatuses.All) { <option value="@status">@DeliveryStatusLabel(status)</option> }
+                        </select>
+                        <select class="form-select signal-kind-filter" value="@deliveryKind" @onchange="OnDeliveryKindChangedAsync" aria-label="Filter deliveries by kind">
+                            <option value="">Waits and starts</option>
+                            @foreach (var kind in SignalDeliveryKinds.All) { <option value="@kind">@DeliveryKindLabel(kind)</option> }
+                        </select>
+                    </div>
                 </div>
             </div>
             <SignalDeliveries Deliveries="@(deliveries?.Items)" />
@@ -296,6 +303,7 @@ else
     private SignalBroadcastDetailDto? currentBroadcast;
     private PagedResult<SignalDeliveryDto>? deliveries;
     private string? deliveryStatus;
+    private string? deliveryKind;
     private int deliveryPage = 1;
     private string? cancellationReason;
 
@@ -316,6 +324,7 @@ else
         string? BusinessKey,
         long? InstanceId,
         int Waiting,
+        int Starts,
         bool Truncated,
         JsonElement? Payload,
         string? PayloadText);
@@ -364,11 +373,7 @@ else
             }
 
             var rows = summary.Items.Where(item => item.Name == signalName).ToList();
-            if (rows.Count == 0) return $"No instance is waiting for '{signalName}' now.";
-            var waits = rows.Sum(item => item.Count);
-            return $"{waits:N0} {(waits == 1 ? "wait" : "waits")} in {rows.Count:N0} {(rows.Count == 1 ? "family" : "families")}: "
-                + string.Join(", ", rows.Select(item => $"{item.WorkflowKey} ({item.Count:N0})"))
-                + (summary.Truncated ? " (list truncated)" : string.Empty);
+            return ReachLine(signalName, rows, summary.Truncated);
         }
     }
 
@@ -525,10 +530,11 @@ else
                 name, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId));
             // The draft may have changed while the counts were loading; that edit ended the review.
             if (name != signalName || scope != CurrentScope || text != payloadText) return;
-            var waiting = counts.Items.Where(item => item.Name == name).Sum(item => item.Count);
+            var matching = counts.Items.Where(item => item.Name == name).ToList();
             review = new ThrowReview(
                 name, scope.Scope, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId,
-                waiting, counts.Truncated, payload, text);
+                matching.Sum(item => item.Count), matching.Sum(item => item.StartCount),
+                counts.Truncated, payload, text);
             // One key per reviewed draft, so a retried request after a timeout cannot throw twice.
             draftIdempotencyKey = $"ui-{Guid.NewGuid():N}";
         }
@@ -571,7 +577,9 @@ else
                 reviewed.InstanceId)));
             success = thrown.TotalDeliveryCount == 0
                 ? $"Broadcast #{thrown.Id} found no waiting events; it completed with no deliveries."
-                : $"Broadcast #{thrown.Id} froze {thrown.TotalDeliveryCount:N0} {(thrown.TotalDeliveryCount == 1 ? "recipient" : "recipients")}; the Worker is delivering it.";
+                : thrown.StartCount == 0
+                    ? $"Broadcast #{thrown.Id} froze {thrown.TotalDeliveryCount:N0} {(thrown.TotalDeliveryCount == 1 ? "recipient" : "recipients")}; the Worker is delivering it."
+                    : $"Broadcast #{thrown.Id} froze {CountsText(thrown.TotalDeliveryCount - thrown.StartCount, thrown.StartCount)}; the Worker is delivering it.";
             if (ReferenceEquals(review, reviewed)) ClearReview();
             ShowBroadcast(thrown);
             await LoadDeliveriesAsync();
@@ -588,6 +596,7 @@ else
         currentBroadcast = broadcast;
         deliveries = null;
         deliveryStatus = null;
+        deliveryKind = null;
         deliveryPage = 1;
         cancellationReason = null;
     }
@@ -637,8 +646,9 @@ else
         var request = ++deliveriesRequest;
         var id = currentBroadcast.Id;
         var status = deliveryStatus;
+        var kind = deliveryKind;
         var page = deliveryPage;
-        var loaded = await GuardAsync(() => Api.GetSignalDeliveriesAsync(id, status, page, DeliveryPageSize));
+        var loaded = await GuardAsync(() => Api.GetSignalDeliveriesAsync(id, status, page, DeliveryPageSize, kind: kind));
         if (request == deliveriesRequest && currentBroadcast?.Id == id) deliveries = loaded;
     }
 
@@ -715,6 +725,15 @@ else
     private async Task OnDeliveryStatusChangedAsync(ChangeEventArgs args)
     {
         deliveryStatus = string.IsNullOrEmpty(args.Value?.ToString()) ? null : args.Value!.ToString();
+        deliveryPage = 1;
+        var epoch = Interlocked.Read(ref identityEpoch);
+        try { await LoadDeliveriesAsync(); }
+        catch (Exception ex) { HandleError(ex, epoch); }
+    }
+
+    private async Task OnDeliveryKindChangedAsync(ChangeEventArgs args)
+    {
+        deliveryKind = string.IsNullOrEmpty(args.Value?.ToString()) ? null : args.Value!.ToString();
         deliveryPage = 1;
         var epoch = Interlocked.Read(ref identityEpoch);
         try { await LoadDeliveriesAsync(); }
@@ -828,7 +847,7 @@ else
         businessKey = string.Empty; instanceId = null; payloadText = null; formGeneration++;
         summary = null; scopedSummary = null; scopedCountFailed = false; scopedSummaryRequest++; review = null; draftIdempotencyKey = null; payloadError = null;
         broadcastView++; deliveriesRequest++; historyRequest++;
-        currentBroadcast = null; deliveries = null; deliveryStatus = null; deliveryPage = 1;
+        currentBroadcast = null; deliveries = null; deliveryStatus = null; deliveryKind = null; deliveryPage = 1;
         history = null; historyStatus = null; historyThrownBy = ThrownByChoices[0].Value; historyPage = 1; cancellationReason = null;
         error = null; success = null;
         loading = false; throwing = false; refreshingBroadcast = false; broadcastOperation = false; loadingHistory = false;

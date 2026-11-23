@@ -45,8 +45,10 @@ public interface ISignalSubscriptionRepository
     Task<int> CancelByInstanceAsync(long instanceId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Counts of active subscriptions by signal name and workflow family, optionally for
-    /// one family, the instance with one business key in it, or one instance. Takes no lock.
+    /// Counts of active subscriptions and of start subscriptions by signal name and workflow
+    /// family, in name and family order, cut at the limit after they are merged; optionally
+    /// for one family, the instance with one business key in it, or one instance, which two
+    /// filters count no start. Takes no lock.
     /// </summary>
     Task<IReadOnlyList<SignalSubscriptionCountRecord>> SummarizeActiveAsync(
         string? signalName,
@@ -92,10 +94,12 @@ public interface ISignalBroadcastRepository
 
     /// <summary>
     /// Inserts a delivery for every active subscription of the name within the scope, in
-    /// one statement that takes no lock, reading at most <paramref name="limit"/> plus one.
-    /// Returns the number inserted.
+    /// one statement that takes no runtime lock, and for a family or all-workflows scope one
+    /// start delivery per listening family, in a second statement that share-locks the start
+    /// subscription rows it reads. Reads at most <paramref name="limit"/> plus one in all, and
+    /// returns how many waits and starts it inserted.
     /// </summary>
-    Task<int> FreezeDeliveriesAsync(
+    Task<SignalFreezeResult> FreezeDeliveriesAsync(
         long broadcastId,
         string signalName,
         SignalBroadcastScope scope,
@@ -120,16 +124,17 @@ public interface ISignalBroadcastRepository
     Task SetRecipientsAsync(
         long broadcastId,
         int total,
+        int startCount,
         string recipientsJson,
         bool recipientsTruncated,
         string status,
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
-    Task AddJobLinkAsync(
+    /// <summary>Links a broadcast to its delivery jobs, one per workflow definition, in one save.</summary>
+    Task AddJobLinksAsync(
         long broadcastId,
-        long workflowDefinitionId,
-        long jobId,
+        IReadOnlyList<(long WorkflowDefinitionId, long JobId)> links,
         string reason,
         string requestedBy,
         DateTimeOffset now,
@@ -179,6 +184,32 @@ public interface ISignalBroadcastRepository
         long deliveryId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Finishes a pending start delivery as delivered with <c>started</c>, naming the instance
+    /// it created and the version and event that started it; false when it was no longer pending.
+    /// </summary>
+    Task<bool> CompleteStartDeliveryAsync(
+        long deliveryId,
+        long instanceId,
+        long workflowDefinitionId,
+        int signalNodeId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Finishes a pending start delivery without an instance, naming the version and event
+    /// that the start tried; false when it was no longer pending.
+    /// </summary>
+    Task<bool> CompleteStartWithoutInstanceAsync(
+        long deliveryId,
+        string status,
+        string resultCode,
+        string? resultDescription,
+        long workflowDefinitionId,
+        int signalNodeId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
     /// <summary>Finishes a pending delivery; false when it was no longer pending.</summary>
     Task<bool> CompleteDeliveryAsync(
         long deliveryId,
@@ -193,8 +224,13 @@ public interface ISignalBroadcastRepository
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
-    /// <summary>Returns failed deliveries to pending, and the definitions they belong to.</summary>
-    Task<IReadOnlyList<long>> RetryFailedDeliveriesAsync(
+    /// <summary>
+    /// Returns failed deliveries to pending, and the definitions the pending ones belong to.
+    /// A failed wait moves to the version its instance runs now. A failed start moves to the
+    /// version and event of its family's start subscription, which it share-locks, or ends as
+    /// skipped when its family no longer starts on the name.
+    /// </summary>
+    Task<SignalRetryResult> RetryFailedDeliveriesAsync(
         long broadcastId,
         DateTimeOffset now,
         CancellationToken cancellationToken);
@@ -267,6 +303,10 @@ public interface ISignalBroadcastService
         long broadcastId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// A page of a broadcast's deliveries, optionally of one status, instance, or kind
+    /// (<c>wait</c> or <c>start</c>); null when the caller cannot see the broadcast.
+    /// </summary>
     Task<PagedResult<SignalDeliveryDto>?> ListDeliveriesAsync(
         SignalCaller caller,
         long broadcastId,
@@ -274,7 +314,8 @@ public interface ISignalBroadcastService
         long? instanceId,
         int page,
         int pageSize,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        string? kind = null);
 
     Task<SignalBroadcastDetailDto?> CancelAsync(
         SignalCaller caller,

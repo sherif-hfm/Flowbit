@@ -364,6 +364,198 @@ public sealed class SignalSmokeTests(BrowserStackFixture stack)
     [Theory]
     [InlineData(1440, 900)]
     [InlineData(1024, 768)]
+    public async Task E25_SignalStartIsNamedMappedKeyedValidatedUndoneAndSaved(int viewportWidth, int viewportHeight)
+    {
+        await using var scenario = await stack.CreateScenario(
+            $"e25-signal-start-{viewportWidth}x{viewportHeight}", viewportWidth, viewportHeight, blockNativeFilePicker: true);
+        scenario.ExpectDialogStartingWith(IdentityScreen.FallbackAlertPrefix);
+        await scenario.RunAsync("signal-start", async () =>
+        {
+            await scenario.OpenEditorAsync(stack.EditorBaseAddress);
+            await EditorInteractions.PinInspectorOpenAsync(scenario.Page);
+            var page = scenario.Page;
+            await EditorInteractions.LoadWorkflowAsync(page, EditorInteractions.FixturePath("editor-signal-start.json"));
+            var inspector = page.Locator("#inspector");
+            ILocator Labeled(string label) => inspector.GetByLabel(label, new LocatorGetByLabelOptions { Exact = true });
+
+            // Search selects by id whatever the open select or the canvas position.
+            async Task SelectBySearchAsync(int nodeId)
+            {
+                await page.EvaluateAsync("document.activeElement?.blur()");
+                await page.Keyboard.PressAsync("/");
+                await Assertions.Expect(page.Locator("#diagramSearchInput")).ToBeFocusedAsync();
+                await page.Keyboard.PressAsync("Control+a");
+                await page.Keyboard.TypeAsync($"#{nodeId}");
+                await page.Keyboard.PressAsync("Enter");
+                await Assertions.Expect(inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { Name = $"Node #{nodeId}", Exact = true }))
+                    .ToHaveCountAsync(1);
+            }
+
+            async Task<string> SaveErrorsAsync()
+            {
+                await page.Locator("#fileMenuSummary").ClickAsync();
+                await page.Locator("#saveBtn").ClickAsync();
+                var errors = await EditorInteractions.WaitForValidationDialogAsync(page);
+                await EditorInteractions.CloseValidationDialogWithEscapeAsync(page);
+                return errors;
+            }
+
+            // The second plain start becomes a signal start: a start circle with the outlined
+            // triangle and a dashed flow, whose variables become rows reading the payload.
+            await EditorInteractions.SelectNodeAsync(page, 2);
+            await EditorInteractions.SelectTypeAsync(page, "signalStartEvent");
+            var startNode = page.Locator("#nodes .node[data-id='2']");
+            await Assertions.Expect(startNode).ToHaveClassAsync(new Regex("signalStartEvent"));
+            await Assertions.Expect(startNode.Locator("use.node-icon")).ToHaveAttributeAsync("href", "#icon-signal-catch");
+            await Assertions.Expect(startNode.Locator("circle.ring")).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator("#edges .edge-path-layer .edge[data-flow='201']")).ToHaveClassAsync(new Regex(@"\bauto\b"));
+            await Assertions.Expect(inspector.GetByRole(AriaRole.Heading, new LocatorGetByRoleOptions { NameRegex = new Regex("^Start variables from the payload") }))
+                .ToHaveCountAsync(1);
+            await Assertions.Expect(inspector.Locator("[data-signal-mapping='0']")).ToHaveValueAsync("recallNumber");
+            await Assertions.Expect(inspector.Locator("[data-signal-mapping='1']")).ToHaveValueAsync("product");
+            var paths = inspector.GetByLabel("Payload path", new LocatorGetByLabelOptions { Exact = true });
+            await Assertions.Expect(paths).ToHaveCountAsync(2);
+            await Assertions.Expect(paths.Nth(0)).ToHaveValueAsync("recallNumber");
+
+            // Save names the missing name.
+            Assert.Contains("Signal start event #2 must define signal.name.", await SaveErrorsAsync(), StringComparison.Ordinal);
+            await Labeled("Signal name").FillAsync("recalls.announced");
+            await Labeled("Signal name").PressAsync("Tab");
+
+            // The product row reads a nested member; undo restores the plain path and redo the nested one.
+            await paths.Nth(1).FillAsync("item.product");
+            await paths.Nth(1).PressAsync("Tab");
+            await page.EvaluateAsync("document.activeElement?.blur()");
+            await page.Keyboard.PressAsync("Control+z");
+            await Assertions.Expect(paths.Nth(1)).ToHaveValueAsync("product");
+            await page.Keyboard.PressAsync("Control+y");
+            await Assertions.Expect(paths.Nth(1)).ToHaveValueAsync("item.product");
+
+            // A second signal start on the same name is reported as typed and blocks saving.
+            await SelectBySearchAsync(5);
+            await EditorInteractions.SelectTypeAsync(page, "signalStartEvent");
+            await Labeled("Signal name").FillAsync("recalls.announced");
+            await Labeled("Signal name").PressAsync("Tab");
+            const string duplicate =
+                "Signal start event #5 starts on 'recalls.announced', which signal start event #2 already starts on; a workflow starts once per signal.";
+            await Assertions.Expect(inspector.Locator("#signal-start-status-5")).ToContainTextAsync(duplicate);
+            Assert.Contains(duplicate, await SaveErrorsAsync(), StringComparison.Ordinal);
+
+            // The Select tool deletes the duplicate.
+            await EditorInteractions.SelectMoveToolAsync(page);
+            await SelectBySearchAsync(5);
+            var deleteNode = inspector.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Delete node", Exact = true });
+            await Assertions.Expect(deleteNode).ToBeEnabledAsync();
+            await deleteNode.ClickAsync();
+            await Assertions.Expect(page.Locator("#nodes .node[data-id='5']")).ToHaveCountAsync(0);
+
+            // A signal end event that throws the name to this workflow would start an instance per
+            // instance: both events report it, and saving refuses it.
+            await SelectBySearchAsync(4);
+            await EditorInteractions.SelectTypeAsync(page, "signalEndEvent");
+            await Labeled("Signal name").FillAsync("recalls.announced");
+            await Labeled("Signal name").PressAsync("Tab");
+            await Labeled("Scope").SelectOptionAsync("thisWorkflow");
+            const string selfStart =
+                "Signal end event #4 throws 'recalls.announced' to a scope that includes this workflow, which starts on it at signal start event #2; every instance would start another.";
+            await Assertions.Expect(inspector.Locator("#signal-throw-status-4")).ToContainTextAsync(selfStart);
+            await SelectBySearchAsync(2);
+            await Assertions.Expect(inspector.Locator("#signal-start-status-2")).ToContainTextAsync(selfStart);
+            Assert.Contains(selfStart, await SaveErrorsAsync(), StringComparison.Ordinal);
+
+            // Another family's scope clears it on both.
+            await SelectBySearchAsync(4);
+            await Labeled("Scope").SelectOptionAsync("workflow");
+            await Labeled("Workflow key").FillAsync("recall-archive");
+            await Labeled("Workflow key").PressAsync("Tab");
+            await Assertions.Expect(inspector.Locator("#signal-throw-status-4")).Not.ToContainTextAsync("every instance would start another");
+            await SelectBySearchAsync(2);
+            await Assertions.Expect(inspector.Locator("#signal-start-status-2")).ToHaveTextAsync(string.Empty);
+
+            // Business keys: the signal start reads its key from the required recallNumber row,
+            // and the plain start from its required variable.
+            await Labeled("Enable business keys").CheckAsync();
+            await Labeled("Business key variable").SelectOptionAsync("recallNumber");
+            await page.Locator("#inspectorPanel").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "signal-start-inspector.png"),
+            });
+            await SelectBySearchAsync(1);
+            await Labeled("Business key variable").SelectOptionAsync("recallNumber");
+
+            // The shape in both themes.
+            await page.Locator("#svg").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "signal-start-shapes.png"),
+            });
+            async Task ToggleThemeAsync()
+            {
+                await page.Locator("#viewMenuSummary").ClickAsync();
+                await page.Locator("#themeToggleBtn").ClickAsync();
+                await page.Keyboard.PressAsync("Escape");
+            }
+
+            await ToggleThemeAsync();
+            await Assertions.Expect(startNode.Locator("use.node-icon")).ToHaveAttributeAsync("href", "#icon-signal-catch");
+            await page.Locator("#svg").ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(scenario.ArtifactDirectory, "signal-start-shapes-other-theme.png"),
+            });
+            await ToggleThemeAsync();
+            Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= window.innerWidth + 2"));
+
+            using var saved = await EditorInteractions.SaveAndCaptureDownloadAsync(page, scenario, scenario.ArtifactDirectory);
+            var nodes = saved.RootElement.GetProperty("flowNodes").EnumerateArray()
+                .ToDictionary(node => node.GetProperty("id").GetInt32());
+            Assert.False(nodes.ContainsKey(5));
+            Assert.Equal(1, saved.RootElement.GetProperty("initialEventId").GetInt32());
+            var start = nodes[2];
+            Assert.Equal("signalStartEvent", start.GetProperty("type").GetString());
+            Assert.False(start.TryGetProperty("variables", out _));
+            Assert.Equal("recallNumber", start.GetProperty("businessKey").GetProperty("variable").GetString());
+            var signal = start.GetProperty("signal");
+            Assert.Equal("recalls.announced", signal.GetProperty("name").GetString());
+            Assert.False(signal.TryGetProperty("scope", out _));
+            var mappings = signal.GetProperty("outputMappings").EnumerateArray().ToArray();
+            Assert.Equal(2, mappings.Length);
+            Assert.Equal(("recallNumber", "recallNumber", "string", true),
+                (mappings[0].GetProperty("variable").GetString(), mappings[0].GetProperty("path").GetString(),
+                 mappings[0].GetProperty("dataType").GetString(), mappings[0].GetProperty("required").GetBoolean()));
+            Assert.Equal(("product", "item.product", false),
+                (mappings[1].GetProperty("variable").GetString(), mappings[1].GetProperty("path").GetString(),
+                 mappings[1].GetProperty("required").GetBoolean()));
+            Assert.Equal("recallNumber", nodes[1].GetProperty("businessKey").GetProperty("variable").GetString());
+            Assert.Equal("signalEndEvent", nodes[4].GetProperty("type").GetString());
+            var scope = nodes[4].GetProperty("signal").GetProperty("scope");
+            Assert.Equal(("workflow", "recall-archive"),
+                (scope.GetProperty("kind").GetString(), scope.GetProperty("workflowKey").GetString()));
+
+            // A fresh page reloads the start.
+            var freshPage = await scenario.Context.NewPageAsync();
+            try
+            {
+                await freshPage.GotoAsync($"{stack.EditorBaseAddress}/", new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await EditorInteractions.PinInspectorOpenAsync(freshPage);
+                await EditorInteractions.LoadSavedFileAsync(freshPage, scenario.LastSavedFile!);
+                await EditorInteractions.SelectNodeAsync(freshPage, 2);
+                var freshInspector = freshPage.Locator("#inspector");
+                await Assertions.Expect(freshInspector.GetByLabel("Signal name", new LocatorGetByLabelOptions { Exact = true }))
+                    .ToHaveValueAsync("recalls.announced");
+                await Assertions.Expect(freshInspector.GetByLabel("Payload path", new LocatorGetByLabelOptions { Exact = true }).Nth(1))
+                    .ToHaveValueAsync("item.product");
+                await Assertions.Expect(freshInspector.GetByLabel("Business key variable", new LocatorGetByLabelOptions { Exact = true }))
+                    .ToHaveValueAsync("recallNumber");
+            }
+            finally
+            {
+                await freshPage.CloseAsync();
+            }
+        });
+    }
+
+    [Theory]
+    [InlineData(1440, 900)]
+    [InlineData(1024, 768)]
     [InlineData(390, 844)]
     public async Task R16_SignalsPageReviewsThrowsAndListsABroadcast(int viewportWidth, int viewportHeight)
     {
@@ -403,7 +595,7 @@ public sealed class SignalSmokeTests(BrowserStackFixture stack)
             await payload.PressAsync("Tab");
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
             var review = page.Locator("section[aria-labelledby='signal-review-heading']");
-            await Assertions.Expect(review).ToContainTextAsync("Waiting now0 waits");
+            await Assertions.Expect(review).ToContainTextAsync("Reaches now0 waits");
             await Assertions.Expect(review).ToContainTextAsync("ScopeAll workflows");
             await review.ScreenshotAsync(new LocatorScreenshotOptions
             {
@@ -461,7 +653,7 @@ public sealed class SignalSmokeTests(BrowserStackFixture stack)
             await Assertions.Expect(page.GetByText($"No wait for '{signalName}' in instance #{instance} now.")).ToBeVisibleAsync();
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Review signal" }).ClickAsync();
             await Assertions.Expect(review).ToContainTextAsync($"ScopeInstance #{instance}");
-            await Assertions.Expect(review).ToContainTextAsync("Waiting now0 waits");
+            await Assertions.Expect(review).ToContainTextAsync("Reaches now0 waits");
             await review.GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Throw signal" }).ClickAsync();
             await Assertions.Expect(success).ToContainTextAsync("found no waiting events");
             var instanceBroadcastId = Regex.Match(await success.InnerTextAsync(), @"#(\d+)").Groups[1].Value;

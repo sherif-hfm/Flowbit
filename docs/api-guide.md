@@ -1175,7 +1175,7 @@ This is an authenticated deployment-level detail read, not a personal-task visib
 
 Each history row may include `actorClaims`, a snapshot of the actual actor's selected JWT claims, separate from the business `payload`. Claim names map to arrays of strings, including repeated values. `null` or an absent property means not recorded; `{}` means capture was enabled but no selected claim was present. These values have the same access boundary as instance detail; select suitable claims through [audit configuration](deployment.md#selected-claim-audit).
 
-A history row's `note` names the kind of step. A token that enters a [link throw event](node-reference.md#intermediatelinkthrowevent) records a `linkThrow` row from the throw to its link catch event, with null `sequenceFlowId`; the catch's own step records a `linkCatch` row from the catch to the node its outgoing flow reaches, also with null `sequenceFlowId`, as other automatic steps have. A delivered [signal](#signals) records a `signalReceived` row from the signal catch or signal boundary to the next node, performed by the fixed actor `signal`; its `payload` holds `broadcastId`, `signalName`, `subscriptionId`, `eventNodeId`, `eventKind` (`catch` or `boundary`), `hostTokenId` (the catch's token, or the boundary's host token), `cancelActivity`, `thrownBy`, and `thrownByKind`, never the signal's payload; a signal that a workflow threw adds `thrownByInstanceId` and `thrownByNodeId`. For a non-interrupting boundary the row belongs to the new branch's token. A [signal throw event](node-reference.md#intermediatesignalthrowevent) records its throw on the row of its advance to the next node, and a [signal end event](node-reference.md#signalendevent) on an additional row from the end event to itself, both with note `signalThrown`, performed by the step's actor, with no action ID; the `payload` holds `broadcastId`, `signalName`, `eventNodeId`, `eventKind` (`throw` or `end`), `scopeKind`, `workflowKey` (the target family, null for all workflows), and `recipientCount`, never a business key or a payload value. The throw's outgoing flow records flow evidence of kind `signalThrown`.
+A history row's `note` names the kind of step. A token that enters a [link throw event](node-reference.md#intermediatelinkthrowevent) records a `linkThrow` row from the throw to its link catch event, with null `sequenceFlowId`; the catch's own step records a `linkCatch` row from the catch to the node its outgoing flow reaches, also with null `sequenceFlowId`, as other automatic steps have. A delivered [signal](#signals) records a `signalReceived` row from the signal catch or signal boundary to the next node, performed by the fixed actor `signal`; its `payload` holds `broadcastId`, `signalName`, `subscriptionId`, `eventNodeId`, `eventKind` (`catch` or `boundary`), `hostTokenId` (the catch's token, or the boundary's host token), `cancelActivity`, `thrownBy`, and `thrownByKind`, never the signal's payload; a signal that a workflow threw adds `thrownByInstanceId` and `thrownByNodeId`. For a non-interrupting boundary the row belongs to the new branch's token. A [signal throw event](node-reference.md#intermediatesignalthrowevent) records its throw on the row of its advance to the next node, and a [signal end event](node-reference.md#signalendevent) on an additional row from the end event to itself, both with note `signalThrown`, performed by the step's actor, with no action ID; the `payload` holds `broadcastId`, `signalName`, `eventNodeId`, `eventKind` (`throw` or `end`), `scopeKind`, `workflowKey` (the target family, null for all workflows), and `recipientCount`, never a business key or a payload value, plus `startCount`, the families it starts. The throw's outgoing flow records flow evidence of kind `signalThrown`. An instance a [signal start](node-reference.md#signalstartevent) creates begins with a `signalReceived` row from the start event to itself, performed by `signal`, whose `payload` holds `broadcastId`, `signalName`, `deliveryId`, `eventNodeId`, `eventKind` `start`, `thrownBy`, and `thrownByKind`, with `thrownByInstanceId` and `thrownByNodeId` when a workflow threw it; the row that leaves the start event has note `signalStart`, which is also the traversal kind of its flow.
 
 `signalSubscriptions` lists the instance's active signal waits, at most 50, with `signalSubscriptionCount` giving the total: one for each token waiting at a signal catch, and one for each signal boundary armed on an active host, with the host's node ID in `attachedToNodeId` and the boundary's `cancelActivity`. Both are empty for a definition without signal events.
 
@@ -1899,7 +1899,7 @@ A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference
 
   A blank `workflowKey` or `businessKey` returns `400` instead of reaching more. `businessKey` is trimmed as a start trims it, then compared exactly and case-sensitively, and has at most 300 characters. `400` also answers a `workflowKey` that no workflow definition has, a `businessKey` for a family that has not enabled business keys, and an `instanceId` that no instance has. A scope that matches no waiting event is accepted and completes with no deliveries: no running instance owns the key, or the instance is not waiting for the name or has finished. A repeated `idempotencyKey` returns its broadcast before any of these lookups, so it replays even after the family's last version has been deleted.
 - **Paging.** The two list routes take `page` (default 1) and `pageSize` (default 50, clamped to 1-200).
-- **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` waits (default 10,000, at most 100,000) returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few. Broadcasts that workflows threw do not count toward it; they have their own budget, `Signals.MaxOpenWorkflowBroadcasts`.
+- **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipients, waits and starts together (default 10,000, at most 100,000), returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few. Broadcasts that workflows threw do not count toward it; they have their own budget, `Signals.MaxOpenWorkflowBroadcasts`.
 - **Throwers.** `thrownByKind` is `user` or `client` for a throw through these routes, and `instance` for a broadcast a workflow threw. Such a broadcast has `thrownBy` set to the instance ID as text, `thrownByInstanceId`, `thrownByNodeId`, and `thrownByNodeName` naming the throwing instance and event, empty `thrownByRoles`, and no idempotency key. A user with a role from `Signals.RequiredRole` lists, reads, cancels, and retries it as any other; a managed client never sees it (`404`). It outlives its thrower: cancelling the throwing instance does not cancel it.
 - **Idempotency.** `idempotencyKey` is optional, trimmed, at most 300 characters, and unique per thrower (user or client). Repeating the same name, scope, and payload with it returns the first broadcast with `200`; the payload is compared as parsed JSON, so whitespace and member order do not matter, and a business key is compared after trimming. The same key with a different request, including another business key, another instance, or another kind of scope, returns `409`. The key can be used again only after retention has removed the broadcast.
 - **Outcomes.** A broadcast is `delivering` until no delivery is pending, then `completed`, or `completedWithIssues` when any delivery failed; `cancelled` stops its pending deliveries. Each delivery ends once:
@@ -1910,10 +1910,12 @@ A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference
 | `delivered` | `interrupted` | An interrupting boundary cancelled its host's work, wrote the mapped values, and continued on the boundary's flow. |
 | `delivered` | `branched` | A non-interrupting boundary started a new branch with the mapped values; the host and the boundary stay active. |
 | `delivered` | `superseded` | The mapped values made a conditional boundary on the catch interrupt it first. |
-| `skipped` | `subscription_ended` | The wait ended, or the instance stopped running, between the throw and the delivery. |
+| `delivered` | `started` | A start created an instance of the family's current published default; `instanceId` names it. |
+| `skipped` | `subscription_ended` | The wait ended, or the instance stopped running, between the throw and the delivery. For a start, the family's published default no longer starts on the name. |
 | `skipped` | `stale` | The instance changed in a way that makes the delivery obsolete, such as a cancelled call above it. |
-| `failed` | `signal_payload_invalid` | The payload failed a typed mapping. Nothing was written and the instance still waits. |
-| `failed` | `signal_delivery_rejected` | Another workflow rule failed after the mapping, such as routing that found no flow. Nothing was written. |
+| `skipped` | `business_key_conflict` | A start's business key belongs to an instance already; the description names that instance, never the key. |
+| `failed` | `signal_payload_invalid` | The payload failed a typed mapping. Nothing was written and the instance still waits, or no instance was started. |
+| `failed` | `signal_delivery_rejected` | Another workflow rule failed after the mapping, such as routing that found no flow, or a start met a conflict. Nothing was written. |
 | `failed` | `signal_token_limit` | A non-interrupting boundary's new branch would exceed the instance's `Workflow.Gateway.MaxActiveTokens` active tokens (default 1,000). Nothing was written and the boundary keeps listening. |
 | `failed` | `delivery_error` | The delivery failed unexpectedly on the job's final attempt (earlier attempts retry it), or at once because the recipient's durable state is inconsistent. |
 | `failed` | `lease_exhausted` | The delivery job's final lease expired. |
@@ -2072,7 +2074,8 @@ List a broadcast's deliveries in ascending ID.
 | --- | --- | --- | --- | --- |
 | `id` | path | integer (int64) | Yes | Broadcast ID. |
 | `status` | query | string | No | `pending`, `delivered`, `skipped`, `failed`, or `cancelled`; another value returns `400`. |
-| `instanceId` | query | integer (int64) | No | Only the delivery to this instance. |
+| `instanceId` | query | integer (int64) | No | Only the delivery to this instance, or the start that created it. |
+| `kind` | query | string | No | `wait` or `start`; another value returns `400`. |
 | `page` | query | integer (int32) | No | Default 1. |
 | `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
 
@@ -2181,7 +2184,7 @@ The response is the broadcast with `status: "delivering"` and the retried delive
 
 ### GET /api/signal-subscriptions/summary
 
-Count the active signal waits by signal name and workflow family. It writes nothing and takes no lock.
+Count the active signal waits by signal name and workflow family, and the families that a signal starts. It writes nothing and takes no lock.
 
 **Access:** Signal administrator only; managed API clients are refused. See [authentication](#http-conventions-and-authentication).
 
@@ -2192,7 +2195,7 @@ Count the active signal waits by signal name and workflow family. It writes noth
 | `businessKey` | query | string | No | Only the waits of the family's instance with this business key, trimmed and then compared exactly. Requires `workflowKey`. |
 | `instanceId` | query | integer (int64) | No | Only the waits of this instance. Not combined with `workflowKey` or `businessKey`. |
 
-A blank value means no filter. `businessKey` without `workflowKey`, `instanceId` with either, an `instanceId` below 1, and a `businessKey` longer than 300 characters return `400`. Unlike a throw, an unknown instance or a family that has not enabled business keys counts nothing instead of returning `400`.
+A blank value means no filter. `businessKey` without `workflowKey`, `instanceId` with either, an `instanceId` below 1, and a `businessKey` longer than 300 characters return `400`. Unlike a throw, an unknown instance or a family that has not enabled business keys counts nothing instead of returning `400`. A family that only starts on a name is listed with a `count` of 0 and a `startCount` of 1; with `businessKey` or `instanceId`, no start is counted. Rows are ordered by name and family in the database's order, and waits and starts are merged before the list is cut at 200 rows, so every row returned counts both.
 
 **Body:** none.
 
@@ -2215,7 +2218,7 @@ Content-Type: application/json
 
 {
   "items": [
-    { "name": "claims.policy-changed", "workflowKey": "example-signal-catch-policy-change", "count": 3 }
+    { "name": "claims.policy-changed", "workflowKey": "example-signal-catch-policy-change", "count": 3, "startCount": 0 }
   ],
   "truncated": false
 }
@@ -11135,6 +11138,7 @@ One thrown signal with its counters, payload, and recipients per workflow family
 | `thrownByInstanceId` | null or integer (int64) | No | The throwing instance when `thrownByKind` is `instance`; otherwise null. |
 | `thrownByNodeId` | null or integer (int32) | No | The signal throw or end event that threw the signal when `thrownByKind` is `instance`; otherwise null. |
 | `thrownByNodeName` | null or string | No | That event's name when it threw; otherwise null. |
+| `startCount` | integer (int32) | No | How many of `totalDeliveryCount` are starts of a workflow family, each of which creates an instance when it is delivered. Default: `0`. |
 
 </details>
 
@@ -11168,6 +11172,7 @@ A list row of a broadcast, without its payload, roles, recipients, or cancellati
 | `thrownByInstanceId` | null or integer (int64) | No | — |
 | `thrownByNodeId` | null or integer (int32) | No | — |
 | `thrownByNodeName` | null or string | No | — |
+| `startCount` | integer (int32) | No | — |
 
 </details>
 
@@ -11176,25 +11181,26 @@ A list row of a broadcast, without its payload, roles, recipients, or cancellati
 <details>
 <summary>SignalDeliveryDto</summary>
 
-One frozen recipient of a broadcast and its outcome. A managed API client receives `resultDescription` as null, because the engine's message can quote a validation expression of the receiving workflow.
+One frozen recipient of a broadcast and its outcome: a wait of an instance, or the start of a workflow family. A managed API client receives `resultDescription` as null, because the engine's message can quote a validation expression of the receiving workflow.
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
 | `id` | integer (int64) | Yes | Delivery ID. |
 | `broadcastId` | integer (int64) | Yes | — |
-| `instanceId` | integer (int64) | Yes | Runtime workflow-instance database ID. |
+| `instanceId` | null or integer (int64) | Yes | The waiting instance of a wait. For a start, the instance it created once it is `delivered`, and null before that or when it created none. |
 | `workflowKey` | string | Yes | Stable authored workflow-family key. |
-| `workflowDefinitionId` | integer (int64) | Yes | The version the instance ran when the signal was thrown. |
-| `signalNodeId` | integer (int32) | Yes | Authored ID of the signal event. |
-| `attachedToNodeId` | null or integer (int32) | Yes | The host node of a signal boundary; null for a catch. |
-| `cancelActivity` | boolean | Yes | Whether the delivery interrupts a boundary's host; always true for a catch. |
+| `workflowDefinitionId` | integer (int64) | Yes | The version the instance ran when the signal was thrown, or for a start the version that listened then. A start that ran names the version it started or tried to start, the family's published default at that moment; one skipped because the family no longer starts on the name keeps the version the throw saw. |
+| `signalNodeId` | integer (int32) | Yes | Authored ID of the signal catch, boundary, or start event; for a start, of the version above. |
+| `attachedToNodeId` | null or integer (int32) | Yes | The host node of a signal boundary; null for a catch and a start. |
+| `cancelActivity` | boolean | Yes | Whether the delivery interrupts a boundary's host; always true for a catch and false for a start. |
 | `status` | string | Yes | `pending`, `delivered`, `skipped`, `failed`, or `cancelled`. |
-| `resultCode` | null or string | Yes | Null while pending. `caught`, `interrupted`, `branched`, or `superseded` when delivered; `subscription_ended` or `stale` when skipped; `signal_payload_invalid`, `signal_delivery_rejected`, `signal_token_limit`, `delivery_error`, or `lease_exhausted` when failed; `broadcast_cancelled` when cancelled. See [Signals](#signals). |
+| `resultCode` | null or string | Yes | Null while pending. `caught`, `interrupted`, `branched`, `superseded`, or `started` (a start) when delivered; `subscription_ended`, `stale`, or `business_key_conflict` (a start) when skipped; `signal_payload_invalid`, `signal_delivery_rejected`, `signal_token_limit`, `delivery_error`, or `lease_exhausted` when failed; `broadcast_cancelled` when cancelled. See [Signals](#signals). |
 | `resultDescription` | null or string | Yes | The engine's explanation, at most 1,000 characters; null for a managed client. |
 | `attemptCount` | integer (int32) | Yes | How many times the delivery finished, including failed attempts that were later retried. |
 | `createdAt` | string (date-time) | Yes | When the throw froze it. |
 | `updatedAt` | string (date-time) | Yes | — |
 | `completedAt` | null or string (date-time) | Yes | When it finished; null while pending. |
+| `kind` | string | No | `wait` or `start`. Default: `wait`. |
 
 </details>
 
@@ -11203,7 +11209,7 @@ One frozen recipient of a broadcast and its outcome. A managed API client receiv
 <details>
 <summary>SignalEventModel</summary>
 
-The `signal` object of the four signal events. A catch or boundary names the signal it waits for and maps its payload; a throw or end event names the signal it throws, its scope, and its payload. See [signal configuration](node-reference.md#signal-configuration).
+The `signal` object of the five signal events. A catch or boundary names the signal it waits for and maps its payload; a start names the signal that starts its workflow, and its mappings declare the start variables; a throw or end event names the signal it throws, its scope, and its payload. See [signal configuration](node-reference.md#signal-configuration).
 
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
@@ -11238,7 +11244,8 @@ One member of the payload a signal throw or end event sends. Exactly one of `var
 | Field | JSON type / schema | Required | Meaning / default |
 | --- | --- | --- | --- |
 | `workflowKey` | string | Yes | A workflow family the broadcast reached. |
-| `count` | integer (int32) | Yes | Recipients the throw froze in that family. |
+| `count` | integer (int32) | Yes | Recipients the throw froze in that family, its start included. |
+| `startCount` | integer (int32) | No | 1 when the broadcast starts the family, otherwise 0. Entries stored before signal starts existed read as 0. Default: `0`. |
 
 </details>
 
@@ -11252,6 +11259,7 @@ One member of the payload a signal throw or end event sends. Exactly one of `var
 | `name` | string | Yes | Signal name. |
 | `workflowKey` | string | Yes | Workflow family. |
 | `count` | integer (int32) | Yes | Active signal waits for that name in that family now. |
+| `startCount` | integer (int32) | No | 1 when the family's published default starts on the name, otherwise 0; always 0 with a `businessKey` or `instanceId` filter. Default: `0`. |
 
 </details>
 

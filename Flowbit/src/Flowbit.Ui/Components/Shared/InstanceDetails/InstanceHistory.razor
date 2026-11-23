@@ -90,8 +90,25 @@
             "1" => ": 1 recipient",
             _ => $": {count} recipients"
         };
+        var starts = HistoryPayloadString(item, "startCount") switch
+        {
+            null or "0" => string.Empty,
+            "1" => ", 1 of them a new instance",
+            var started => $", {started} of them new instances"
+        };
         var verb = HistoryPayloadString(item, "eventKind") == "end" ? "Ended and threw" : "Threw";
-        return $"{verb} signal '{signal}' to {scope}{recipients}";
+        return $"{verb} signal '{signal}' to {scope}{recipients}{starts}";
+    }
+
+    /// <summary>The thrower of a received signal in words, after "from", or null.</summary>
+    private static string? SignalThrowerText(InstanceHistoryDto item)
+    {
+        var thrower = HistoryPayloadString(item, "thrownBy");
+        var kind = HistoryPayloadString(item, "thrownByKind");
+        return thrower is null ? null
+            : kind == "client" ? $" from API client {thrower}"
+            : kind == "instance" ? $" from instance #{thrower}"
+            : $" from {thrower}";
     }
 
     private static string HistoryDetails(InstanceHistoryDto item)
@@ -164,14 +181,14 @@
         if (item.Note is "signalReceived")
         {
             var signal = HistoryPayloadString(item, "signalName") ?? "a signal";
-            var thrower = HistoryPayloadString(item, "thrownBy");
-            var kind = HistoryPayloadString(item, "thrownByKind");
-            var by = thrower is null ? null
-                : kind == "client" ? $" from API client {thrower}"
-                : kind == "instance" ? $" from instance #{thrower}"
-                : $" from {thrower}";
+            var by = SignalThrowerText(item);
             var broadcast = HistoryPayloadString(item, "broadcastId");
-            return $"Received signal '{signal}'{by}" + (broadcast is null ? string.Empty : $" (broadcast #{broadcast})");
+            var verb = HistoryPayloadString(item, "eventKind") == "start" ? "Started by signal" : "Received signal";
+            return $"{verb} '{signal}'{by}" + (broadcast is null ? string.Empty : $" (broadcast #{broadcast})");
+        }
+        if (item.Note is "signalStart")
+        {
+            return "Left the signal start event";
         }
         if (item.Note is "signalThrown")
         {

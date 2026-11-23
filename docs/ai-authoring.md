@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [UI guide](ui-guide.md) · [API reference](api-guide.md) · [Node reference](node-reference.md)
 
-The Flowbit.Ui workflow editor's **AI assistant** creates and modifies complete workflow definitions from requirements. It supports the same 28 node types and canonical properties as the editor/runtime, including JavaScript and NCalc, REST services, messages, timers, conditional, boundary, and link events, signal catch, boundary, throw, and end events, advanced gateways, shared variables, roles, assignments, and multi-instance outcomes. It does not restrict workflows to approvals.
+The Flowbit.Ui workflow editor's **AI assistant** creates and modifies complete workflow definitions from requirements. It supports the same 29 node types and canonical properties as the editor/runtime, including JavaScript and NCalc, REST services, messages, timers, conditional, boundary, and link events, signal catch, boundary, throw, end, and start events, advanced gateways, shared variables, roles, assignments, and multi-instance outcomes. It does not restrict workflows to approvals.
 
 The assistant returns a proposal for review. Applying a proposal changes the editable diagram; saving creates an unpublished version using the normal editor action. Generation does not save, publish, start an instance, run generated scripts, or call authored service endpoints. Business correctness and external integration contracts still need review even when Flowbit validation succeeds.
 

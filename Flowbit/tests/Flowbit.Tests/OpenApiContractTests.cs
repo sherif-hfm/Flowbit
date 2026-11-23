@@ -205,6 +205,30 @@ public sealed class OpenApiContractTests
         Assert.Equal(["200", "400", "401", "403"], summary.Responses!.Keys.Order().ToArray());
     }
 
+    [Fact]
+    public async Task SignalStartMembersAndTheDeliveryKindFilterAreDocumented()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        var schemas = document.Components!.Schemas!;
+
+        var delivery = schemas["SignalDeliveryDto"].Properties!;
+        Assert.Contains("kind", delivery.Keys);
+        Assert.Contains("start", delivery["kind"].Description, StringComparison.Ordinal);
+        Assert.Contains("start", delivery["instanceId"].Description, StringComparison.Ordinal);
+        Assert.True(delivery["instanceId"].Type!.Value.HasFlag(Microsoft.OpenApi.JsonSchemaType.Null),
+            "A start's instanceId is null until it has created an instance.");
+        foreach (var name in new[] { "SignalBroadcastSummaryDto", "SignalBroadcastDetailDto", "SignalRecipientCountDto", "SignalSubscriptionCountDto" })
+        {
+            Assert.Contains("startCount", schemas[name].Properties!.Keys);
+        }
+
+        var deliveries = document.Paths["/api/signal-broadcasts/{id}/deliveries"].Operations![HttpMethod.Get];
+        Assert.Contains("kind", deliveries.Parameters!.Select(parameter => parameter.Name!));
+    }
+
     private static void AssertRoleOperation(
         Microsoft.OpenApi.OpenApiDocument document,
         string path,

@@ -163,7 +163,7 @@ public sealed partial class WorkflowEngineService
         {
             Refuse(
                 instance, node, SignalRuntimeTelemetry.RefusalCauses.Recipients,
-                $"{label} would reach more than {maxRecipients} waiting subscriptions; "
+                $"{label} would reach more than {maxRecipients} recipients; "
                 + "narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.");
         }
 
@@ -186,7 +186,8 @@ public sealed partial class WorkflowEngineService
                 BpmnFlowNodeTypes.IsSignalEnd(node.Type) ? "end" : "throw"),
             ["scopeKind"] = JsonSerializer.SerializeToElement(signal.Scope.Kind),
             ["workflowKey"] = JsonSerializer.SerializeToElement(scope.WorkflowKey),
-            ["recipientCount"] = JsonSerializer.SerializeToElement(written.RecipientCount)
+            ["recipientCount"] = JsonSerializer.SerializeToElement(written.RecipientCount),
+            ["startCount"] = JsonSerializer.SerializeToElement(written.StartCount)
         };
     }
 

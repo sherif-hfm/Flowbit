@@ -249,7 +249,7 @@ public sealed class WorkflowDefinitionValidator(
         if (!definition.FlowNodes.Any(n => BpmnFlowNodeTypes.IsEntry(n.Type)))
         {
             throw new WorkflowDomainException(
-                "Workflow must have at least one entry event (startEvent, messageStartEvent, or timerStartEvent).");
+                "Workflow must have at least one entry event (startEvent, messageStartEvent, timerStartEvent, or signalStartEvent).");
         }
 
         ValidateBusinessKeys(definition);
@@ -417,11 +417,14 @@ public sealed class WorkflowDefinitionValidator(
                     || BpmnFlowNodeTypes.IsCallActivity(node.Type)
                     || BpmnFlowNodeTypes.IsLinkCatch(node.Type)
                     || BpmnFlowNodeTypes.IsSignalWait(node.Type)
-                    || BpmnFlowNodeTypes.IsSignalThrow(node.Type))
+                    || BpmnFlowNodeTypes.IsSignalThrow(node.Type)
+                    || BpmnFlowNodeTypes.IsSignalStart(node.Type))
                 && outgoing.Count != 1)
             {
                 var kind = BpmnFlowNodeTypes.IsStart(node.Type)
                     ? "Start event"
+                    : BpmnFlowNodeTypes.IsSignalStart(node.Type)
+                        ? "Signal start event"
                     : BpmnFlowNodeTypes.IsLinkCatch(node.Type)
                         ? "Link catch event"
                     : BpmnFlowNodeTypes.IsSignalCatch(node.Type)
@@ -517,6 +520,11 @@ public sealed class WorkflowDefinitionValidator(
             if (BpmnFlowNodeTypes.ThrowsSignal(node.Type))
             {
                 ValidateSignalThrow(node, definition, incoming, outgoing);
+            }
+
+            if (BpmnFlowNodeTypes.IsSignalStart(node.Type))
+            {
+                ValidateSignalStart(node, definition);
             }
 
             if (BpmnFlowNodeTypes.IsMessageStart(node.Type))
@@ -799,6 +807,12 @@ public sealed class WorkflowDefinitionValidator(
                 continue;
             }
 
+            if (BpmnFlowNodeTypes.IsSignalStart(node.Type) && node.Idempotency is not null)
+            {
+                throw new WorkflowDomainException(
+                    $"{SignalEventRules.Label(node)} cannot define idempotency; a broadcast starts one instance per workflow, and businessKey rejects a repeated case.");
+            }
+
             if (HasUnsupportedSignalEventNodeMetadata(node))
             {
                 throw new WorkflowDomainException(
@@ -808,9 +822,13 @@ public sealed class WorkflowDefinitionValidator(
     }
 
     // A signal event carries only the common node properties and its signal
-    // configuration; a boundary also names its host and whether it interrupts.
+    // configuration; a boundary also names its host and whether it interrupts, and a
+    // start may configure the entry business key.
     private static bool HasUnsupportedSignalEventNodeMetadata(FlowNodeModel node) =>
-        HasUnsupportedLinkEventNodeMetadata(node, allowAttachment: BpmnFlowNodeTypes.IsSignalBoundary(node.Type))
+        HasUnsupportedLinkEventNodeMetadata(
+            node,
+            allowAttachment: BpmnFlowNodeTypes.IsSignalBoundary(node.Type),
+            allowBusinessKey: BpmnFlowNodeTypes.IsSignalStart(node.Type))
         || !string.IsNullOrWhiteSpace(node.ActivationCondition)
         || node.GatewayRef is not null
         || node.JoinCancellation is not null
@@ -1297,7 +1315,8 @@ public sealed class WorkflowDefinitionValidator(
     private static bool HasUnsupportedScopedInterruptNodeMetadata(
         FlowNodeModel node,
         bool allowAutomaticMultiInstance = false,
-        bool allowAttachment = false) =>
+        bool allowAttachment = false,
+        bool allowBusinessKey = false) =>
         node.Roles is { Count: > 0 }
         || node.RequiresClaim
         || !string.Equals(node.ClaimMode, ClaimModes.Fresh, StringComparison.OrdinalIgnoreCase)
@@ -1305,7 +1324,7 @@ public sealed class WorkflowDefinitionValidator(
         || node.Variables is { Count: > 0 }
         || node.Service is not null
         || node.Message is not null
-        || node.BusinessKey is not null
+        || (node.BusinessKey is not null && !allowBusinessKey)
         || node.Idempotency is not null
         || !string.Equals(node.ScriptFormat, ScriptFormats.NCalc, StringComparison.OrdinalIgnoreCase)
         || node.Assignments is { Count: > 0 }
@@ -1323,8 +1342,14 @@ public sealed class WorkflowDefinitionValidator(
 
     // A link event carries only its identity, name, and layout: the name pairs it,
     // and the routing lives on the catch's one outgoing flow.
-    private static bool HasUnsupportedLinkEventNodeMetadata(FlowNodeModel node, bool allowAttachment = false) =>
-        HasUnsupportedScopedInterruptNodeMetadata(node, allowAttachment: allowAttachment)
+    private static bool HasUnsupportedLinkEventNodeMetadata(
+        FlowNodeModel node,
+        bool allowAttachment = false,
+        bool allowBusinessKey = false) =>
+        HasUnsupportedScopedInterruptNodeMetadata(
+            node,
+            allowAttachment: allowAttachment,
+            allowBusinessKey: allowBusinessKey)
         || node.AsyncBefore
         || node.AsyncAfter
         || node.Job is not null
@@ -2832,6 +2857,75 @@ public sealed class WorkflowDefinitionValidator(
             mappings.Select(ToTypedOutputDefinition),
             definition.Variables);
 
+        ValidateSignalMappingSharedAccess(node, definition, mappings);
+    }
+
+    /// <summary>
+    /// A signal start: its name, no scope or payload, one start per name, then its typed
+    /// mappings by the message start's rules, because they declare start variables. Like
+    /// every signal mapping, a start's mappings read and write no shared alias.
+    /// </summary>
+    private static void ValidateSignalStart(FlowNodeModel node, WorkflowModel definition)
+    {
+        if (SignalEventRules.StartProblems(definition, node).FirstOrDefault() is { } problem)
+        {
+            throw new WorkflowDomainException(problem);
+        }
+
+        var label = SignalEventRules.Label(node);
+        var mappings = node.Signal!.OutputMappings ?? [];
+        if (mappings.Any(mapping => mapping is null))
+        {
+            throw new WorkflowDomainException($"{label} output mappings cannot contain null entries.");
+        }
+
+        var variables = new List<VariableModel>(mappings.Count);
+        foreach (var mapping in mappings)
+        {
+            if (mapping.DataType is null || mapping.IsArray is null)
+            {
+                throw new WorkflowDomainException(
+                    $"{label} output mapping for '{mapping.Variable}' must declare dataType and isArray.");
+            }
+
+            var hasDefault = mapping.DefaultValue is { } defaultValue
+                && defaultValue.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+            if (string.IsNullOrWhiteSpace(mapping.Path) && !hasDefault)
+            {
+                throw new WorkflowDomainException(
+                    $"{label} output mapping for '{mapping.Variable}' must have a path unless defaultValue is configured.");
+            }
+
+            var variable = ToMessageStartVariable(mapping);
+            variables.Add(variable);
+            if (hasDefault
+                && !TypedOutputValueValidator.IsValidAuthoredDefault(
+                    mapping.DefaultValue!.Value,
+                    variable.DataType,
+                    variable.IsArray))
+            {
+                throw new WorkflowDomainException(
+                    $"{label} output mapping default for '{mapping.Variable}' must be {TypedOutputValueValidator.DescribeExpected(variable.DataType, variable.IsArray)}.");
+            }
+        }
+
+        ValidateVariables(
+            variables,
+            $"signal start event #{node.Id} output mappings",
+            requireDefault: false,
+            allowRequiredDefault: true);
+        ValidateSignalMappingSharedAccess(node, definition, mappings);
+    }
+
+    /// <summary>
+    /// A signal mapping neither writes nor reads a shared alias: one broadcast would write
+    /// the same shared key from every recipient, and a delivery acquires no shared row.
+    /// </summary>
+    private static void ValidateSignalMappingSharedAccess(
+        FlowNodeModel node,
+        WorkflowModel definition,
+        IReadOnlyList<MessageOutputMappingModel> mappings)
+    {
         var shared = definition.Variables
             .Where(variable => string.Equals(variable.Scope, VariableScopes.Shared, StringComparison.Ordinal))
             .Select(variable => variable.Name)
@@ -3248,15 +3342,15 @@ public sealed class WorkflowDefinitionValidator(
                     $"Entry event #{entry.Id} has unsupported businessKey.uniqueness '{businessKey.Uniqueness}'.");
             }
 
-            if (BpmnFlowNodeTypes.IsMessageStart(entry.Type))
+            if (EntryEventRules.DeclaresStartMappings(entry.Type))
             {
-                var mapping = entry.Message?.OutputMappings.FirstOrDefault(candidate =>
+                var mapping = EntryEventRules.StartMappings(entry).FirstOrDefault(candidate =>
                     candidate is not null
                     && string.Equals(candidate.Variable, businessKey.Variable, StringComparison.Ordinal));
                 if (mapping is null)
                 {
                     throw new WorkflowDomainException(
-                        $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' is not a typed output mapping on the message start event.");
+                        $"Entry event #{entry.Id} businessKey variable '{businessKey.Variable}' is not a typed output mapping on the {EntryEventRules.Kind(entry.Type).ToLowerInvariant()}.");
                 }
 
                 if (!mapping.Required
@@ -3332,11 +3426,8 @@ public sealed class WorkflowDefinitionValidator(
                 }],
                 $"entry event #{entry.Id} idempotency variable");
 
-            var collidesWithEntryVariable = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
-                ? entry.Message?.OutputMappings.Any(mapping => mapping is not null
-                    && string.Equals(mapping.Variable, variableName, StringComparison.OrdinalIgnoreCase)) == true
-                : entry.Variables.Any(variable =>
-                    string.Equals(variable.Name, variableName, StringComparison.OrdinalIgnoreCase));
+            var collidesWithEntryVariable = EntryEventRules.DeclaredNames(entry).Any(name =>
+                string.Equals(name, variableName, StringComparison.OrdinalIgnoreCase));
             if (collidesWithEntryVariable)
             {
                 throw new WorkflowDomainException(
@@ -3707,17 +3798,20 @@ public sealed class WorkflowDefinitionValidator(
 
         foreach (var entry in definition.FlowNodes.Where(node => BpmnFlowNodeTypes.IsEntry(node.Type)))
         {
-            var entryNames = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
-                ? entry.Message?.OutputMappings
-                    .Where(mapping => mapping is not null)
-                    .Select(mapping => mapping.Variable) ?? []
-                : entry.Variables.Select(variable => variable.Name);
-
-            foreach (var entryName in entryNames)
+            foreach (var entryName in EntryEventRules.DeclaredNames(entry))
             {
                 if (!processVariables.TryGetValue(entryName, out var processVariable))
                 {
                     continue;
+                }
+
+                // A broadcast reaches one start per family, but a shared alias would let it
+                // write one deployment-wide value from every family it starts.
+                if (BpmnFlowNodeTypes.IsSignalStart(entry.Type))
+                {
+                    throw new WorkflowDomainException(
+                        $"Entry event #{entry.Id} variable '{entryName}' collides with a process variable; "
+                        + "a signal start's mappings declare instance start variables only.");
                 }
 
                 if (!string.Equals(processVariable.Scope, VariableScopes.Shared, StringComparison.Ordinal)
@@ -3811,11 +3905,7 @@ public sealed class WorkflowDefinitionValidator(
         IReadOnlyCollection<SequenceFlowModel> incoming,
         IReadOnlyCollection<SequenceFlowModel> outgoing)
     {
-        var kind = BpmnFlowNodeTypes.IsMessageStart(entry.Type)
-            ? "Message start event"
-            : BpmnFlowNodeTypes.IsTimerStart(entry.Type)
-                ? "Timer start event"
-            : "Start event";
+        var kind = EntryEventRules.Kind(entry.Type);
 
         if (incoming.Count != 0)
         {

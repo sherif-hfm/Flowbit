@@ -186,6 +186,9 @@ public sealed class WorkflowDefinitionRepository(
         var hasExisting = await dbContext.WorkflowDefinitions
             .AnyAsync(w => w.WorkflowKey == definition.Id, cancellationToken);
         var isDefault = !hasExisting;
+        var lockedStarts = isDefault && isPublished
+            ? await LockSignalStartsAsync(definition.Id, cancellationToken)
+            : [];
         var hasBusinessKeys = HasBusinessKeys(definition);
         var scopeActive = await dbContext.WorkflowBusinessKeyScopes
             .AnyAsync(scope => scope.WorkflowKey == definition.Id, cancellationToken);
@@ -240,6 +243,10 @@ public sealed class WorkflowDefinitionRepository(
         await PersistSharedVariableBindingsAsync(entity.Id, definition, cancellationToken);
         await PersistBusinessCalendarReferencesAsync(entity.Id, definition, cancellationToken);
         await PersistCallTargetsAsync(entity.Id, definition, cancellationToken);
+        if (isDefault && isPublished)
+        {
+            await SyncSignalStartsAsync(definition.Id, lockedStarts, entity.Id, definition, cancellationToken);
+        }
         await transaction.CommitAsync(cancellationToken);
         var record = ToRecord(entity);
 
@@ -349,6 +356,10 @@ public sealed class WorkflowDefinitionRepository(
                 await publishTransaction.CommitAsync(cancellationToken);
                 return true;
             }
+            // Publishing the family's default makes it listen.
+            var lockedStarts = target.IsDefault
+                ? await LockSignalStartsAsync(target.WorkflowKey, cancellationToken)
+                : [];
             await EnsureSharedVariablesActiveForPublishAsync(id, cancellationToken);
             await PersistBusinessCalendarReferencesAsync(id, target.Definition, cancellationToken);
             var scopeActive = await dbContext.WorkflowBusinessKeyScopes
@@ -384,6 +395,11 @@ public sealed class WorkflowDefinitionRepository(
                     .ExecuteUpdateAsync(
                         setters => setters.SetProperty(w => w.IsPublished, true),
                         cancellationToken);
+            if (target.IsDefault && publishAffected > 0)
+            {
+                await SyncSignalStartsAsync(
+                    target.WorkflowKey, lockedStarts, id, target.Definition, cancellationToken);
+            }
             await publishTransaction.CommitAsync(cancellationToken);
             if (publishAffected > 0)
             {
@@ -495,6 +511,7 @@ public sealed class WorkflowDefinitionRepository(
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         await LockWorkflowFamilyAsync(targetKey, cancellationToken);
+        var lockedStarts = await LockSignalStartsAsync(targetKey, cancellationToken);
 
         var entity = await dbContext.WorkflowDefinitions.AsNoTracking()
             .Where(w => w.Id == id)
@@ -607,6 +624,20 @@ public sealed class WorkflowDefinitionRepository(
             "Timer-start definition is no longer the published default.",
             cancellationToken);
 
+        // Signal starts follow the published default in this transaction, unlike timer
+        // starts, which the Worker schedules later: a signal is not kept, so a late
+        // subscription would miss it. Clearing the flag of a version that is not the
+        // default changes nothing.
+        if (isDefault || entity.IsDefault)
+        {
+            await SyncSignalStartsAsync(
+                entity.WorkflowKey,
+                lockedStarts,
+                isDefault ? id : null,
+                isDefault ? entity.Definition : null,
+                cancellationToken);
+        }
+
         await transaction.CommitAsync(cancellationToken);
 
         if (affected > 0)
@@ -644,6 +675,11 @@ public sealed class WorkflowDefinitionRepository(
             return false;
         }
         var workflowKey = entity.WorkflowKey;
+        // Locked before the assessment: a throw that froze this default's start holds the
+        // row until it commits, and the assessment must then see its pending delivery.
+        var lockedStarts = entity.IsDefault
+            ? await LockSignalStartsAsync(workflowKey, cancellationToken)
+            : [];
         var assessment = await AssessDeletionCoreAsync(id, workflowKey, entity.IsDefault, cancellationToken);
         if (assessment.InUse)
         {
@@ -653,6 +689,24 @@ public sealed class WorkflowDefinitionRepository(
         if (assessment.Blockers.Count > 0)
         {
             throw new WorkflowDomainException(assessment.Blockers[0]);
+        }
+
+        // The rows name this version through a restrictive key, so they move to the
+        // successor, or go, before the version is deleted.
+        if (entity.IsDefault)
+        {
+            var successorDefinition = assessment.SuccessorId is long successorToListen
+                ? await dbContext.WorkflowDefinitions.AsNoTracking()
+                    .Where(w => w.Id == successorToListen)
+                    .Select(w => w.Definition)
+                    .SingleAsync(cancellationToken)
+                : null;
+            await SyncSignalStartsAsync(
+                workflowKey,
+                lockedStarts,
+                assessment.SuccessorId,
+                successorDefinition,
+                cancellationToken);
         }
 
         long? successorId = null;
@@ -996,6 +1050,91 @@ public sealed class WorkflowDefinitionRepository(
         dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"SELECT pg_advisory_xact_lock(hashtext('workflow-family'), hashtext({workflowKey}))",
             cancellationToken);
+
+    /// <summary>
+    /// Locks the family's signal start subscriptions for update. Every operation that can
+    /// change the family's published default calls this right after the family lock and
+    /// before any other write: a throw share-locks the rows it freezes, so the operation
+    /// waits for a throw in flight and then sees its pending deliveries, which a deletion's
+    /// assessment must find.
+    /// </summary>
+    private Task<List<SignalStartSubscriptionEntity>> LockSignalStartsAsync(
+        string workflowKey,
+        CancellationToken cancellationToken) =>
+        dbContext.SignalStartSubscriptions
+            .FromSqlInterpolated(
+                $"""
+                SELECT *
+                FROM flowbit.signal_start_subscriptions
+                WHERE "WorkflowKey" = {workflowKey}
+                ORDER BY "Id"
+                FOR UPDATE
+                """)
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+    /// <summary>
+    /// Makes the family's signal start subscriptions equal the signal starts of its new
+    /// published default, or removes them when it has none. A name both versions start on
+    /// keeps its row, updated in place: a throw waiting on the row then freezes the new
+    /// version, where a deleted and inserted row would be missed.
+    /// </summary>
+    private async Task SyncSignalStartsAsync(
+        string workflowKey,
+        IReadOnlyList<SignalStartSubscriptionEntity> locked,
+        long? defaultId,
+        WorkflowModel? defaultDefinition,
+        CancellationToken cancellationToken)
+    {
+        var desired = defaultId is null || defaultDefinition is null
+            ? []
+            : SignalEventRules.SignalStarts(defaultDefinition);
+        if (locked.Count == 0 && desired.Count == 0)
+        {
+            return;
+        }
+
+        var byName = locked.ToDictionary(row => row.SignalName, StringComparer.Ordinal);
+        var kept = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var start in desired)
+        {
+            kept.Add(start.SignalName);
+            if (byName.TryGetValue(start.SignalName, out var row))
+            {
+                await dbContext.SignalStartSubscriptions
+                    .Where(subscription => subscription.Id == row.Id)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(subscription => subscription.WorkflowDefinitionId, defaultId!.Value)
+                        .SetProperty(subscription => subscription.SignalNodeId, start.NodeId)
+                        .SetProperty(subscription => subscription.SignalNodeName, start.NodeName),
+                        cancellationToken);
+                continue;
+            }
+
+            dbContext.SignalStartSubscriptions.Add(new SignalStartSubscriptionEntity
+            {
+                WorkflowKey = workflowKey,
+                SignalName = start.SignalName,
+                WorkflowDefinitionId = defaultId!.Value,
+                SignalNodeId = start.NodeId,
+                SignalNodeName = start.NodeName,
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+        }
+
+        var removed = locked
+            .Where(row => !kept.Contains(row.SignalName))
+            .Select(row => row.Id)
+            .ToArray();
+        if (removed.Length > 0)
+        {
+            await dbContext.SignalStartSubscriptions
+                .Where(subscription => removed.Contains(subscription.Id))
+                .ExecuteDeleteAsync(cancellationToken);
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
 
     private static bool HasBusinessKeys(WorkflowModel definition) =>
         definition.FlowNodes.Any(node => BpmnFlowNodeTypes.IsEntry(node.Type) && node.BusinessKey is not null);

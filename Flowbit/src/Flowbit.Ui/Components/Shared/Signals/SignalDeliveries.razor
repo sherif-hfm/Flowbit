@@ -5,7 +5,7 @@
 }
 else if (Deliveries.Count == 0)
 {
-    <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No deliveries" Description="No delivery matches the selected status." /></div>
+    <div class="px-3 pb-3"><EmptyState Icon="jobs" Title="No deliveries" Description="No delivery matches the selected status and kind." /></div>
 }
 else
 {
@@ -15,12 +15,16 @@ else
             <tbody>
                 @foreach (var delivery in Deliveries)
                 {
+                    var isStart = delivery.Kind == SignalDeliveryKinds.Start;
                     <tr>
                         <td>#@delivery.Id<span class="data-subtitle">Attempts: @delivery.AttemptCount</span></td>
-                        <td><a href="@($"instances/{delivery.InstanceId}")">Instance #@delivery.InstanceId</a><span class="data-subtitle">@delivery.WorkflowKey</span></td>
-                        <td>Node #@delivery.SignalNodeId<span class="data-subtitle">@(delivery.AttachedToNodeId is null ? "Catch" : $"Boundary on node #{delivery.AttachedToNodeId}")</span></td>
+                        <td>@if (delivery.InstanceId is long instanceId)
+                            {<a href="@($"instances/{instanceId}")">Instance #@instanceId</a>}
+                            else
+                            {<span class="text-muted">No instance</span>}<span class="data-subtitle">@delivery.WorkflowKey</span></td>
+                        <td>Node #@delivery.SignalNodeId<span class="data-subtitle">@(isStart ? "Start" : delivery.AttachedToNodeId is null ? "Catch" : $"Boundary on node #{delivery.AttachedToNodeId}")</span></td>
                         <td><StatusBadge Status="@delivery.Status" Text="@DeliveryStatusLabel(delivery.Status)" /></td>
-                        <td>@ResultLabel(delivery.ResultCode)@if (!string.IsNullOrWhiteSpace(delivery.ResultDescription))
+                        <td>@ResultLabel(delivery.ResultCode, delivery.Kind)@if (!string.IsNullOrWhiteSpace(delivery.ResultDescription))
                             {
                                 <span class="data-subtitle signal-result-description">@delivery.ResultDescription</span>
                             }</td>

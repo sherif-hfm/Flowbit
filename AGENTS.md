@@ -11,7 +11,7 @@ The model is a simplified, BPMN 2.0-aligned subset. Flow nodes are typed as
 `intermediateConditionalCatchEvent`, `conditionalBoundaryEvent`, `scopedInterruptEvent`,
 `intermediateLinkThrowEvent`, `intermediateLinkCatchEvent`,
 `intermediateSignalCatchEvent`, `signalBoundaryEvent`,
-`intermediateSignalThrowEvent`, `signalEndEvent`, and
+`intermediateSignalThrowEvent`, `signalEndEvent`, `signalStartEvent`, and
 `terminateEndEvent`, drawn with BPMN-style shapes (event circles, task rounded
 rectangles, gateway diamonds). `scopedInterruptEvent` is a documented Flowbit
 extension; strict BPMN would normally model that scope with an interruptible
@@ -232,8 +232,8 @@ The key pieces:
   events, then `validateSaveSignalEvents` and `validateSaveSignalThrows`), end
   events, link events
   (`validateSaveLinkEvents`), node types, gateway
-  topology, graph scopes, entry identity,
-  and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
+  topology, graph scopes, entry identity, signal starts
+  (`validateSaveSignalStarts`), and multi-instance outcomes. Rule helpers such as `validateTypedOutputMappings`
   and `validateRuntimeOutputTarget` stay shared across phases. The whole
   validator lives between the `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers and
   must return the same ordered error array for the same candidate;
@@ -270,7 +270,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E24/H1–H17/R1–R16 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E25/H1–H18/R1–R16 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -986,7 +986,7 @@ Storage follows the hybrid design:
   migration, job, completion reason, or route exists for links; every replica
   must be upgraded before a link is saved, because an older one strands a token
   on a throw.
-- **Signal events (EVENT-04, EVENT-04B).** An `intermediateSignalCatchEvent`
+- **Signal events (EVENT-04, EVENT-04B, EVENT-04C).** An `intermediateSignalCatchEvent`
   (`signal: { name, outputMappings }`) rests until a broadcast with its name is
   delivered, and a `signalBoundaryEvent` (the same `signal`, plus `attachedToRef`
   and `cancelActivity`) listens while its host is active; see the
@@ -994,8 +994,11 @@ Storage follows the hybrid design:
   through `POST /api/signal-broadcasts`, by a pass-through
   `intermediateSignalThrowEvent`, or by a `signalEndEvent`
   (`signal: { name, scope, payload }`; see
-  [throw and end events](Flowbit/README.md#signal-throw-and-end-events)); signal
-  start events do not exist yet. Preserve these invariants:
+  [throw and end events](Flowbit/README.md#signal-throw-and-end-events)). A
+  `signalStartEvent` (`signal: { name, outputMappings }`) starts its family each
+  time a signal with its name is thrown to the family or to all workflows, while
+  its version is the published default (see
+  [signal starts](Flowbit/README.md#signal-start-events)). Preserve these invariants:
   - A signal is a broadcast, not a queue: it reaches the waits that exist when
     it is thrown and is never kept. The throw freezes its recipients in one
     `INSERT ... SELECT` over active `signal_subscriptions`, takes no runtime
@@ -1010,16 +1013,19 @@ Storage follows the hybrid design:
     and throws alike. A family or all-workflows request must keep hashing as it
     did, so stored idempotency keys replay. Never log a business key.
   - `SignalEventRules` (`Flowbit.Shared`) owns the lowercase name rule, the
-    mapping limit, `HasSignalWaits`, the four-type `Label`, and `ThrowProblems`
-    (scope kinds, payload rules and `PayloadNamePattern`, the 100-entry limit);
-    the throw endpoint and the validator use it, and the editor mirrors it
-    (`SignalEventFixtures`, `SignalThrowFixtures`). Two meanings of "signal
-    event" stay apart: `BpmnFlowNodeTypes.IsSignalWait` (catch, boundary) and
+    mapping limit, `HasSignalWaits`, `HasSignalStarts`, `SignalStarts`, the
+    five-type `Label`, `StartProblems`, and `ThrowProblems` (scope kinds, payload
+    rules and `PayloadNamePattern`, the 100-entry limit, and last the self-start
+    rule); the throw endpoint and the validator use it, and the editor mirrors it
+    (`SignalEventFixtures`, `SignalThrowFixtures`, `SignalStartFixtures`). Two
+    meanings of "signal event" stay apart: `BpmnFlowNodeTypes.IsSignalWait` (catch, boundary) and
     `HasSignalWaits` gate every subscription statement, the single-outgoing rule
     of the waits, the open-subscription version rule, and **Waiting for
-    signals**; `IsSignalEvent` (all four types) gates `signal` on a node, the
+    signals**; `IsSignalEvent` (all five types) gates `signal` on a node, the
     migrator's clearing of `signal`, and `RequiresDurableProcessing`.
-    `IsSignalThrow`, `IsSignalEnd`, and `ThrowsSignal` name the two that throw.
+    `IsSignalThrow`, `IsSignalEnd`, and `ThrowsSignal` name the two that throw,
+    and `IsSignalStart` the start, which is an entry (`IsEntry`, pass-through)
+    but not `IsStart`, a wait, or a thrower.
   - A subscription lives exactly as long as its wait. Its rows are written only
     under the instance lock: `EnsureSignalSubscriptionsAsync` runs in routing
     after the conditional-boundary activation re-check, and
@@ -1133,13 +1139,64 @@ Storage follows the hybrid design:
     `businessKey`, or `ownBusinessKey` scope names, other than the definition's
     own key, to have a definition (`FindSignalTargetProblemsAsync`); drafts save
     without it, and the AI assistant reports it as a publication blocker only.
+  - A family listens for a signal start through `signal_start_subscriptions`, one
+    row per family and name while its published default has a signal start with
+    that name. Only `WorkflowDefinitionRepository` writes it, in the four
+    operations that change a default (`AddAsync` of a first version saved as
+    published, `SetPublishedAsync` on the default, `SetDefaultAsync`, and
+    `DeleteAsync` of the default): each locks the family's rows `FOR UPDATE` right
+    after the exclusive family lock (`LockSignalStartsAsync`), then makes them
+    equal the new default's starts (`SyncSignalStartsAsync`), updating a
+    persisting name's row in place, and a deletion syncs before it deletes the
+    version the rows reference. A new operation that changes a default must do the
+    same; no Worker reconciles the table.
+  - A family or all-workflows throw freezes its waits, then, with the allowance
+    left, one `start` delivery per listening family in a second `INSERT ... SELECT`
+    that share-locks the rows it reads (`FOR SHARE OF s`), so a default change
+    waits for a throw in flight and then sees its pending delivery. Business-key
+    and instance scopes freeze no start. `FreezeDeliveriesAsync` returns
+    `SignalFreezeResult`, the recipient limit counts both, and the broadcast
+    stores `StartDeliveryCount` and a per-family `startCount`. A start delivery
+    has no subscription, token, or activation (`CK_signal_deliveries_kind_shape`,
+    one per broadcast and family through `IX_signal_deliveries_start`).
+  - A start delivery (`StartFromSignalAsync`) takes the shared family lock, then
+    its delivery row, reads the family's current published default and its start
+    on the name (none: `skipped` `subscription_ended`), runs the entry checks,
+    resolves the mappings through `ResolveStartMappings` without an instance (a
+    failure is `SignalPayloadException`), and creates the instance through
+    `CreateStartedInstanceAsync`, which the message start shares, as the actor
+    `signal` at the broadcast's `AutomaticActivationCount`, with a
+    `signalReceived` history row (`eventKind` `start`) and
+    `forceDurableActivities`. The step leaving the start records note and
+    traversal kind `signalStart` and visit reason `signalReceived`. Once the start
+    has read its family's default, every outcome without an instance (a payload
+    that fails a mapping, a duplicate business key, a conflict, a refused start)
+    throws `SignalStartOutcomeException` with that version and start event, and
+    the processor records it after the start's transaction rolls back through
+    `CompleteStartWithoutInstanceAsync`, so the row names what its description is
+    about. Routing from a start runs script and service tasks as Worker jobs
+    (`forceDurableActivities`), so no task's own failure text, which can quote a
+    value, reaches a start delivery. A start locks no existing instance and never
+    the broadcast. A retry moves a failed start to
+    its family's subscription, share-locking it, or skips it when the family no
+    longer listens.
+  - `EntryEventRules` (`Flowbit.Shared`) is the one place that knows where an
+    entry declares its start variables (`variables`, `message.outputMappings`,
+    or `signal.outputMappings`) and its noun; validation and the engine read it
+    rather than branching on the entry's type. A signal start may set
+    `businessKey` but not `idempotency`, and `ThrowProblems` refuses a throw
+    whose scope includes the definition's own family when the definition starts
+    on the name it throws.
   Every replica must be upgraded before a signal definition is saved: an older
   API routes a token onto a catch, or into a boundary's host, without a
-  subscription, and strands a token on a throw or signal end event. Signal
-  boundaries need no migration beyond `AddSignalEvents` and
-  `ValidateSignalEventConstraints`; throw and end events need
-  `AddSignalThrowEvents`, whose down migration refuses while an `instance`
-  broadcast remains.
+  subscription, strands a token on a throw or signal end event, and changes a
+  default without moving its start subscriptions. Signal boundaries need no
+  migration beyond `AddSignalEvents` and `ValidateSignalEventConstraints`; throw
+  and end events need `AddSignalThrowEvents`, whose down migration refuses while
+  an `instance` broadcast remains; start events need `AddSignalStartEvents` and
+  then `ValidateSignalStartConstraints` (outside a transaction), and the down
+  migration refuses while a start delivery or a definition with a signal start
+  remains.
 - **Intermediate conditional catch events.** An
   `intermediateConditionalCatchEvent` is a persisted resting position with at
   least one incoming flow and exactly one unconditional outgoing flow. Its
@@ -2531,7 +2588,8 @@ A node in the workflow. `type` is one of `startEvent`, `userTask`, `task`,
 `errorBoundaryEvent`, `conditionalBoundaryEvent`, `intermediateMessageCatchEvent`,
 `intermediateConditionalCatchEvent`, `intermediateLinkThrowEvent`,
 `intermediateLinkCatchEvent`, `intermediateSignalCatchEvent`, `signalBoundaryEvent`,
-`intermediateSignalThrowEvent`, `signalEndEvent`, or `messageStartEvent`.
+`intermediateSignalThrowEvent`, `signalEndEvent`, `messageStartEvent`, or
+`signalStartEvent`.
 
 ```jsonc
 {
@@ -2822,8 +2880,21 @@ Node kinds and their outgoing-flow rules:
   values, apply ordered defaults, enforce required values, and run NCalc validation.
   Like a normal start event it may independently enable node-level transport
   `idempotency` and/or a domain `businessKey`.
+- **`signalStartEvent`**: an entry point started by a broadcast signal; a thin
+  single-ring circle with an outlined triangle. Its `signal` holds a literal
+  lowercase `name` and typed `outputMappings` that declare its start variables
+  from the payload; there is no node `variables` section. It has exactly one
+  unconditional outgoing flow, drawn dashed. System-only: `IsStart` is false, so
+  no request, call, or message start selects it and `initialEventId` cannot name
+  it. While its version is the family's published default, every signal with its
+  name thrown to the family or to all workflows starts one instance as the actor
+  `signal` (history note `signalStart` on the step leaving it). It may set a
+  `businessKey` (a duplicate is skipped as `business_key_conflict`) but not
+  `idempotency`; a definition has at most one signal start per name and cannot
+  throw that name to a scope that includes its own family.
 
-A workflow may define multiple `startEvent` and/or `messageStartEvent` nodes.
+A workflow may define multiple `startEvent`, `messageStartEvent`, and
+`signalStartEvent` nodes.
 `initialEventId` is the default **user** start event (optional — a workflow whose
 only entry is a `messageStartEvent` leaves it null); it must reference a
 `startEvent` when set. `POST /api/instances` accepts optional `startEventId` to
@@ -3462,6 +3533,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "intermediateSignalThrowEvent"` | Intermediate Signal Throw Event | Double-ring event with a filled triangle. Throws its `signal.name` in its own step, inside the instance's transaction, and follows one unconditional flow without waiting for the deliveries. Simplified: the scope is one of six explicit kinds that reach one instance, one family, one business key in a family, or all families, not every catcher; the payload copies whole instance variables; a refused throw fails its step; signals thrown by workflows count toward the automatic-activation loop guard. |
 | `type: "signalEndEvent"` | Signal End Event | Thick-ring end event with a filled triangle. Throws its signal when the token enters it, then ends the token as a none end event does. Simplified as the throw event; it throws in the step that moves the token there, so behind a fork it reaches no sibling branch. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
+| `type: "signalStartEvent"` | Signal Start Event | Thin single-ring circle with an outlined triangle. Starts an instance of its family each time a signal with its `signal.name` is thrown to the family or to all workflows, mapping the payload into start variables. Simplified: only the family's published default listens, a business-key or instance scope starts nothing, each delivery starts at most one instance per family in its own Worker transaction as the actor `signal`, and a definition cannot throw a name it starts on to a scope that includes itself. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.conditionPriority` | Engine extension | Unique positive evaluation order for non-default exclusive-gateway flows; lower values run first. Legacy all-missing values derive from JSON array order. |
@@ -3484,13 +3556,13 @@ when extending the model so new features stay close to BPMN terminology.
   with a bounded timeout, synchronously during a pass-through hop or through
   durable asynchronous jobs with retries and incidents. Other connector
   implementations remain out of scope. See [durable execution](docs/developer-guide.md).
-- **A bounded event subset.** Flowbit supports none/message/timer starts,
+- **A bounded event subset.** Flowbit supports none/message/timer/signal starts,
   message/timer/conditional/signal intermediate catches, link throw/catch pairs within one
   definition, an intermediate signal throw, timer/conditional/signal/error boundaries,
   and none/error/terminate/signal ends. Conditional events observe persisted instance variables
   rather than arbitrary engine context. Message correlation remains instance
-  scoped, a thrown signal states an explicit scope, and signal start events,
-  escalation, compensation, and event-based gateways remain out of scope.
+  scoped, a thrown signal states an explicit scope, and escalation,
+  compensation, and event-based gateways remain out of scope.
 - **No pools / collaboration.** Lanes exist without a multi-party pool or message
   flow.
 - **NCalc condition language.** Gateway conditions are evaluated with NCalc, so
@@ -3525,8 +3597,8 @@ when extending the model so new features stay close to BPMN terminology.
   `IsErrorBoundary`, `IsAutomatic`, `IsServiceTask`, `IsScriptTask`, `IsCallActivity`,
   `IsUserTask`, `IsGateway`, `IsMessageCatch`, `IsLinkThrow`, `IsLinkCatch`,
   `IsLinkEvent`, `IsSignalCatch`, `IsSignalBoundary`, `IsSignalWait`,
-  `IsSignalThrow`, `IsSignalEnd`, `ThrowsSignal`, `IsSignalEvent`,
-  `IsBoundary`, `IsObservableBoundary`, `IsPassThrough`) and
+  `IsSignalThrow`, `IsSignalEnd`, `ThrowsSignal`, `IsSignalStart`, `IsSignalEvent`,
+  `IsEntry`, `IsBoundary`, `IsObservableBoundary`, `IsPassThrough`) and
   `ValidateDefinition` together so the engine and editor agree.
 
 ---
@@ -3684,6 +3756,39 @@ when extending the model so new features stay close to BPMN terminology.
   `// BEGIN/END WORKFLOW SAVE VALIDATOR` markers. The phase names an unknown
   member of `scope` or of a payload entry in words, where the server's binding
   gives only a path. `SignalThrowFixtures` runs every case through both sides.
+- **Signal start events**: `isSignalStartEventType` mirrors `IsSignalStart`,
+  `isEntryEventType` the server's `IsEntry`, and `receivesSignalType` (a wait or
+  a start) chooses `normalizeSignalDefinition` in the loader and export, which
+  keep the start's `businessKey` and drop its `roles`, `variables`, and
+  `idempotency`, so only a raw request reports them. The
+  start is an event, single-outgoing, and pass-through type; it draws
+  `icon-signal-catch` with the message start's body and icon CSS, and its option
+  "Signal Start Event (start on a broadcast signal)" follows the message start.
+  `renderSignalStartSection` is the start mode of the **Signal** section: the
+  shared name field, **Start variables from the payload**
+  (`renderSignalOutputMappings` with `startVariables`, which suggests no declared
+  variable), and one `role="status"` region (`signal-start-notes`) with the
+  duplicate-name problem, which `signalLaterStartProblemsFor` also shows on the
+  earlier start, and `signalSelfStartProblemsFor`; the business key section
+  follows, and its **Enable business keys** checkbox refocuses itself after the
+  redraw. A throw's status region shows the same self-start line, and its scope
+  help names the kinds that also start workflows.
+  `changeNodeTypeFromInspector` keeps mapping rows between a message start and
+  a signal start, and turns a plain start's variables into rows whose path is
+  the variable's name, and back. Inside the validator markers,
+  `saveEntryStartMappings` gives every entry's start declarations as
+  `EntryEventRules` does, `validateSaveSignalStarts` runs after
+  `validateSaveEntries` and `validateSaveEntryIdentity`, as `ValidateSignalStart`
+  runs after the shared entry, business-key, and topology rules, with
+  `signalStartProblems` and then `signalStartMappingProblems`, which gives the
+  server's mapping messages in its order (each mapping's type, path, and default,
+  then the `ValidateVariables` rules over the list); `validateSaveEntryIdentity`
+  gives `ValidateBusinessKeys`' messages for every entry. A duplicate name names
+  the first earlier start in document order, as `StartProblems` does.
+  `signalThrowSelfStartProblem` (with `signalStartsOnName`) ends the throw
+  phase, as `ThrowProblems` does; `signalMappingSharedAccessProblems` is shared
+  by the waits and the start. `SignalStartFixtures` runs every case through both
+  sides.
 - **Link events**: `linkEventIndex(candidate)`, inside the save-validator
   markers, is the editor's only pairing code and mirrors `LinkEventRules`
   (`trimAttributeKey`, `ordinalIgnoreCaseAttributeKey`); `validateSaveLinkEvents`

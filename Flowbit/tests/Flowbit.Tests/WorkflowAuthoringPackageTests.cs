@@ -68,7 +68,7 @@ public sealed class WorkflowAuthoringPackageTests
         }
         var nodes = definitions.GetProperty(nameof(FlowNodeModel)).GetProperty("properties").GetProperty("type").GetProperty("enum")
             .EnumerateArray().Select(value => value.GetString()!).ToArray();
-        Assert.Equal(28, nodes.Length);
+        Assert.Equal(29, nodes.Length);
         Assert.Equal(WorkflowAuthoringJson.NodeTypes, nodes);
         Assert.All(nodes, type => Assert.True(BpmnFlowNodeTypes.IsSupported(type!)));
         Assert.False(definitions.GetProperty(nameof(MessageCatchModel)).GetProperty("properties").TryGetProperty("idempotencyVariable", out _));
