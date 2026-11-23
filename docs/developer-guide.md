@@ -470,7 +470,7 @@ A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipi
 
 ### Read progress
 
-- Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed.
+- Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed. In place of polling, a receiver can subscribe to the `signalBroadcast.*` [lifecycle webhook events](#event-catalog), which announce how each broadcast finished and with which counts; `signalBroadcast.completedWithIssues` alone suits alerting.
 - Page through `GET /api/signal-broadcasts/{id}/deliveries`, filtered by `status`, `instanceId`, or `kind` (`wait` or `start`), for each recipient's `resultCode`. A start's `instanceId` is the instance it created, and is null until then. A managed client sees only its own broadcasts and no `resultDescription`.
 - `GET /api/signal-broadcasts` lists every thrower's broadcasts; repeat `thrownByKind` (`user`, `client`, or `instance`) to keep only some, for example `thrownByKind=instance` for the broadcasts workflows threw.
 - Instance detail's `signalSubscriptions` lists the signals an instance is waiting for now, armed boundaries included, and its history records each delivered signal as a `signalReceived` row naming the broadcast and its thrower.
@@ -513,6 +513,7 @@ A workflow throws a signal itself with an [`intermediateSignalThrowEvent`](node-
 - **What the thrower records.** The throw commits with its step and the token continues at once; it never waits for a delivery. History records a `signalThrown` row with the broadcast ID and `recipientCount`, and the broadcast names the instance and event as its thrower: `thrownByKind` `instance`, `thrownBy` the instance ID as text, and `thrownByInstanceId`, `thrownByNodeId`, and `thrownByNodeName`. A managed API client never sees such a broadcast. The broadcast outlives its thrower: cancelling or ending the instance does not cancel it, and a user with the signal role cancels or retries it as any other.
 - **Which waits of the same instance.** The throwing token is never a recipient, and only waits that exist when the event throws are reached: one that a parallel branch reaches later in the same step is missed, and a signal end event that a fork leads straight into throws before any sibling branch has subscribed. See [which waits a thrown signal reaches](node-reference.md#which-waits-a-thrown-signal-reaches).
 - **Refusals.** A throw that cannot be built or that a limit stops fails its step and is never dropped. In a request, such as a user's action, the request returns `400` and nothing changes, so the user's action fails. In a Worker job the job retries by its failure policy and then opens a `job_execution_failed` incident; in a signal delivery the delivery fails with `signal_delivery_rejected` and the receiving wait stays. See [refused throws](node-reference.md#refused-signal-throws).
+- **Hearing how it finished.** No caller waits for a workflow's throw, so subscribe to the `signalBroadcast.*` [lifecycle webhook events](#event-catalog) to learn that it finished, and `signalBroadcast.completedWithIssues` alone to alert on failed deliveries. Their body carries `thrownByKind` `instance` and `thrownByInstanceId`; the envelope names the scope's family, not the thrower's. A throw that reaches nothing raises `signalBroadcast.completed` with `totalDeliveryCount` 0 in the throwing step's transaction, the only notice that the signal reached no one.
 - **Budgets.** Broadcasts that workflows threw and that are still delivering count toward `Signals.MaxOpenWorkflowBroadcasts` (default 10,000); those thrown through the API count toward `Signals.MaxOpenBroadcasts` (default 20); a broadcast without recipients counts toward neither. While no Worker runs, broadcasts stay open, so a long outage can make throws from workflows fail at the budget. See the [engine settings](engine-settings.md#signal-settings).
 
 **Put an automatic task in front of the throw** (`"type": "task"` with `"asyncBefore": true`) when a refused throw must not fail a user's action, when the waits created in the same step must receive the signal, or when a throw to many recipients should not hold a request. The throw then runs in a Worker job after the earlier step has committed, with the job's retries and incident on refusal.
@@ -958,7 +959,7 @@ This is an authored expression facility, not a general HTTP query endpoint. It i
 
 ## Lifecycle webhooks
 
-Instead of polling, a receiver can subscribe to committed lifecycle events: instances starting, completing, faulting, being cancelled or reactivated; tasks being created, assigned, completed, or cancelled; delegations being granted; and incidents opening. Settings administrators manage subscriptions through the [webhook API](api-guide.md#lifecycle-webhooks) or the [Webhooks page](ui-guide.md#lifecycle-webhooks). Operators enable capture and delivery as described in [deployment](deployment.md#lifecycle-webhooks).
+Instead of polling, a receiver can subscribe to committed lifecycle events: instances starting, completing, faulting, being cancelled or reactivated; tasks being created, assigned, completed, or cancelled; delegations being granted; incidents opening; and [signal broadcasts](#broadcast-signals) finishing. Settings administrators manage subscriptions through the [webhook API](api-guide.md#lifecycle-webhooks) or the [Webhooks page](ui-guide.md#lifecycle-webhooks). Operators enable capture and delivery as described in [deployment](deployment.md#lifecycle-webhooks).
 
 How it works:
 
@@ -985,8 +986,13 @@ Event types are case-sensitive. `GET /api/webhook-event-types` returns the same 
 | `task.cancelled` | A work item is cancelled from `active`, or from `pending` when it had an assignee. A pending item without an assignee was never announced, so its cancellation emits nothing. |
 | `delegation.granted` | One delegation grant is persisted (one event per family in a batch). `acceptanceState` is `pending` or `notRequired`. |
 | `incident.opened` | A new incident row is inserted on any path, including the set-based lease-exhaustion insert and timer-start incidents without an instance. A skipped duplicate insert emits nothing. Webhook delivery failures never create incidents. |
+| `signalBroadcast.completed` | A signal broadcast's status changes to `completed`: every delivery ended as delivered, skipped, or cancelled. Also a throw that reached no recipient (in the throw's transaction, including a workflow's throwing step) and a retry that left nothing pending. |
+| `signalBroadcast.completedWithIssues` | The status changes to `completedWithIssues`: every delivery ended and at least one failed, including a delivery job that lost its last lease. |
+| `signalBroadcast.cancelled` | The status changes to `cancelled` while the broadcast was delivering. |
 
 One row change that qualifies for several events emits them in the order created, assigned, then completed or cancelled. A transition that commits in one transaction can emit both its start and end events, even if no one observed the waiting state.
+
+A signal broadcast event is raised for a committed status change only. Its counters changing while it delivers, a retry that reopens it, a repeated `idempotencyKey` that returns the stored broadcast, a throw refused at the recipient limit, and retention raise nothing. A broadcast that finishes with issues, is retried, and finishes again raises a second event with a new `eventId`, so deduplicate by event id, not by `broadcastId`. A subscription limited to a workflow family receives the broadcasts whose scope names that family: one family, a business key in it, or one of its instances. **A broadcast to all workflows reaches only subscriptions without a family**, even when instances of a family received it, so a receiver that alerts on failed signal deliveries subscribes without a family, or its callers throw to a family. For alerting, `signalBroadcast.completedWithIssues` alone avoids an event for every successful broadcast.
 
 `webhook.test` is not subscribable: the test route queues it for one subscription so you can verify a receiver.
 
@@ -1021,6 +1027,7 @@ Every body has the same envelope, in this field order, as compact UTF-8 JSON wit
 - `eventId` is a UUIDv7 and is sent as `webhook-id` on every attempt for every subscription.
 - `timestamp` is the transition time from the source row (creation for inserts, update time for activation, assignment, and reactivation, completion time for task settlement, finish time for terminal instance events), not commit order.
 - `workflowDefinitionId` and `workflowVersion` are the version applying when the transition committed. They and `instanceId` are null where they do not apply: delegations have only a family, timer-start incidents have no instance, and tests have none.
+- For a signal broadcast, `workflowKey` and `instanceId` are its scope: the family a family or business-key scope names, the instance and its family for an instance scope, and both null for a broadcast to all workflows. `instanceId` is never the throwing instance. `workflowDefinitionId` and `workflowVersion` are always null, because a broadcast belongs to no version. `timestamp` is the update time of the row version that changed the status; after a retry corrects `completedWithIssues` to `completed`, the broadcast's `completedAt` keeps its first value.
 - Every field listed for a type is present; nullable fields are JSON `null`. Fields of other types are absent.
 
 | Type | `data` fields |
@@ -1032,9 +1039,45 @@ Every body has the same envelope, in this field order, as compact UTF-8 JSON wit
 | `task.cancelled` | The task fields plus `previousTaskStatus` (`active` or `pending`); `taskStatus` is `cancelled`. |
 | `delegation.granted` | `delegationId`, `acceptanceState`. |
 | `incident.opened` | `incidentId`, `jobId` (the incident's original job), `executionTokenId` (nullable), `nodeId` and `nodeExternalId` (null when no authored node applies, as for version-change and variable-update batch jobs; `nodeExternalId` is also null when the node has none or it is longer than 300 characters), `status: "open"`. |
+| `signalBroadcast.completed`, `signalBroadcast.completedWithIssues`, `signalBroadcast.cancelled` | `broadcastId`, `signalName`, `scope` (`workflow`, `businessKey`, `instance`, or `allWorkflows`), `thrownByKind` (`user`, `client`, or `instance`), `thrownByInstanceId` (the throwing instance; null unless `thrownByKind` is `instance`), `status` (matches the type), `totalDeliveryCount` (waits and family starts the throw froze), `startCount` (how many of them are family starts), `deliveredCount`, `skippedCount`, `failedCount`, `cancelledCount`. The counts are those the finishing transaction commits, and the four outcome counters add up to `totalDeliveryCount`: a `completed` broadcast can have skipped deliveries, and a cancelled one delivered ones. |
 | `webhook.test` | `subscriptionId`. |
 
-Prefer the version-stable `nodeExternalId` to the version-scoped `nodeId`. Every string field is bounded, so a body stays under 5 KiB. Bodies deliberately omit assignees, actors, business keys, display names, URLs, variables, form values, comments, roles, claims, node attributes, and failure messages. A webhook is a notification, not an access token: read current details through the [callback routes](#read-details-after-an-event) with your own credentials.
+A broadcast that a workflow threw to one family and that finished with one failed delivery:
+
+```json
+{
+  "schemaVersion": 1,
+  "eventId": "019ab3c4-5d6e-7000-8000-000000000001",
+  "type": "signalBroadcast.completedWithIssues",
+  "timestamp": "2026-11-23T09:00:04.125000Z",
+  "workflowKey": "example-signal-boundaries-recall",
+  "workflowDefinitionId": null,
+  "workflowVersion": null,
+  "instanceId": null,
+  "data": {
+    "broadcastId": 57,
+    "signalName": "warehouse.product-recall",
+    "scope": "workflow",
+    "thrownByKind": "instance",
+    "thrownByInstanceId": 801,
+    "status": "completedWithIssues",
+    "totalDeliveryCount": 12,
+    "startCount": 1,
+    "deliveredCount": 9,
+    "skippedCount": 2,
+    "failedCount": 1,
+    "cancelledCount": 0
+  }
+}
+```
+
+Prefer the version-stable `nodeExternalId` to the version-scoped `nodeId`. Every string field is bounded, so a body stays under 5 KiB, and a signal broadcast's body under 3 KiB. Bodies deliberately omit assignees, actors, business keys, display names, URLs, variables, form values, comments, roles, claims, node attributes, and failure messages. A signal broadcast's body also omits its payload, the thrower's user name or client id, the throwing node, the cancellation reason and who cancelled, the recipients per family, and every delivery's result description. A webhook is a notification, not an access token: read current details through the [callback routes](#read-details-after-an-event) with your own credentials.
+
+Three behaviors matter to a receiver of signal broadcast events:
+
+- A broadcast stays `delivering`, and raises nothing, while one of its delivery jobs waits in an incident other than a lost lease. "Still open" is not a status change. A receiver that must hear of every problem subscribes to `incident.opened` as well; that body names the job, not the broadcast.
+- A delivery job that loses its last lease fails its pending deliveries in the transaction that opens its `lease_exhausted` incident, so that commit can store an `incident.opened` and a `signalBroadcast.completedWithIssues` event together.
+- A throw that reaches nothing stores its event with the broadcast, so the event can arrive before the caller has read the broadcast's id from the response. A receiver that matches events to its own throws must accept a `broadcastId` it has not stored yet.
 
 ### Verify a request
 
@@ -1091,6 +1134,7 @@ Bodies carry identifiers only. Read current state through existing routes with a
 | `task.*` | `GET /api/node-executions/{nodeExecutionId}` | `NodeExecution.RequiredRole` or the version's `taskAssignmentRoles`. |
 | `delegation.granted` | `GET /api/user-delegations/manage?delegationId={delegationId}` | `Delegation.AdminRoles`. |
 | `incident.opened` | `GET /api/incidents/{incidentId}` | `WorkflowJobs.RequiredRole` (default `admin`). |
+| `signalBroadcast.*` | `GET /api/signal-broadcasts/{broadcastId}` and `GET /api/signal-broadcasts/{broadcastId}/deliveries` | `Signals.RequiredRole`, or a managed client with `signals.read` for the broadcasts it threw (`404` for others). |
 
 A resource may already have moved on, or been removed by retention, by the time you read it; treat the event as a prompt to read current state.
 

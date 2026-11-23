@@ -270,7 +270,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E25/H1–H18/R1–R16 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E25/H1–H18/R1–R17 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -860,12 +860,12 @@ Storage follows the hybrid design:
   - The child and the parent's continuation run as the fixed actor `callActivity`.
     Never rebuild authority from a job payload. Unsettled calls block version
     changes on both sides, and a linked child cannot be reactivated.
-- **Lifecycle webhooks.** Committed instance, task, delegation, and incident
-  transitions are delivered to external receivers; see the
+- **Lifecycle webhooks.** Committed instance, task, delegation, incident, and
+  signal broadcast transitions are delivered to external receivers; see the
   [runtime reference](Flowbit/README.md#lifecycle-webhooks). Preserve these
   invariants:
   - Capture lives only in the deferred constraint triggers on `workflow_instances`,
-    `user_tasks`, `workflow_incidents`, and `user_delegations`
+    `user_tasks`, `workflow_incidents`, `user_delegations`, and `signal_broadcasts`
     (`capture_*_lifecycle()`), gated by the canonical `Webhooks.CaptureEnabled` row
     in `engine_settings`
     and the transaction-local `flowbit.lifecycle_events = 'off'` setting. Never add
@@ -876,6 +876,15 @@ Storage follows the hybrid design:
     when no authored node applies, listed in `capture_workflow_incident_lifecycle()`.
     Every string copied into a body must be bounded by a column limit; report a value
     that can exceed it as JSON null rather than truncating it.
+  - A signal broadcast raises `signalBroadcast.completed`, `.completedWithIssues`, or
+    `.cancelled` (EVENT-04D) for each committed change of its `Status` to that value,
+    whoever writes it; never add an event call beside a status write.
+    `capture_signal_broadcast_lifecycle()` reads the row again at commit, never its
+    `PayloadJson`, so the counts are those the transaction commits; the envelope's
+    family and instance are the scope's, so a broadcast to all workflows matches only
+    subscriptions without a family. A new broadcast status must extend that function,
+    `LifecycleEventCatalog`, and `SignalBroadcastLifecycleEventTests` together; until
+    then the function ignores it.
   - Capture runs at commit after every runtime lock and takes none; a transition
     that matches no active subscription revision writes nothing. Event bodies are
     built once by the triggers as compact UTF-8 bytes in catalog order and reused
@@ -1054,7 +1063,11 @@ Storage follows the hybrid design:
     one-statement recount would wait for the lock and then write a status from
     its older snapshot. Only a delivering broadcast has pending deliveries, so
     pending-delivery queries start from the open broadcasts. A retry moves each
-    delivery to the version its instance runs now.
+    delivery to the version its instance runs now. A broadcast's status is written
+    by `SignalBroadcastRepository` (throw, recount, cancel, reopen) and by the
+    raw-SQL `ReconcileExhaustedSignalBroadcastsAsync` of a lost lease; the
+    `signal_broadcasts` capture triggers announce every finish, so a new writer needs
+    no event code.
   - Signal mappings write instance variables only and read no shared alias.
     Every signal event, throw and end events included, requires the Worker
     (`RequiresDurableProcessing`).
@@ -2378,7 +2391,9 @@ what the cross-version `workflowKey` instance search matches.
 - `/webhooks` (`Webhooks.razor`) and `/webhooks/deliveries/{id}`
   (`WebhookDeliveryDetail.razor`) - settings-administrator webhook subscriptions,
   one-time secret panel, test events, rotation, pause/resume, archive, and delivery
-  recovery; `WebhookFormatting` owns the pure presentation rules. Secrets live only
+  recovery; `WebhookFormatting` owns the pure presentation rules, including when the
+  form notes that a signal broadcast to all workflows matches only a subscription
+  without a family. Secrets live only
   in transient component state and are cleared on dismissal, identity change,
   permission loss, and disposal.
 - `/signals` (`Signals.razor`) - `Signals.RequiredRole` page that reviews and

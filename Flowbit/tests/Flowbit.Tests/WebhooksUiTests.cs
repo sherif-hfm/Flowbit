@@ -126,6 +126,79 @@ public sealed class WebhooksUiTests
     }
 
     [Fact]
+    public void SignalBroadcastTypesHaveLabelsAndANoteForAFamilyLimitedSubscription()
+    {
+        Assert.Equal("Signal broadcast completed", WebhookFormatting.EventTypeLabel(LifecycleEventTypes.SignalBroadcastCompleted));
+        Assert.Equal("Signal broadcast completed with issues",
+            WebhookFormatting.EventTypeLabel(LifecycleEventTypes.SignalBroadcastCompletedWithIssues));
+        Assert.Equal("Signal broadcast cancelled", WebhookFormatting.EventTypeLabel(LifecycleEventTypes.SignalBroadcastCancelled));
+        // Every subscribable type has a label of its own.
+        Assert.All(LifecycleEventTypes.Subscribable, type => Assert.NotEqual(type, WebhookFormatting.EventTypeLabel(type)));
+
+        foreach (var type in LifecycleEventTypes.SignalBroadcastTypes)
+        {
+            Assert.True(WebhookFormatting.ShowsSignalBroadcastFamilyNote([LifecycleEventTypes.TaskCreated, type], "orders"));
+            Assert.True(WebhookFormatting.ShowsSignalBroadcastFamilyNote([type], " orders "));
+            Assert.False(WebhookFormatting.ShowsSignalBroadcastFamilyNote([type], null));
+            Assert.False(WebhookFormatting.ShowsSignalBroadcastFamilyNote([type], "   "));
+        }
+        Assert.False(WebhookFormatting.ShowsSignalBroadcastFamilyNote(
+            [.. LifecycleEventTypes.Subscribable.Except(LifecycleEventTypes.SignalBroadcastTypes)], "orders"));
+        Assert.False(WebhookFormatting.ShowsSignalBroadcastFamilyNote([], "orders"));
+    }
+
+    [Fact]
+    public async Task ASubscriptionReadsAllEventsOnlyWithEveryTypeAndTheFormNotesTheFamilyRule()
+    {
+        var elevenTypes = LifecycleEventTypes.Subscribable.Take(11).ToArray();
+        var everything = Subscription(SubscriptionId) with
+        {
+            Name = "Everything feed",
+            Destination = Subscription(SubscriptionId).Destination with { EventTypes = LifecycleEventTypes.Subscribable }
+        };
+        var earlier = Subscription(Guid.CreateVersion7()) with
+        {
+            Name = "Earlier feed",
+            Destination = Subscription(SubscriptionId).Destination with { EventTypes = elevenTypes }
+        };
+        using var handler = new RecordingHandler();
+        ReplyPageLoad(handler, everything, earlier);
+        await using var page = await Harness<WebhooksPage>.RenderAsync(handler, AdminToken());
+        var html = WebUtility.HtmlDecode(await page.WaitForAsync(text => text.Contains("Earlier feed", StringComparison.Ordinal)));
+
+        Assert.Contains("All events · every family", html, StringComparison.Ordinal);
+        // A subscription saved before the signal types existed lists its types, because it does not receive the new ones.
+        Assert.Contains(string.Join(", ", elevenTypes.Select(WebhookFormatting.EventTypeLabel)) + " · every family", html, StringComparison.Ordinal);
+        // Only the subscription with all fourteen types reads All events.
+        Assert.Equal(2, html.Split("All events · every family").Length);
+
+        await page.CallAsync("OpenCreate");
+        html = await page.HtmlAsync();
+        foreach (var type in LifecycleEventTypes.SignalBroadcastTypes)
+        {
+            Assert.Contains($"id=\"webhook-event-{type.Replace('.', '-')}\"", html, StringComparison.Ordinal);
+            Assert.Contains(WebhookFormatting.EventTypeLabel(type), html, StringComparison.Ordinal);
+        }
+        Assert.DoesNotContain(WebhookFormatting.SignalBroadcastFamilyNote, html, StringComparison.Ordinal);
+
+        page.Get<HashSet<string>>("formEvents").Add(LifecycleEventTypes.SignalBroadcastCompletedWithIssues);
+        html = await page.HtmlAsync();
+        Assert.DoesNotContain(WebhookFormatting.SignalBroadcastFamilyNote, html, StringComparison.Ordinal);
+
+        page.Set("formWorkflowKey", "orders");
+        html = await page.HtmlAsync();
+        Assert.Contains(
+            $"<div id=\"webhook-workflow-key-signal-note\" class=\"form-text\">{WebhookFormatting.SignalBroadcastFamilyNote}</div>",
+            html, StringComparison.Ordinal);
+        Assert.Contains("aria-describedby=\"webhook-workflow-key-help webhook-workflow-key-signal-note\"", html, StringComparison.Ordinal);
+
+        page.Set("formWorkflowKey", null);
+        html = await page.HtmlAsync();
+        Assert.DoesNotContain(WebhookFormatting.SignalBroadcastFamilyNote, html, StringComparison.Ordinal);
+        Assert.Contains("aria-describedby=\"webhook-workflow-key-help\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ThePrettyBodyIndentsWithoutEscapingAnyCharacterAgain()
     {
         const string body = """{"type":"task.assigned","data":{"name":"Müller & <Söhne>","note":"say \"hi\" \u00e9","emoji":"😀","values":[1,2.50,true,null],"empty":{},"none":[]}}""";

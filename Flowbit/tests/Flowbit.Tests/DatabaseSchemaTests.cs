@@ -479,6 +479,8 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
 
             Assert.Equal(
                 [
+                    ("TR_signal_broadcasts_lifecycle_insert", "signal_broadcasts", "capture_signal_broadcast_lifecycle"),
+                    ("TR_signal_broadcasts_lifecycle_status", "signal_broadcasts", "capture_signal_broadcast_lifecycle"),
                     ("TR_user_delegations_lifecycle_insert", "user_delegations", "capture_user_delegation_lifecycle"),
                     ("TR_user_tasks_lifecycle_insert", "user_tasks", "capture_user_task_lifecycle"),
                     ("TR_user_tasks_lifecycle_update", "user_tasks", "capture_user_task_lifecycle"),
@@ -501,6 +503,7 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         string[] names =
         [
             "audit_lifecycle_capture_setting",
+            "capture_signal_broadcast_lifecycle",
             "capture_user_delegation_lifecycle",
             "capture_user_task_lifecycle",
             "capture_workflow_incident_lifecycle",
@@ -533,8 +536,9 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
     [Fact]
     public async Task LifecycleEventBodyStringsAreBoundedByTheirSourceColumns()
     {
-        // The capture functions copy these strings into event bodies. Their 300-character limits keep every
-        // body under 5 KiB; widening one means rechecking the bound against CK_lifecycle_events_body.
+        // The capture functions copy these strings into event bodies. Their limits keep every body under
+        // 5 KiB, and a signal broadcast's body under 3 KiB; widening one means rechecking the bound against
+        // CK_lifecycle_events_body. A broadcast's other strings (scope, thrower kind, status) are fixed values.
         await using var connection = await fixture.DataSource.OpenConnectionAsync();
         await using var command = new NpgsqlCommand(
             """
@@ -546,6 +550,8 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
                   ('workflow_incidents', 'WorkflowKey'),
                   ('user_delegations', 'WorkflowKey'),
                   ('user_tasks', 'NodeExternalId'),
+                  ('signal_broadcasts', 'WorkflowKey'),
+                  ('signal_broadcasts', 'SignalName'),
                   ('lifecycle_events', 'WorkflowKey'))
             """,
             connection);
@@ -559,6 +565,8 @@ public sealed class DatabaseSchemaTests(PostgresApiFixture fixture)
         Assert.Equal(
             [
                 ("lifecycle_events.WorkflowKey", 300),
+                ("signal_broadcasts.SignalName", 100),
+                ("signal_broadcasts.WorkflowKey", 300),
                 ("user_delegations.WorkflowKey", 300),
                 ("user_tasks.NodeExternalId", 300),
                 ("workflow_incidents.WorkflowKey", 300),

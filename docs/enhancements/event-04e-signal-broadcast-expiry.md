@@ -49,6 +49,7 @@ Verified on 2026-11-17: not implemented.
 - The cancel path, which already settles every pending delivery of one broadcast in one transaction.
 - `SignalDeliveryResultCodes` in [SignalDtos.cs](../../Flowbit/src/Flowbit.Shared/Dtos/SignalDtos.cs) and the skipped outcome.
 - The recount that runs in a transaction holding the broadcast's row.
+- The `signalBroadcast.*` lifecycle webhook events of [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md), raised by triggers on `signal_broadcasts` for each committed change to `completed`, `completedWithIssues`, or `cancelled`. A status or result that expiry adds must reach `capture_signal_broadcast_lifecycle()`, `LifecycleEventCatalog`, and its tests in the same change; until then the function ignores the new status, and an expired broadcast that finishes as one of the three existing statuses raises that status's event.
 
 ## Open questions
 

@@ -94,16 +94,39 @@ public static class LifecycleEventCatalog
         new("taskStatus", "string", false, "The work item's status after the transition.")
     ];
 
+    // How a subscription limited to a workflow family matches a broadcast: by the family its scope names.
+    private const string SignalBroadcastMatching =
+        " A subscription limited to a workflow family receives the broadcasts whose scope names that family;"
+        + " a broadcast to all workflows reaches only subscriptions without a family.";
+
+    // One field list for all three broadcast types, in body order. The counts are the ones the
+    // transaction that finished the broadcast commits, and the four outcome counters add up to the total.
+    private static readonly LifecycleEventFieldDto[] SignalBroadcastFields =
+    [
+        new("broadcastId", "integer", false, "The broadcast; read its details with GET /api/signal-broadcasts/{broadcastId}."),
+        new("signalName", "string", false, "The signal's name, at most 100 characters."),
+        new("scope", "string", false, "workflow, businessKey, instance, or allWorkflows. A business key is never sent."),
+        new("thrownByKind", "string", false, "user, client, or instance. The user name or client id is never sent."),
+        new("thrownByInstanceId", "integer", true, "The instance whose throw or end event threw the signal; null unless thrownByKind is instance."),
+        new("status", "string", false, "completed, completedWithIssues, or cancelled; it matches the type."),
+        new("totalDeliveryCount", "integer", false, "The recipients the throw froze: waits and family starts."),
+        new("startCount", "integer", false, "How many of the recipients are family starts."),
+        new("deliveredCount", "integer", false, "Deliveries that reached their recipient."),
+        new("skippedCount", "integer", false, "Deliveries skipped because their recipient no longer waited or listened."),
+        new("failedCount", "integer", false, "Deliveries that failed."),
+        new("cancelledCount", "integer", false, "Deliveries that a cancel of the broadcast stopped.")
+    ];
+
     public static IReadOnlyList<LifecycleEventFieldDto> EnvelopeFields { get; } =
     [
         new("schemaVersion", "integer", false, "The body schema version; 1 in this release."),
         new("eventId", "string", false, "The event's UUIDv7. Every attempt for every subscription sends it as webhook-id."),
         new("type", "string", false, "The case-sensitive event type."),
         new("timestamp", "string", false, "The ISO 8601 UTC transition time with microseconds, taken from the source row."),
-        new("workflowKey", "string", true, "The workflow family; null only for webhook.test."),
-        new("workflowDefinitionId", "integer", true, "The workflow version's definition id when the transition committed."),
-        new("workflowVersion", "integer", true, "The workflow version number when the transition committed."),
-        new("instanceId", "integer", true, "The workflow instance; null for delegations, global incidents, and tests."),
+        new("workflowKey", "string", true, "The workflow family. For a signal broadcast, the family its scope names, or the family of its scope's instance; null for a broadcast to all workflows and for webhook.test."),
+        new("workflowDefinitionId", "integer", true, "The workflow version's definition id when the transition committed; always null for a signal broadcast, which belongs to no version."),
+        new("workflowVersion", "integer", true, "The workflow version number when the transition committed; always null for a signal broadcast."),
+        new("instanceId", "integer", true, "The workflow instance; null for delegations, global incidents, and tests. For a signal broadcast, the instance of an instance scope, never the throwing instance; null for every other scope."),
         new("data", "object", false, "The event type's fields, listed in this catalog.")
     ];
 
@@ -172,6 +195,21 @@ public static class LifecycleEventCatalog
                 new("nodeExternalId", "string", true, "The node's external id from the workflow definition; null when nodeId is null, when the node has none, or when it is longer than the 300 characters a running node can hold."),
                 new("status", "string", false, "Always open.")
             ]),
+        new(LifecycleEventTypes.SignalBroadcastCompleted,
+            "A signal broadcast's status changed to completed: every delivery ended as delivered, skipped, or cancelled. Also raised by a throw that reached no recipient, and by a retry that left nothing pending."
+            + SignalBroadcastMatching,
+            true,
+            SignalBroadcastFields),
+        new(LifecycleEventTypes.SignalBroadcastCompletedWithIssues,
+            "A signal broadcast's status changed to completedWithIssues: every delivery ended and at least one failed, including a delivery job that lost its last lease."
+            + SignalBroadcastMatching,
+            true,
+            SignalBroadcastFields),
+        new(LifecycleEventTypes.SignalBroadcastCancelled,
+            "A signal broadcast's status changed to cancelled while it was delivering."
+            + SignalBroadcastMatching,
+            true,
+            SignalBroadcastFields),
         new(LifecycleEventTypes.WebhookTest,
             "A signed test event queued for one subscription by the test route, delivered even while paused.",
             false,

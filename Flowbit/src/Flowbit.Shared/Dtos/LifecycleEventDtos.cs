@@ -76,5 +76,26 @@ public sealed record IncidentOpenedEventDataDto(
     string? NodeExternalId,
     string Status);
 
+/// <summary>
+/// Data of <c>signalBroadcast.completed</c>, <c>signalBroadcast.completedWithIssues</c>, and
+/// <c>signalBroadcast.cancelled</c>: the broadcast's counts as the transaction that finished it commits them.
+/// <c>Scope</c> is <c>workflow</c>, <c>businessKey</c>, <c>instance</c>, or <c>allWorkflows</c>, and
+/// <c>ThrownByKind</c> is <c>user</c>, <c>client</c>, or <c>instance</c>; only an <c>instance</c> thrower
+/// carries <c>ThrownByInstanceId</c>. The four outcome counters add up to <c>TotalDeliveryCount</c>.
+/// </summary>
+public sealed record SignalBroadcastEventDataDto(
+    long BroadcastId,
+    string SignalName,
+    string Scope,
+    string ThrownByKind,
+    long? ThrownByInstanceId,
+    string Status,
+    int TotalDeliveryCount,
+    int StartCount,
+    int DeliveredCount,
+    int SkippedCount,
+    int FailedCount,
+    int CancelledCount);
+
 /// <summary>Data of the <c>webhook.test</c> event that the test route queues for one subscription.</summary>
 public sealed record WebhookTestEventDataDto(Guid SubscriptionId);

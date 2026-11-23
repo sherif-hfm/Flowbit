@@ -25,9 +25,24 @@ public static class WebhookFormatting
         LifecycleEventTypes.TaskCancelled => "Task cancelled",
         LifecycleEventTypes.DelegationGranted => "Delegation granted",
         LifecycleEventTypes.IncidentOpened => "Incident opened",
+        LifecycleEventTypes.SignalBroadcastCompleted => "Signal broadcast completed",
+        LifecycleEventTypes.SignalBroadcastCompletedWithIssues => "Signal broadcast completed with issues",
+        LifecycleEventTypes.SignalBroadcastCancelled => "Signal broadcast cancelled",
         LifecycleEventTypes.WebhookTest => "Test event",
         _ => type
     };
+
+    /// <summary>
+    /// The note shown under the form's workflow family while a signal broadcast type is ticked and a family is
+    /// typed: a broadcast's family is the one its scope names, so a broadcast to all workflows has none.
+    /// </summary>
+    public const string SignalBroadcastFamilyNote =
+        "A signal broadcast to all workflows matches only a subscription without a workflow family.";
+
+    /// <summary>Whether the form shows <see cref="SignalBroadcastFamilyNote"/>.</summary>
+    public static bool ShowsSignalBroadcastFamilyNote(IReadOnlyCollection<string> eventTypes, string? workflowKey) =>
+        !string.IsNullOrWhiteSpace(workflowKey)
+        && eventTypes.Any(type => LifecycleEventTypes.SignalBroadcastTypes.Contains(type, StringComparer.Ordinal));
 
     public static string DeliveryStateLabel(string state) => state switch
     {

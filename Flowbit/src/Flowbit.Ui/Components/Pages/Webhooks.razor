@@ -10,7 +10,7 @@
 <PageTitle>Lifecycle Webhooks · Flowbit</PageTitle>
 
 <PageHeader Eyebrow="Manage" Title="Lifecycle webhooks"
-            Description="Send committed instance, task, delegation, and incident events to external systems, signed with Standard Webhooks. Delivery is at least once and unordered; receivers deduplicate by webhook-id.">
+            Description="Send committed instance, task, delegation, incident, and signal broadcast events to external systems, signed with Standard Webhooks. Delivery is at least once and unordered; receivers deduplicate by webhook-id.">
     <Actions>
         <button class="btn btn-outline-primary" @onclick="OpenCreate" disabled="@(!Token.HasToken || busy || permissionDenied)"><AppIcon Name="plus" /> Add subscription</button>
         <button class="btn btn-primary" @onclick="RefreshAsync" disabled="@(!Token.HasToken || busy)"><AppIcon Name="refresh" /> Refresh</button>
@@ -96,8 +96,13 @@ else if (!permissionDenied)
                 </div>
                 <div>
                     <label class="form-label" for="webhook-workflow-key">Workflow family (optional)</label>
-                    <input id="webhook-workflow-key" class="form-control" maxlength="300" autocomplete="off" placeholder="purchase-review" @bind="formWorkflowKey" @bind:event="oninput" />
-                    <div class="form-text">An exact workflow key. Empty matches every family. This filters events; it grants no authority.</div>
+                    @{ var familyNote = WebhookFormatting.ShowsSignalBroadcastFamilyNote(formEvents, formWorkflowKey); }
+                    <input id="webhook-workflow-key" class="form-control" maxlength="300" autocomplete="off" placeholder="purchase-review" aria-describedby="@(familyNote ? "webhook-workflow-key-help webhook-workflow-key-signal-note" : "webhook-workflow-key-help")" @bind="formWorkflowKey" @bind:event="oninput" />
+                    <div id="webhook-workflow-key-help" class="form-text">An exact workflow key. Empty matches every family. This filters events; it grants no authority.</div>
+                    @if (familyNote)
+                    {
+                        <div id="webhook-workflow-key-signal-note" class="form-text">@WebhookFormatting.SignalBroadcastFamilyNote</div>
+                    }
                 </div>
                 <div>
                     <label class="form-label" for="webhook-description">Description (optional)</label>

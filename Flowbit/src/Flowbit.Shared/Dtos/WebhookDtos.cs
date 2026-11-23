@@ -16,14 +16,28 @@ public static class LifecycleEventTypes
     public const string TaskCancelled = "task.cancelled";
     public const string DelegationGranted = "delegation.granted";
     public const string IncidentOpened = "incident.opened";
+    public const string SignalBroadcastCompleted = "signalBroadcast.completed";
+    public const string SignalBroadcastCompletedWithIssues = "signalBroadcast.completedWithIssues";
+    public const string SignalBroadcastCancelled = "signalBroadcast.cancelled";
 
     /// <summary>Queued only by the test route; never matched by a subscription's event set.</summary>
     public const string WebhookTest = "webhook.test";
 
+    /// <summary>
+    /// Every subscribable type, in the order of the Webhooks form and of stored event sets. A new type is
+    /// appended, so it never opts in a subscription that an administrator has not edited.
+    /// </summary>
     public static readonly IReadOnlyList<string> Subscribable =
     [
         InstanceStarted, InstanceCompleted, InstanceFaulted, InstanceCancelled, InstanceReactivated,
-        TaskCreated, TaskAssigned, TaskCompleted, TaskCancelled, DelegationGranted, IncidentOpened
+        TaskCreated, TaskAssigned, TaskCompleted, TaskCancelled, DelegationGranted, IncidentOpened,
+        SignalBroadcastCompleted, SignalBroadcastCompletedWithIssues, SignalBroadcastCancelled
+    ];
+
+    /// <summary>The types that announce how a signal broadcast finished (EVENT-04D).</summary>
+    public static readonly IReadOnlyList<string> SignalBroadcastTypes =
+    [
+        SignalBroadcastCompleted, SignalBroadcastCompletedWithIssues, SignalBroadcastCancelled
     ];
 }
 

@@ -140,6 +140,56 @@ public sealed class WebhookDispatchTests(PostgresApiFixture fixture) : IAsyncLif
     }
 
     [Fact]
+    public async Task HostedWorkerDeliversASignalBroadcastEventWithItsStoredBytes()
+    {
+        await using var receiver = await WebhookTestReceiver.StartAsync();
+        var key = StandardWebhookSignature.GenerateKey();
+        var subscription = await CreateSubscriptionAsync(
+            receiver.Url("hook"), key, [LifecycleEventTypes.SignalBroadcastCompleted]);
+        await WebhookTestDatabase.SetCaptureAsync(fixture.DataSource, true);
+        long broadcastId;
+        await using (var connection = await source.DataSource.OpenConnectionAsync())
+        await using (var command = new NpgsqlCommand("""
+            INSERT INTO flowbit.signal_broadcasts
+                ("SignalName", "WorkflowKey", "Status", "TotalDeliveryCount", "DeliveredCount", "SkippedCount",
+                 "FailedCount", "CancelledCount", "RecipientsJson", "RecipientsTruncated", "ThrownByKind", "ThrownBy",
+                 "ThrownByRolesJson", "CompletedAt")
+            VALUES ('dispatch.signal', @key, 'completed', 3, 2, 1, 0, 0, '[]', false, 'user', 'dispatch-tests', '[]', now())
+            RETURNING "Id"
+            """, connection))
+        {
+            command.Parameters.AddWithValue("key", subscription.WorkflowKey);
+            broadcastId = (long)(await command.ExecuteScalarAsync())!;
+        }
+
+        using var host = BuildWorkerHost();
+        await host.StartAsync();
+        try
+        {
+            var request = Assert.Single(await receiver.WaitForAsync(1));
+            Assert.True(WebhookSigningTests.IndependentVerifier.Verify(
+                StandardWebhookSignature.FormatSecret(key), request.Id, request.Timestamp, request.Body, request.Signature));
+            var body = LifecycleEventBodies.Deserialize<LifecycleEventEnvelopeDto<SignalBroadcastEventDataDto>>(
+                Encoding.UTF8.GetString(request.Body));
+            Assert.Equal((LifecycleEventTypes.SignalBroadcastCompleted, subscription.WorkflowKey, (long?)null),
+                (body.Type, body.WorkflowKey, body.InstanceId));
+            Assert.Equal((broadcastId, "workflow", "user", 3, 2, 1), (body.Data.BroadcastId, body.Data.Scope,
+                body.Data.ThrownByKind, body.Data.TotalDeliveryCount, body.Data.DeliveredCount, body.Data.SkippedCount));
+
+            var delivery = await WaitForDeliveryAsync(subscription.Id, WebhookDeliveryStates.Succeeded);
+            Assert.Equal(request.Id, delivery.EventId.ToString("D"));
+            Assert.Equal(await StoredBodyAsync(delivery.EventId), request.Body);
+        }
+        finally
+        {
+            await host.StopAsync();
+            await WebhookTestDatabase.SetSubscriptionStateAsync(fixture.DataSource, subscription.Id, "archived");
+            await WebhookTestDatabase.ExecuteAsync(fixture.DataSource,
+                "DELETE FROM flowbit.signal_broadcasts WHERE \"Id\" = @id", ("id", broadcastId));
+        }
+    }
+
+    [Fact]
     public async Task RetryableFailureSchedulesARetryWithStableBytesAndIdentity()
     {
         await using var receiver = await WebhookTestReceiver.StartAsync(_ => 503);

@@ -1032,7 +1032,10 @@ rethrown after the pass, so the job retries (four attempts, after 10 seconds, on
 minute, and five minutes); on the final attempt it becomes `failed` with
 `delivery_error`. `ReconcileExhaustedSignalBroadcastsAsync`, a branch of
 `OpenExhaustedLeaseIncidentsAsync`, fails the pending deliveries of a job whose
-final lease expired with `lease_exhausted` and recounts the broadcast. Cancel and
+final lease expired with `lease_exhausted` and recounts the broadcast; the
+[lifecycle capture](#lifecycle-webhooks) triggers on `signal_broadcasts` see that raw-SQL
+status write as any other, so a recount that finishes the broadcast raises its
+`signalBroadcast.*` event beside the `incident.opened` of the same transaction. Cancel and
 retry lock the broadcast row and then update delivery rows; a delivery never locks
 the broadcast, so the two cannot deadlock. A transition that starts or ends a wait
 already holds the instance lock when it writes subscription rows, and a version
@@ -1371,8 +1374,9 @@ A `callActivity` starts a child instance of another workflow family and rests un
 
 Outbound lifecycle webhooks (INT-01) deliver committed transitions to external receivers. Receivers follow the [developer guide](../docs/developer-guide.md#lifecycle-webhooks), administrators the [UI guide](../docs/ui-guide.md#lifecycle-webhooks) and [API reference](../docs/api-guide.md#lifecycle-webhooks), and operators [deployment](../docs/deployment.md#lifecycle-webhooks).
 
-**Capture is in the database, not the engine.** Deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations` (`capture_*_lifecycle()` in the `AddOutboundLifecycleWebhooks` migration) derive events from `OLD`/`NEW`, match active subscription revisions, and insert `lifecycle_events` with the exact body bytes. Runtime C# code never describes events, so every API, Worker, raw-SQL, set-based, and `ON CONFLICT DO NOTHING` path is covered by construction. **A new lifecycle status, source column, or source table must update these capture functions**; tests in `LifecycleEventCaptureTests` pin the catalog rules. A new job kind must be classified in `LifecycleEventCaptureTests`, and listed in `capture_workflow_incident_lifecycle()` when its incidents have no authored node. Every string a body copies is bounded by its column, and an incident's node external id longer than the 300 characters a running node can hold is reported as null rather than truncated.
+**Capture is in the database, not the engine.** Deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations` (`capture_*_lifecycle()` in the `AddOutboundLifecycleWebhooks` migration), and on `signal_broadcasts` (`capture_signal_broadcast_lifecycle()` in `AddSignalBroadcastLifecycleEvents`), derive events from `OLD`/`NEW`, match active subscription revisions, and insert `lifecycle_events` with the exact body bytes. Runtime C# code never describes events, so every API, Worker, raw-SQL, set-based, and `ON CONFLICT DO NOTHING` path is covered by construction. **A new lifecycle status, source column, or source table must update these capture functions**; tests in `LifecycleEventCaptureTests` pin the catalog rules. A new job kind must be classified in `LifecycleEventCaptureTests`, and listed in `capture_workflow_incident_lifecycle()` when its incidents have no authored node. Every string a body copies is bounded by its column, and an incident's node external id longer than the 300 characters a running node can hold is reported as null rather than truncated.
 
+- **Signal broadcasts (EVENT-04D).** `signalBroadcast.completed`, `signalBroadcast.completedWithIssues`, and `signalBroadcast.cancelled` are raised for each committed change of a broadcast's `Status` to that value, whichever writer made it: a delivery job's recount, `SetRecipientsAsync` for a throw that froze no recipient (in the throwing step's transaction for a workflow), a cancel, a retry that leaves nothing pending, and the raw-SQL `ReconcileExhaustedSignalBroadcastsAsync` of a lost lease. The `WHEN` clauses skip a recount that keeps the status and a change back to `delivering`. At commit the function reads the row again by its primary key, without `PayloadJson`, so the event carries the counts the transaction commits (a cancel writes its status before it recounts), and a replaced status or a deleted row raises nothing. The envelope's family and instance are the scope's, so a broadcast to all workflows matches only subscriptions without a family. **A new broadcast status must extend `capture_signal_broadcast_lifecycle()`, `LifecycleEventCatalog`, and `SignalBroadcastLifecycleEventTests` together**; until then the function ignores it. A broadcast that stays `delivering` behind a job incident raises nothing.
 - **Capture configuration.** The canonical `Webhooks.CaptureEnabled` engine setting stores lowercase `true`/`false`; database guards reject alternate keys, invalid values, and deletion. Settings administrators edit it through the existing page/API, while SQL operators retain `set_lifecycle_event_capture(boolean, text)`. A database audit trigger records one management audit event per actual toggle. API metadata-only saves still advance `UpdatedAt`/`UpdatedBy`; unchanged SQL helper calls do nothing. Capture catalog `changedAt`/`changedBy` mean the latest setting edit. `ConsolidateLifecycleCaptureSettings` removes the former singleton table and requires a coordinated upgrade; see [rollout](../docs/deployment.md#rollout).
 - **Commit semantics.** Column lists and `WHEN` clauses decide at row-change time whether a call is queued, so unrelated updates queue nothing. Queued calls run at commit in change order, after rows written later in the transaction (node executions) exist, and read the definition applying at commit. Rollback, savepoint rollback, an unchanged update, capture off, `SET LOCAL flowbit.lifecycle_events = 'off'`, or no matching target store nothing. A trigger failure fails the source commit.
 - **Locks.** Capture runs after every runtime lock its transaction takes and takes none itself; it reads subscription rows without locks and has no foreign keys to them. Management, dispatch, and cleanup never lock runtime rows. Webhook rows locked together follow subscription → dispatch state → signing key → delivery → attempt. Fanout locks its batch of events, then share-locks their subscriptions before reading their state, so it waits for an archive in progress and never leaves a pending delivery behind a settled archive. Call activities keep their one-existing-instance-per-transaction rule: parent and child events belong to their own transactions.
@@ -2140,7 +2144,7 @@ The live API runner writes Markdown and JSON evidence under the repository-level
 
 To prove that the [lifecycle capture triggers](#lifecycle-webhooks) accept every
 producer path, run the same suite as a producer sweep. It turns capture on with an
-active subscription to all eleven event types before the first test, and appends
+active subscription to all fourteen subscribable event types before the first test, and appends
 the number of recorded events per type to the report file when the run ends. Tests
 that delete events make those counts lower bounds:
 
@@ -2216,7 +2220,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E25, hosted-editor H1–H18, and runtime R1–R16 scenarios (see the project
+The suite covers editor E1–E25, hosted-editor H1–H18, and runtime R1–R17 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

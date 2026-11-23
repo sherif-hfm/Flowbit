@@ -228,16 +228,94 @@ public sealed class WebhookApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task EventCatalogListsTheElevenSubscribableTypesAndTheCaptureSwitch()
+    public async Task EventCatalogListsTheFourteenSubscribableTypesAndTheCaptureSwitch()
     {
         using var response = await SendAsync(HttpMethod.Get, "/api/webhook-event-types");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var catalog = await ReadAsync<WebhookEventCatalogDto>(response);
         Assert.Equal(1, catalog.SchemaVersion);
+        Assert.Equal(14, LifecycleEventTypes.Subscribable.Count);
         Assert.Equal(LifecycleEventTypes.Subscribable, catalog.EventTypes.Where(type => type.Subscribable).Select(type => type.Type));
         Assert.Contains(catalog.EventTypes, type => type.Type == LifecycleEventTypes.WebhookTest && !type.Subscribable);
         Assert.Equal("eventId", catalog.EnvelopeFields[1].Name);
         Assert.NotNull(catalog.Capture);
+
+        // The broadcast types come last, share one field list in the DTO's order, and state the family rule.
+        Assert.Equal(
+            LifecycleEventTypes.SignalBroadcastTypes,
+            LifecycleEventTypes.Subscribable.Skip(11));
+        var broadcastFields = typeof(SignalBroadcastEventDataDto).GetConstructors().Single().GetParameters()
+            .Select(parameter => char.ToLowerInvariant(parameter.Name![0]) + parameter.Name[1..])
+            .ToArray();
+        Assert.Equal(12, broadcastFields.Length);
+        foreach (var type in LifecycleEventTypes.SignalBroadcastTypes)
+        {
+            var entry = Assert.Single(catalog.EventTypes, item => item.Type == type);
+            Assert.True(entry.Subscribable);
+            Assert.Equal(broadcastFields, entry.DataFields.Select(field => field.Name));
+            Assert.Equal([nameof(SignalBroadcastEventDataDto.ThrownByInstanceId)],
+                entry.DataFields.Where(field => field.Nullable).Select(field => char.ToUpperInvariant(field.Name[0]) + field.Name[1..]));
+            Assert.EndsWith("a broadcast to all workflows reaches only subscriptions without a family.", entry.Description, StringComparison.Ordinal);
+        }
+        Assert.Contains("signal broadcast", catalog.EnvelopeFields.Single(field => field.Name == "workflowKey").Description, StringComparison.Ordinal);
+        Assert.Contains("never the throwing instance", catalog.EnvelopeFields.Single(field => field.Name == "instanceId").Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SignalBroadcastTypesAreAcceptedBySubscriptionsAndTheDeliveryFilter()
+    {
+        var created = await CreateAsync();
+        try
+        {
+            using (var create = await SendAsync(HttpMethod.Post, "/api/webhook-subscriptions",
+                       CreateRequest(eventTypes: [LifecycleEventTypes.SignalBroadcastCancelled, LifecycleEventTypes.SignalBroadcastCompleted])))
+            {
+                Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+                var secret = await ReadAsync<WebhookSecretResultDto>(create);
+                // Stored in catalog order, not request order.
+                Assert.Equal(
+                    [LifecycleEventTypes.SignalBroadcastCompleted, LifecycleEventTypes.SignalBroadcastCancelled],
+                    secret.Subscription.Destination.EventTypes);
+                await ArchiveQuietlyAsync(secret.Subscription);
+            }
+
+            var subscription = created.Subscription;
+            using (var update = await SendAsync(HttpMethod.Put, $"/api/webhook-subscriptions/{subscription.Id}",
+                       new UpdateWebhookSubscriptionRequest(subscription.Name, subscription.Description,
+                           subscription.Destination.EndpointUrl, LifecycleEventTypes.Subscribable,
+                           subscription.Destination.WorkflowKey, subscription.MaxConcurrency, subscription.Revision)))
+            {
+                Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+                subscription = await ReadAsync<WebhookSubscriptionDto>(update);
+                Assert.Equal(LifecycleEventTypes.Subscribable, subscription.Destination.EventTypes);
+            }
+
+            foreach (var type in LifecycleEventTypes.SignalBroadcastTypes)
+            {
+                using var filter = await SendAsync(HttpMethod.Get, $"/api/webhook-deliveries?eventType={type}&pageSize=1");
+                Assert.Equal(HttpStatusCode.OK, filter.StatusCode);
+                // The bulk routes take the same filter; nothing matches here.
+                Assert.Equal(new WebhookBulkDeliveryResultDto(0, 0, 0, false), await PostAsync<WebhookBulkDeliveryResultDto>(
+                    $"/api/webhook-subscriptions/{subscription.Id}/deliveries/discard", AllDeliveries with { EventType = type }));
+            }
+            // A bulk retry needs an active subscription; the type filter is validated the same way.
+            var active = await PostAsync<WebhookSubscriptionDto>($"/api/webhook-subscriptions/{subscription.Id}/resume",
+                new WebhookRevisionRequest(subscription.Revision));
+            Assert.Equal(WebhookSubscriptionStates.Active, active.State);
+            Assert.Equal(new WebhookBulkDeliveryResultDto(0, 0, 0, false), await PostAsync<WebhookBulkDeliveryResultDto>(
+                $"/api/webhook-subscriptions/{subscription.Id}/deliveries/retry",
+                AllDeliveries with { EventType = LifecycleEventTypes.SignalBroadcastCompletedWithIssues }));
+
+            // The test type stays unsubscribable, and the refusal lists the fourteen types.
+            using var refused = await SendAsync(HttpMethod.Post, "/api/webhook-subscriptions",
+                CreateRequest(eventTypes: [LifecycleEventTypes.SignalBroadcastCompleted, LifecycleEventTypes.WebhookTest]));
+            Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+            Assert.Contains(string.Join(", ", LifecycleEventTypes.Subscribable), await ErrorAsync(refused), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await ArchiveQuietlyAsync(created.Subscription);
+        }
     }
 
     [Fact]

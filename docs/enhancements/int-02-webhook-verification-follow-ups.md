@@ -35,7 +35,7 @@ None identified. New webhook capabilities remain outside this verification item.
 
 Recorded on 2026-11-10 following the user-approved deferral: this follow-up has not started. INT-01 has existing PostgreSQL integration tests and recorded manual browser evidence; its [current state](int-01-outbound-lifecycle-webhooks.md#current-state) distinguishes completed checks from the work deferred here.
 
-Browser smoke tests now cover webhook time-zone labels and the capture-setting warning/navigation. They do not cover the full subscription and delivery lifecycle. Dispatch integration tests cover competing acquirers, lease loss, crashes, and stale finalizers, but the process-level multi-Worker acceptance run remains outstanding. Key-protection tests cover shared rings, previous certificates, and unavailable protection; they do not replace the recovery rehearsal.
+Browser smoke tests now cover webhook time-zone labels, the capture-setting warning/navigation, and, since [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md), the subscription form's signal broadcast types (R17, unsaved). They do not cover the full subscription and delivery lifecycle, which here now includes the `signalBroadcast.*` types as well. EVENT-04D brought the PostgreSQL producer assertions for its own types (`SignalBroadcastLifecycleEventTests`). Dispatch integration tests cover competing acquirers, lease loss, crashes, and stale finalizers, but the process-level multi-Worker acceptance run remains outstanding. Key-protection tests cover shared rings, previous certificates, and unavailable protection; they do not replace the recovery rehearsal.
 
 ## Builds on
 

@@ -205,6 +205,29 @@ internal static class WebhookTestDatabase
     /// <summary>Returns capture to the collection's baseline: on only in the opt-in producer sweep.</summary>
     public static Task RestoreCaptureAsync(NpgsqlDataSource dataSource) => SetCaptureAsync(dataSource, catchAll);
 
+    /// <summary>
+    /// Runs a body with capture on and one active subscription to the given types and family, whose revision
+    /// the body receives. The subscription is archived and capture restored afterwards, also on failure.
+    /// </summary>
+    public static async Task WithCaptureAsync(
+        NpgsqlDataSource dataSource,
+        string? workflowKey,
+        IReadOnlyList<string> types,
+        Func<long, Task> body)
+    {
+        var (subscriptionId, revisionId) = await CreateSubscriptionAsync(dataSource, types, workflowKey);
+        try
+        {
+            await SetCaptureAsync(dataSource, true);
+            await body(revisionId);
+        }
+        finally
+        {
+            await SetSubscriptionStateAsync(dataSource, subscriptionId, "archived");
+            await RestoreCaptureAsync(dataSource);
+        }
+    }
+
     public static async Task<IReadOnlyList<CapturedLifecycleEvent>> ReadEventsAsync(
         NpgsqlDataSource dataSource,
         long revisionId)
@@ -314,6 +337,9 @@ internal static class LifecycleEventBodies
             Deserialize<LifecycleEventEnvelopeDto<DelegationGrantedEventDataDto>>(captured.Body),
         LifecycleEventTypes.IncidentOpened =>
             Deserialize<LifecycleEventEnvelopeDto<IncidentOpenedEventDataDto>>(captured.Body),
+        LifecycleEventTypes.SignalBroadcastCompleted or LifecycleEventTypes.SignalBroadcastCompletedWithIssues
+            or LifecycleEventTypes.SignalBroadcastCancelled =>
+            Deserialize<LifecycleEventEnvelopeDto<SignalBroadcastEventDataDto>>(captured.Body),
         LifecycleEventTypes.WebhookTest => Deserialize<LifecycleEventEnvelopeDto<WebhookTestEventDataDto>>(captured.Body),
         _ => throw new InvalidOperationException($"Unknown lifecycle event type {captured.Type}.")
     };

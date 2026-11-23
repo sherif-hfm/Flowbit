@@ -106,7 +106,7 @@ Conditional events observe declared, persisted instance variables. They evaluate
 - **Typed variables:** work with strings, numbers, booleans, dates, datetimes, arrays, and JSON, with defaults, required inputs, and validation rules.
 - **Shared state and context:** bind declared aliases to a shared-variable catalog and read allowlisted actor context, deployment configuration, and workflow settings.
 - **Separate identity contracts:** use business keys for domain ownership and independent idempotency keys for repeated start requests.
-- **Lifecycle webhooks:** notify CRM, BI, and notification systems when instances start or end and tasks are created, assigned, completed, or cancelled, with [Standard Webhooks](https://www.standardwebhooks.com/) signatures, retries, receiver backoff, and recovery of failed deliveries. Events are recorded in the transaction that commits the change.
+- **Lifecycle webhooks:** notify CRM, BI, and notification systems when instances start or end, tasks are created, assigned, completed, or cancelled, and signal broadcasts finish, with [Standard Webhooks](https://www.standardwebhooks.com/) signatures, retries, receiver backoff, and recovery of failed deliveries. Events are recorded in the transaction that commits the change.
 
 ### Durable execution and operations
 

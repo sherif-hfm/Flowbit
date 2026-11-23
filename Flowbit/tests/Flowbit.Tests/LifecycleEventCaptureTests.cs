@@ -1231,20 +1231,8 @@ public sealed class LifecycleEventCaptureTests(PostgresApiFixture fixture)
 
     private static readonly DateTimeOffset LongExpiredLease = new(2001, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-    private async Task WithCaptureAsync(string? workflowKey, IReadOnlyList<string> types, Func<long, Task> body)
-    {
-        var (subscriptionId, revisionId) = await WebhookTestDatabase.CreateSubscriptionAsync(fixture.DataSource, types, workflowKey);
-        try
-        {
-            await WebhookTestDatabase.SetCaptureAsync(fixture.DataSource, true);
-            await body(revisionId);
-        }
-        finally
-        {
-            await WebhookTestDatabase.SetSubscriptionStateAsync(fixture.DataSource, subscriptionId, "archived");
-            await WebhookTestDatabase.RestoreCaptureAsync(fixture.DataSource);
-        }
-    }
+    private Task WithCaptureAsync(string? workflowKey, IReadOnlyList<string> types, Func<long, Task> body) =>
+        WebhookTestDatabase.WithCaptureAsync(fixture.DataSource, workflowKey, types, body);
 
     private static WorkflowModel UserTaskModel(string terminalType)
     {
