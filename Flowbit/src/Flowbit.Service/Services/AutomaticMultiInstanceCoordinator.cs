@@ -287,8 +287,7 @@ public sealed partial class AutomaticMultiInstanceCoordinator(
             stage.SharedOutputValueVersions.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase), stage.StagedAt)
         {
             FlowInfo = snapshot.TryGetProperty("flowInfo", out var flowInfo) && flowInfo.ValueKind != JsonValueKind.Null
-                ? new SequenceFlowInfoSnapshot(flowInfo.GetProperty("KnownFlowIds").Deserialize<int[]>()!,
-                    flowInfo.GetProperty("Summaries").Deserialize<Dictionary<int, SequenceFlowRuntimeSummary>>()!.Values) : null
+                ? SequenceFlowInfoSnapshot.FromStoredJson(flowInfo) : null
         };
     }
 

@@ -796,7 +796,11 @@ Storage follows the hybrid design:
   does not otherwise reference `FlowInfo`, so their action/traversal audit is
   never optimized away. Runtime
   evaluation loads summaries once rather than scanning detailed history, so its
-  read cost does not grow with loops or MI fan-out. Definitions without a
+  read cost does not grow with loops or MI fan-out. A durable script task stages
+  the summaries in its job snapshot, and an automatic multi-instance body in its
+  input snapshot; read a stored snapshot only with
+  `SequenceFlowInfoSnapshot.FromStoredJson`, because the type's constructor
+  cannot bind the stored shape. Definitions without a
   `FlowInfo` reference skip normal-event summary queries and writes. The additive
   migration has no historical backfill: existing instances expose only
   post-deployment evidence.

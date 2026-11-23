@@ -2585,7 +2585,9 @@ public sealed partial class WorkflowEngineService
         overlay["sys.jobId"] = JsonSerializer.SerializeToElement(jobId);
         overlay["sys.jobAttempt"] = JsonSerializer.SerializeToElement(attemptNumber);
         var writes = new List<(VariableModel Target, JsonElement Value)>();
-        var flowInfo = snapshot.FlowInfo?.Deserialize<SequenceFlowInfoSnapshot>();
+        var flowInfo = snapshot.FlowInfo is { ValueKind: not JsonValueKind.Null } stored
+            ? SequenceFlowInfoSnapshot.FromStoredJson(stored)
+            : null;
 
         if (string.Equals(node.ScriptFormat, ScriptFormats.JavaScript, StringComparison.Ordinal))
         {

@@ -86,6 +86,25 @@ public sealed class SequenceFlowInfoSnapshot
         }
     }
 
+    /// <summary>
+    /// Reads a snapshot that a durable job or an automatic multi-instance body stored with the serializer's default
+    /// options: <c>KnownFlowIds</c> and <c>Summaries</c> keyed by flow id. The constructor cannot bind that shape, so
+    /// never deserialize a snapshot directly; every reader goes through this method.
+    /// </summary>
+    public static SequenceFlowInfoSnapshot FromStoredJson(JsonElement stored)
+    {
+        if (stored.ValueKind != JsonValueKind.Object
+            || !stored.TryGetProperty(nameof(KnownFlowIds), out var knownFlowIds)
+            || !stored.TryGetProperty(nameof(Summaries), out var summaries))
+        {
+            throw new JsonException("A stored FlowInfo snapshot must be an object with KnownFlowIds and Summaries.");
+        }
+
+        return new SequenceFlowInfoSnapshot(
+            knownFlowIds.Deserialize<int[]>() ?? [],
+            summaries.Deserialize<Dictionary<int, SequenceFlowRuntimeSummary>>()?.Values);
+    }
+
     public IReadOnlySet<int> KnownFlowIds => _knownFlowIds;
 
     /// <summary>
