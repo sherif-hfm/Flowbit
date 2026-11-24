@@ -45,6 +45,14 @@ public sealed partial class WorkflowEngineService
             return new SignalDeliveryOutcome(delivery.Status, delivery.ResultCode, null);
         }
 
+        // EVENT-04E: after the family lock and the delivery row, which a default change can
+        // hold for a while, and before the default is read: an expired start keeps the
+        // version that listened and creates no instance.
+        if (await broadcasts.IsExpiredAsync(delivery.BroadcastId, cancellationToken))
+        {
+            return await ExpireLockedDeliveryAsync(transaction, delivery.Id, cancellationToken);
+        }
+
         // A frozen start belongs to the family: it starts the version that is the published
         // default now, if that version still starts on the name.
         var workflow = await definitions.GetDefaultByWorkflowKeyAsync(delivery.WorkflowKey, cancellationToken);

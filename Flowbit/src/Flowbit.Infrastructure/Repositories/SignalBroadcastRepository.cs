@@ -44,13 +44,45 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
     public Task<int> CountOpenAsync(
         IReadOnlyList<string> thrownByKinds,
         int stopAt,
-        CancellationToken cancellationToken) =>
-        dbContext.SignalBroadcasts.AsNoTracking()
-            .Where(broadcast =>
-                broadcast.Status == SignalBroadcastStatuses.Delivering
-                && thrownByKinds.Contains(broadcast.ThrownByKind))
-            .Take(stopAt)
-            .CountAsync(cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        // A broadcast past its expiry can no longer act, so it does not count, also while no
+        // Worker runs to settle it. The one comparison with now(), the database's time when
+        // the transaction began, rather than clock_timestamp(): the limit is soft, and the
+        // error only counts a broadcast that expired a moment ago.
+        var kinds = thrownByKinds.ToArray();
+        return dbContext.Database.SqlQuery<int>(
+                $"""
+                SELECT count(*)::int AS "Value"
+                FROM (
+                    SELECT 1
+                    FROM flowbit.signal_broadcasts AS broadcast
+                    WHERE broadcast."Status" = 'delivering'
+                      AND broadcast."ThrownByKind" = ANY({kinds})
+                      AND (broadcast."ExpiresAt" IS NULL OR broadcast."ExpiresAt" > now())
+                    LIMIT {stopAt}
+                ) AS open
+                """)
+            .SingleAsync(cancellationToken);
+    }
+
+    public Task<DateTimeOffset> GetDatabaseTimeAsync(CancellationToken cancellationToken) =>
+        dbContext.Database.SqlQuery<DateTimeOffset>($"""SELECT clock_timestamp() AS "Value" """)
+            .SingleAsync(cancellationToken);
+
+    public async Task<bool> IsExpiredAsync(long broadcastId, CancellationToken cancellationToken)
+    {
+        // Issued after the caller's locks, so a delivery that waited for a lock compares the
+        // committed expiry with the clock as it is now. Reads no payload.
+        var expired = await dbContext.Database.SqlQuery<bool>(
+                $"""
+                SELECT COALESCE(broadcast."ExpiresAt" <= clock_timestamp(), FALSE) AS "Value"
+                FROM flowbit.signal_broadcasts AS broadcast
+                WHERE broadcast."Id" = {broadcastId}
+                """)
+            .ToListAsync(cancellationToken);
+        return expired.Count == 1 && expired[0];
+    }
 
     public async Task<SignalBacklogRecord> GetBacklogAsync(CancellationToken cancellationToken)
     {
@@ -95,8 +127,17 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             throw new InvalidOperationException("A signal broadcast is written only inside a transaction.");
         }
 
+        // The database's clock decides every expiry, so it also computes the time. A throw
+        // without an expiry runs no extra statement.
+        DateTimeOffset? expiresAt = null;
+        if (broadcast.ExpiresAfter is TimeSpan expiresAfter)
+        {
+            expiresAt = (await GetDatabaseTimeAsync(cancellationToken)).ToUniversalTime() + expiresAfter;
+        }
+
         var entity = new SignalBroadcastEntity
         {
+            ExpiresAt = expiresAt,
             SignalName = broadcast.SignalName,
             WorkflowKey = broadcast.Scope.WorkflowKey,
             BusinessKey = broadcast.Scope.BusinessKey,
@@ -521,7 +562,11 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         }
 
         // Writes only when a counter or the status changes, so a poll that sees
-        // nothing new leaves UpdatedAt, the retry fence, alone.
+        // nothing new leaves UpdatedAt, the retry fence, alone. The status is derived from
+        // the delivery rows, as the lost-lease reconciliation in WorkflowJobRepository
+        // derives it; the two statements change together. A delivering broadcast with
+        // nothing pending is expired when its expiry ended any delivery, else
+        // completedWithIssues when any failed, else completed. Cancelled and expired stay.
         await dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"""
             WITH counts AS (
@@ -530,7 +575,8 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                     count(*) FILTER (WHERE "Status" = 'delivered')::int AS delivered,
                     count(*) FILTER (WHERE "Status" = 'skipped')::int AS skipped,
                     count(*) FILTER (WHERE "Status" = 'failed')::int AS failed,
-                    count(*) FILTER (WHERE "Status" = 'cancelled')::int AS cancelled
+                    count(*) FILTER (WHERE "Status" = 'cancelled')::int AS cancelled,
+                    count(*) FILTER (WHERE "Status" = 'skipped' AND "ResultCode" = 'broadcast_expired')::int AS expired
                 FROM flowbit.signal_deliveries
                 WHERE "BroadcastId" = {broadcastId}
             ), next AS (
@@ -538,7 +584,11 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                     c.*,
                     CASE
                         WHEN b."Status" = 'delivering' AND c.pending = 0
-                            THEN CASE WHEN c.failed > 0 THEN 'completedWithIssues' ELSE 'completed' END
+                            THEN CASE
+                                WHEN c.expired > 0 THEN 'expired'
+                                WHEN c.failed > 0 THEN 'completedWithIssues'
+                                ELSE 'completed'
+                            END
                         WHEN b."Status" IN ('completed', 'completedWithIssues')
                             THEN CASE WHEN c.failed > 0 THEN 'completedWithIssues' ELSE 'completed' END
                         ELSE b."Status"
@@ -551,6 +601,7 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                 "SkippedCount" = n.skipped,
                 "FailedCount" = n.failed,
                 "CancelledCount" = n.cancelled,
+                "ExpiredCount" = n.expired,
                 "Status" = n.status,
                 "CompletedAt" = CASE
                     WHEN n.status = 'delivering' THEN NULL
@@ -563,10 +614,90 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
                    OR b."SkippedCount" IS DISTINCT FROM n.skipped
                    OR b."FailedCount" IS DISTINCT FROM n.failed
                    OR b."CancelledCount" IS DISTINCT FROM n.cancelled
+                   OR b."ExpiredCount" IS DISTINCT FROM n.expired
                    OR b."Status" IS DISTINCT FROM n.status)
             """,
             cancellationToken);
         return await GetAsync(broadcastId, forUpdate: false, cancellationToken);
+    }
+
+    public async Task<bool> ExpireDeliveryAsync(long deliveryId, CancellationToken cancellationToken)
+    {
+        // One reading of the clock for both timestamps. No attempt is counted: the delivery
+        // did not run, and a start keeps the version that listened and names no instance.
+        var affected = await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            WITH database_now AS (SELECT clock_timestamp() AS value)
+            UPDATE flowbit.signal_deliveries AS delivery
+            SET "Status" = 'skipped',
+                "ResultCode" = 'broadcast_expired',
+                "ResultDescription" = NULL,
+                "CompletedAt" = database_now.value,
+                "UpdatedAt" = database_now.value
+            FROM database_now
+            WHERE delivery."Id" = {deliveryId}
+              AND delivery."Status" = 'pending'
+            """,
+            cancellationToken);
+        return affected == 1;
+    }
+
+    public Task<int> ExpirePendingDeliveriesAsync(
+        long broadcastId,
+        DateTimeOffset databaseNow,
+        CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "A signal broadcast's deliveries are expired only under the broadcast's row lock.");
+        }
+
+        // The expiry condition is inside the statement and uses the clock as it is when the
+        // statement runs: a settle before the expiry ends nothing. A delivery inside its own
+        // transaction holds its row, so this waits for it and then leaves it as it finished.
+        return dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            UPDATE flowbit.signal_deliveries AS delivery
+            SET "Status" = 'skipped',
+                "ResultCode" = 'broadcast_expired',
+                "ResultDescription" = NULL,
+                "CompletedAt" = {databaseNow},
+                "UpdatedAt" = {databaseNow}
+            FROM flowbit.signal_broadcasts AS broadcast
+            WHERE broadcast."Id" = {broadcastId}
+              AND broadcast."ExpiresAt" <= clock_timestamp()
+              AND delivery."BroadcastId" = broadcast."Id"
+              AND delivery."Status" = 'pending'
+            """,
+            cancellationToken);
+    }
+
+    public async Task<long?> ClaimNextExpiredAsync(
+        DateTimeOffset databaseNow,
+        CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException("An expired signal broadcast is claimed only inside a transaction.");
+        }
+
+        // Compares with a value read once rather than with clock_timestamp(), which
+        // PostgreSQL never uses as an index condition. A row that another transaction
+        // holds is skipped and taken on a later pass, so sweeps never queue.
+        var ids = await dbContext.Database.SqlQuery<long>(
+                $"""
+                SELECT broadcast."Id" AS "Value"
+                FROM flowbit.signal_broadcasts AS broadcast
+                WHERE broadcast."Status" = 'delivering'
+                  AND broadcast."ExpiresAt" IS NOT NULL
+                  AND broadcast."ExpiresAt" <= {databaseNow}
+                ORDER BY broadcast."ExpiresAt", broadcast."Id"
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """)
+            .ToListAsync(cancellationToken);
+        return ids.Count == 0 ? null : ids[0];
     }
 
     public async Task<IReadOnlyList<long>> ListPendingDeliveryIdsAsync(
@@ -877,7 +1008,9 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             entity.ThrowerNodeId,
             entity.ThrowerNodeName,
             entity.AutomaticActivationCount,
-            entity.StartDeliveryCount);
+            entity.StartDeliveryCount,
+            entity.ExpiresAt,
+            entity.ExpiredCount);
 
     private static SignalDeliveryRecord MapDelivery(SignalDeliveryEntity entity) =>
         new(

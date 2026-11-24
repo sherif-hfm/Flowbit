@@ -338,7 +338,7 @@ internal static class LifecycleEventBodies
         LifecycleEventTypes.IncidentOpened =>
             Deserialize<LifecycleEventEnvelopeDto<IncidentOpenedEventDataDto>>(captured.Body),
         LifecycleEventTypes.SignalBroadcastCompleted or LifecycleEventTypes.SignalBroadcastCompletedWithIssues
-            or LifecycleEventTypes.SignalBroadcastCancelled =>
+            or LifecycleEventTypes.SignalBroadcastCancelled or LifecycleEventTypes.SignalBroadcastExpired =>
             Deserialize<LifecycleEventEnvelopeDto<SignalBroadcastEventDataDto>>(captured.Body),
         LifecycleEventTypes.WebhookTest => Deserialize<LifecycleEventEnvelopeDto<WebhookTestEventDataDto>>(captured.Body),
         _ => throw new InvalidOperationException($"Unknown lifecycle event type {captured.Type}.")

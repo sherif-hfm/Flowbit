@@ -132,6 +132,8 @@ public sealed class WebhooksUiTests
         Assert.Equal("Signal broadcast completed with issues",
             WebhookFormatting.EventTypeLabel(LifecycleEventTypes.SignalBroadcastCompletedWithIssues));
         Assert.Equal("Signal broadcast cancelled", WebhookFormatting.EventTypeLabel(LifecycleEventTypes.SignalBroadcastCancelled));
+        Assert.Equal("Signal broadcast expired", WebhookFormatting.EventTypeLabel(LifecycleEventTypes.SignalBroadcastExpired));
+        Assert.Equal(4, LifecycleEventTypes.SignalBroadcastTypes.Count);
         // Every subscribable type has a label of its own.
         Assert.All(LifecycleEventTypes.Subscribable, type => Assert.NotEqual(type, WebhookFormatting.EventTypeLabel(type)));
 
@@ -169,7 +171,8 @@ public sealed class WebhooksUiTests
         Assert.Contains("All events · every family", html, StringComparison.Ordinal);
         // A subscription saved before the signal types existed lists its types, because it does not receive the new ones.
         Assert.Contains(string.Join(", ", elevenTypes.Select(WebhookFormatting.EventTypeLabel)) + " · every family", html, StringComparison.Ordinal);
-        // Only the subscription with all fourteen types reads All events.
+        // Only the subscription with all fifteen types reads All events.
+        Assert.Equal(15, LifecycleEventTypes.Subscribable.Count);
         Assert.Equal(2, html.Split("All events · every family").Length);
 
         await page.CallAsync("OpenCreate");

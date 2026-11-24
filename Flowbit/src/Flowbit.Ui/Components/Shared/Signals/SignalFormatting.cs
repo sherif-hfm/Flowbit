@@ -16,9 +16,154 @@ internal enum SignalScopeChoice
     Instance
 }
 
+/// <summary>The units of the throw form's expiry, in the order of its list.</summary>
+internal enum SignalExpiryUnit
+{
+    Seconds,
+    Minutes,
+    Hours,
+    Days
+}
+
 /// <summary>Pure presentation rules for the Signals page and its display components.</summary>
 internal static class SignalFormatting
 {
+    internal const string ExpiryAmountProblem =
+        "Enter the expiry as a whole number of 1 or more, or leave it empty.";
+
+    internal const string ExpiryTooLongProblem = "A signal can expire after at most 365 days.";
+
+    internal const string ExpiryPassedNote =
+        "The expiry has passed. A Worker ends the pending deliveries when it runs.";
+
+    internal const string RetryExpiredNote =
+        "This broadcast has expired, so its failed deliveries cannot be retried. Throw the signal again to reach the waits that are still open.";
+
+    /// <summary>The unit list of the throw form, in its order.</summary>
+    internal static IReadOnlyList<(SignalExpiryUnit Unit, string Label)> ExpiryUnits { get; } =
+    [
+        (SignalExpiryUnit.Seconds, "Seconds"),
+        (SignalExpiryUnit.Minutes, "Minutes"),
+        (SignalExpiryUnit.Hours, "Hours"),
+        (SignalExpiryUnit.Days, "Days")
+    ];
+
+    /// <summary>
+    /// What the page keeps of the expiry box, from what <c>typed-inputs.js</c> reports: the
+    /// trimmed text, or <see cref="UnreadableExpiryAmount"/> when the browser could not read
+    /// what was typed. A number box reports such text, such as <c>5-</c> or <c>10e</c>, as an
+    /// empty value, which would otherwise read as a signal that does not expire.
+    /// </summary>
+    internal static string ReadExpiryAmount(string? value, bool badInput) =>
+        badInput ? UnreadableExpiryAmount : value?.Trim() ?? string.Empty;
+
+    /// <summary>The kept amount when the browser could not read the box; never a number.</summary>
+    internal const string UnreadableExpiryAmount = "\u0000unreadable";
+
+    /// <summary>
+    /// Reads the throw form's expiry: blank means none. Returns the problem, or null when the
+    /// amount is usable; <paramref name="expiresAfter"/> is then the ISO-8601 text the throw
+    /// sends, or null for a signal that does not expire. The range is the API's
+    /// (<see cref="SignalExpiryRules"/>).
+    /// </summary>
+    internal static string? TryBuildExpiry(string? amountText, SignalExpiryUnit unit, out string? expiresAfter)
+    {
+        expiresAfter = null;
+        if (string.Equals(amountText, UnreadableExpiryAmount, StringComparison.Ordinal))
+        {
+            return ExpiryAmountProblem;
+        }
+
+        var text = amountText?.Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        if (!text.All(char.IsAsciiDigit))
+        {
+            return ExpiryAmountProblem;
+        }
+
+        // Only digits: a value too large for a long is far over the limit.
+        if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var amount))
+        {
+            return ExpiryTooLongProblem;
+        }
+
+        if (amount < 1)
+        {
+            return ExpiryAmountProblem;
+        }
+
+        var iso = ExpiryIso(amount, unit);
+        switch (SignalExpiryRules.Parse(iso, out _))
+        {
+            case SignalExpiryProblem.None:
+                expiresAfter = iso;
+                return null;
+            case SignalExpiryProblem.OutOfRange:
+                return ExpiryTooLongProblem;
+            default:
+                return ExpiryAmountProblem;
+        }
+    }
+
+    /// <summary>The ISO-8601 duration of an amount of a unit, such as PT10M or P2D.</summary>
+    internal static string ExpiryIso(long amount, SignalExpiryUnit unit)
+    {
+        var number = amount.ToString(CultureInfo.InvariantCulture);
+        return unit switch
+        {
+            SignalExpiryUnit.Seconds => $"PT{number}S",
+            SignalExpiryUnit.Minutes => $"PT{number}M",
+            SignalExpiryUnit.Hours => $"PT{number}H",
+            SignalExpiryUnit.Days => $"P{number}D",
+            _ => throw new ArgumentOutOfRangeException(nameof(unit))
+        };
+    }
+
+    /// <summary>The review's Expires row: "10 minutes after the throw", or "Never" without an amount.</summary>
+    internal static string ExpiryReviewText(string? amountText, SignalExpiryUnit unit)
+    {
+        if (string.IsNullOrWhiteSpace(amountText)
+            || !long.TryParse(amountText.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var amount))
+        {
+            return "Never";
+        }
+
+        var noun = unit switch
+        {
+            SignalExpiryUnit.Seconds => "second",
+            SignalExpiryUnit.Minutes => "minute",
+            SignalExpiryUnit.Hours => "hour",
+            _ => "day"
+        };
+        return $"{amount:N0} {noun}{(amount == 1 ? "" : "s")} after the throw";
+    }
+
+    /// <summary>
+    /// Whether a broadcast's expiry is behind <paramref name="now"/>, the UI's clock. The page
+    /// only shows and hides with it; the API decides with the database's clock.
+    /// </summary>
+    internal static bool HasExpiryPassed(DateTimeOffset? expiresAt, DateTimeOffset now) =>
+        expiresAt is DateTimeOffset expiry && expiry <= now;
+
+    /// <summary>The note under a delivering broadcast's expiry once it has passed, or null.</summary>
+    internal static string? ExpiryNote(SignalBroadcastDetailDto broadcast, DateTimeOffset now) =>
+        IsLive(broadcast.Status) && HasExpiryPassed(broadcast.ExpiresAt, now) ? ExpiryPassedNote : null;
+
+    /// <summary>Why Retry failed is hidden for a broadcast with failed deliveries, or null when it is not.</summary>
+    internal static string? RetryHiddenReason(SignalBroadcastDetailDto broadcast, DateTimeOffset now) =>
+        broadcast.FailedCount > 0
+        && broadcast.Status is SignalBroadcastStatuses.CompletedWithIssues or SignalBroadcastStatuses.Expired
+        && HasExpiryPassed(broadcast.ExpiresAt, now)
+            ? RetryExpiredNote
+            : null;
+
+    /// <summary>The second line of a broadcast's progress, such as "2 skipped · 1 failed · 2 expired".</summary>
+    internal static string ProgressDetail(int skipped, int failed, int expired) =>
+        $"{skipped:N0} skipped · {failed:N0} failed" + (expired > 0 ? $" · {expired:N0} expired" : "");
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
@@ -27,6 +172,7 @@ internal static class SignalFormatting
         SignalBroadcastStatuses.Delivering => "Delivering",
         SignalBroadcastStatuses.Completed => "Completed",
         SignalBroadcastStatuses.CompletedWithIssues => "Completed with issues",
+        SignalBroadcastStatuses.Expired => "Expired",
         SignalBroadcastStatuses.Cancelled => "Cancelled",
         _ => status
     };
@@ -55,6 +201,7 @@ internal static class SignalFormatting
         SignalDeliveryResultCodes.BusinessKeyConflict => "An instance already has this business key",
         SignalDeliveryResultCodes.SubscriptionEnded => "The workflow no longer starts on this signal",
         SignalDeliveryResultCodes.DeliveryRejected => "The workflow rejected the start",
+        SignalDeliveryResultCodes.BroadcastExpired => "The broadcast expired before the start",
         _ => WaitResultLabel(code)
     };
 
@@ -73,6 +220,7 @@ internal static class SignalFormatting
         SignalDeliveryResultCodes.DeliveryError => "Delivery failed unexpectedly",
         SignalDeliveryResultCodes.LeaseExhausted => "The Worker lost the delivery job",
         SignalDeliveryResultCodes.BroadcastCancelled => "The broadcast was cancelled",
+        SignalDeliveryResultCodes.BroadcastExpired => "The broadcast expired before delivery",
         _ => code
     };
 
@@ -217,9 +365,15 @@ internal static class SignalFormatting
     internal static bool CanCancel(string status) =>
         string.Equals(status, SignalBroadcastStatuses.Delivering, StringComparison.Ordinal);
 
-    internal static bool CanRetry(SignalBroadcastDetailDto broadcast) =>
+    /// <summary>
+    /// Whether the page offers Retry failed: a broadcast that finished with failed deliveries
+    /// and whose expiry, if any, is not behind <paramref name="now"/>. The API's 409 remains
+    /// the rule.
+    /// </summary>
+    internal static bool CanRetry(SignalBroadcastDetailDto broadcast, DateTimeOffset now) =>
         string.Equals(broadcast.Status, SignalBroadcastStatuses.CompletedWithIssues, StringComparison.Ordinal)
-        && broadcast.FailedCount > 0;
+        && broadcast.FailedCount > 0
+        && !HasExpiryPassed(broadcast.ExpiresAt, now);
 
     internal static string FormatJson(JsonElement? value) =>
         value is null ? "No payload" : JsonSerializer.Serialize(value.Value, JsonOptions);

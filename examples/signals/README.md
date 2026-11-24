@@ -62,6 +62,36 @@ A payload without `version`, or with a version that is not a number, fails that
 delivery with `signal_payload_invalid`; the instance keeps waiting, and **Retry failed**
 on the Signals page delivers it again after the cause is fixed.
 
+Optionally, see what an expiry does. Stop `Flowbit.Worker`, then throw with
+`expiresAfter`, a fixed ISO-8601 duration, here 30 seconds, or set **Expires after** to
+30 **Seconds** on the Signals page:
+
+```powershell
+$body = @{
+  name = "claims.policy-changed"
+  workflowKey = "example-signal-catch-policy-change"
+  payload = @{ version = 8 }
+  expiresAfter = "PT30S"
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://localhost:5017/api/signal-broadcasts" `
+  -Headers @{ Authorization = "Bearer $env:FLOWBIT_TOKEN" } `
+  -ContentType "application/json" -Body $body
+```
+
+```bash
+curl -s -X POST "http://localhost:5017/api/signal-broadcasts" \
+  -H "Authorization: Bearer $FLOWBIT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"claims.policy-changed","workflowKey":"example-signal-catch-policy-change","payload":{"version":8},"expiresAfter":"PT30S"}'
+```
+
+The response carries `expiresAt`, computed by the database. Wait until it has passed,
+then start the Worker: the broadcast becomes **Expired**, each delivery reads
+`skipped` with `broadcast_expired`, nothing is written, and every instance still lists
+its wait under **Waiting for signals**. A later throw without an expiry reaches them.
+A catch that must not wait forever needs a timer boundary, as this example's one-hour
+timer is. See [letting a signal expire](../../docs/developer-guide.md#let-a-signal-expire).
+
 ## Example 02: boundaries on a task
 
 1. Publish the definition and start an instance with an `orderNumber`. Instance detail

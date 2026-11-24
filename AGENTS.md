@@ -270,7 +270,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E25/H1–H18/R1–R17 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E25/H1–H18/R1–R18 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -876,9 +876,11 @@ Storage follows the hybrid design:
     when no authored node applies, listed in `capture_workflow_incident_lifecycle()`.
     Every string copied into a body must be bounded by a column limit; report a value
     that can exceed it as JSON null rather than truncating it.
-  - A signal broadcast raises `signalBroadcast.completed`, `.completedWithIssues`, or
-    `.cancelled` (EVENT-04D) for each committed change of its `Status` to that value,
-    whoever writes it; never add an event call beside a status write.
+  - A signal broadcast raises `signalBroadcast.completed`, `.completedWithIssues`,
+    `.cancelled` (EVENT-04D), or `.expired` (EVENT-04E) for each committed change of
+    its `Status` to that value, whoever writes it; never add an event call beside a
+    status write. Only the `expired` body adds `expiredCount`; the three earlier
+    bodies stay byte for byte as they were.
     `capture_signal_broadcast_lifecycle()` reads the row again at commit, never its
     `PayloadJson`, so the counts are those the transaction commits; the envelope's
     family and instance are the scope's, so a broadcast to all workflows matches only
@@ -1067,7 +1069,28 @@ Storage follows the hybrid design:
     by `SignalBroadcastRepository` (throw, recount, cancel, reopen) and by the
     raw-SQL `ReconcileExhaustedSignalBroadcastsAsync` of a lost lease; the
     `signal_broadcasts` capture triggers announce every finish, so a new writer needs
-    no event code.
+    no event code. `RefreshCountsAsync` and that reconciliation are the only two
+    statements that derive a status from the delivery rows (`expired` when any
+    delivery is `skipped` with `broadcast_expired`, else `completedWithIssues` when
+    any failed, else `completed`), and they change together.
+  - Expiry (EVENT-04E): one clock. The database computes `ExpiresAt` at the throw
+    (`clock_timestamp()`, read once in `AddAsync`) and it never changes; every
+    decision that ends or refuses a delivery compares it with `clock_timestamp()`,
+    never a host clock and never `now()`, except the soft open-broadcast count
+    (`CountOpenAsync`), which leaves out a broadcast past `now()`. Each delivery
+    checks `IsExpiredAsync` after its locks (wait: instance, subscription, delivery
+    row; start: family lock, delivery row) and before any other outcome, and ends
+    an expired row with `ExpireDeliveryAsync` without counting an attempt.
+    `SignalBroadcastExpirer` settles under the broadcast's row lock: one `UPDATE`
+    with the expiry condition inside it, then the recount; it locks no instance.
+    The delivery job calls it before a page once the broadcast expired, or when a
+    delivery reports `broadcast_expired`; the Worker's
+    `SignalBroadcastExpiryService` claims due broadcasts with `SKIP LOCKED`,
+    comparing with a time read once per pass (PostgreSQL never uses
+    `clock_timestamp()` as an index condition). The lost-lease reconciliation
+    reads the clock once and ends an expired broadcast's pending deliveries as
+    expired, not failed. A retry past the expiry returns `409`. An expiry writes
+    nothing to an instance; the wait stays open.
   - Signal mappings write instance variables only and read no shared alias.
     Every signal event, throw and end events included, requires the Worker
     (`RequiresDurableProcessing`).
@@ -2057,8 +2080,9 @@ Storage follows the hybrid design:
 - **History and audit retention.** `/retention` manages ten deployment-wide
   categories through `/api/retention`, authorized by `Settings.RequiredRole`,
   including the `webhookDeliveries` and `lifecycleEvents` webhook categories and
-  `signalBroadcasts` (finished broadcasts aged from `CompletedAt`, with their
-  deliveries and job links; pending work is protected).
+  `signalBroadcasts` (finished broadcasts, `expired` included, aged from
+  `CompletedAt`, with their deliveries and job links; pending work, and a
+  broadcast past its expiry that no Worker has settled yet, is protected).
   New history, webhook, and signal categories default to keep forever; the Worker initializes job
   and incident periods from its existing configuration once. `Flowbit.Worker`
   performs hourly and durable manually requested cleanup using the same
@@ -2408,7 +2432,18 @@ what the cross-version `workflowKey` instance search matches.
   default, **Workflows**, **Everyone**; `SignalFormatting.ThrownByChoices`) that
   goes through the same guard and request counter as the other reloads, and a
   broadcast thrown by an instance shows `Instance #42 · <event name>` linked to
-  the instance (`SignalFormatting.ThrowerLabel`). Display-only
+  the instance (`SignalFormatting.ThrowerLabel`). An optional **Expires after**
+  amount and unit (`signal-expiry-amount`, `signal-expiry-unit`) becomes the
+  `expiresAfter` ISO text through `SignalFormatting.TryBuildExpiry`, which checks
+  `SignalExpiryRules` before any request; an edit of either ends the review. The
+  amount box is uncontrolled and reports through `typedinput`/`typedcommit`: a
+  number box reports text it cannot read (`5-`, `10e`) as empty with `badInput`,
+  which `SignalFormatting.ReadExpiryAmount` keeps as `UnreadableExpiryAmount`,
+  refused like any other bad amount, never read as no expiry. The
+  page injects `TimeProvider` and passes its time to `SignalBroadcastSummary`
+  (display-only) for the **Expiry** row's passed-expiry note, and
+  `SignalFormatting.CanRetry(broadcast, now)` hides **Retry failed** past the
+  expiry with `RetryHiddenReason`; the API's `409` remains the rule. Display-only
   children under `Components/Shared/Signals/` with the pure `SignalFormatting`;
   every call goes through an identity epoch guard, and `401`/`403` or an identity
   change clears all signal data.

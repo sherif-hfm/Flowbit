@@ -52,9 +52,22 @@ public sealed class SignalBroadcastService(
                 out var scopeProblem)
             ?? throw new WorkflowDomainException(scopeProblem!);
 
+        // Before the hash, so a request that would replay is checked too.
+        TimeSpan? expiresAfter = null;
+        if (request.ExpiresAfter is { } expiresAfterText)
+        {
+            var problem = SignalExpiryRules.Parse(expiresAfterText, out var parsed);
+            if (SignalExpiryRules.Message(problem) is { } expiryProblem)
+            {
+                throw new WorkflowDomainException(expiryProblem);
+            }
+
+            expiresAfter = parsed;
+        }
+
         var payloadJson = NormalizePayload(request.Payload);
         var idempotencyKey = NormalizeIdempotencyKey(request.IdempotencyKey);
-        var requestHash = HashRequest(name!, scope, payloadJson);
+        var requestHash = HashRequest(name!, scope, payloadJson, expiresAfter);
         if (idempotencyKey is not null
             && await broadcasts.FindByIdempotencyKeyAsync(caller.Kind, caller.Id, idempotencyKey, cancellationToken)
                 is { } earlier)
@@ -111,7 +124,8 @@ public sealed class SignalBroadcastService(
                     caller.AuditClaims is null ? null : JsonSerializer.Serialize(caller.AuditClaims, JsonOptions),
                     idempotencyKey,
                     requestHash,
-                    now),
+                    now,
+                    ExpiresAfter: expiresAfter),
                 maxRecipients,
                 caller.Id),
             cancellationToken);
@@ -299,6 +313,17 @@ public sealed class SignalBroadcastService(
                 $"Only a broadcast that finished with failed deliveries can be retried; #{broadcastId} is {broadcast.Status}.");
         }
 
+        // Under the broadcast's row lock and with the database's clock: a retried delivery
+        // after the expiry would only end as expired. A retry before it keeps the original
+        // expiresAt, so a retried delivery that runs late is skipped like any other.
+        if (broadcast.ExpiresAt is DateTimeOffset expiresAt
+            && await broadcasts.IsExpiredAsync(broadcastId, cancellationToken))
+        {
+            throw new WorkflowConflictException(
+                $"Signal broadcast #{broadcastId} expired at {FormatInstant(expiresAt)}; its failed deliveries cannot be retried. "
+                + "Throw the signal again to reach the waits that are still open.");
+        }
+
         if (broadcast.UpdatedAt != expectedUpdatedAt)
         {
             throw new WorkflowConflictException(
@@ -463,9 +488,16 @@ public sealed class SignalBroadcastService(
     /// family or all-workflows request hashes exactly as before business-key and instance
     /// scopes existed, so keys stored earlier still replay; a business-key or instance
     /// scope adds a fourth line, with the key's length so that no key can imitate
-    /// another line. The scope is the request's, before the instance's family is read.
+    /// another line. The scope is the request's, before the instance's family is read. An
+    /// expiry adds a last line with its parsed length in ticks, only when it is present, so a
+    /// request without one hashes exactly as before and <c>PT60S</c> and <c>PT1M</c> are the
+    /// same request.
     /// </summary>
-    internal static byte[] HashRequest(string name, SignalBroadcastScope scope, string? payloadJson)
+    internal static byte[] HashRequest(
+        string name,
+        SignalBroadcastScope scope,
+        string? payloadJson,
+        TimeSpan? expiresAfter = null)
     {
         // The payload is compared as parsed JSON, so whitespace and member order in the
         // replayed request do not count as a different request.
@@ -487,8 +519,17 @@ public sealed class SignalBroadcastService(
             lines.Add(FormattableString.Invariant($"instance:{instanceId}"));
         }
 
+        if (expiresAfter is TimeSpan expiry)
+        {
+            lines.Add(FormattableString.Invariant($"expiresAfter:{expiry.Ticks}"));
+        }
+
         return SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', lines)));
     }
+
+    /// <summary>A UTC instant as ISO-8601 text with Z, without trailing zero fractions.</summary>
+    private static string FormatInstant(DateTimeOffset value) =>
+        value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     private static string CanonicalJson(JsonElement value) => value.ValueKind switch
     {
@@ -546,7 +587,9 @@ public sealed class SignalBroadcastService(
             broadcast.ThrowerInstanceId,
             broadcast.ThrowerNodeId,
             broadcast.ThrowerNodeName,
-            broadcast.StartDeliveryCount);
+            broadcast.StartDeliveryCount,
+            broadcast.ExpiresAt,
+            broadcast.ExpiredCount);
 
     private static readonly string[] KnownThrowerKinds =
         [SignalThrowerKinds.User, SignalThrowerKinds.Client, SignalThrowerKinds.Instance];
@@ -596,7 +639,9 @@ public sealed class SignalBroadcastService(
             broadcast.ThrowerInstanceId,
             broadcast.ThrowerNodeId,
             broadcast.ThrowerNodeName,
-            broadcast.StartDeliveryCount);
+            broadcast.StartDeliveryCount,
+            broadcast.ExpiresAt,
+            broadcast.ExpiredCount);
     }
 
     private static SignalDeliveryDto ToDelivery(SignalDeliveryRecord delivery, SignalCaller caller) =>

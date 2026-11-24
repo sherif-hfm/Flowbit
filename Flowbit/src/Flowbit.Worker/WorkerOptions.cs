@@ -23,6 +23,12 @@ public sealed class WorkerOptions
     public int RetentionMaxQueueLagSeconds { get; set; } = 30;
     public int TimerStartReconcileSeconds { get; set; } = 1;
     public int TimerStartReconcileBatchSize { get; set; } = 100;
+
+    /// <summary>
+    /// How often the signal broadcast expiry sweep runs, in seconds (EVENT-04E). It settles
+    /// broadcasts past their expiry whose delivery job is not running.
+    /// </summary>
+    public int SignalExpirySweepSeconds { get; set; } = 5;
     public int ShutdownDrainSeconds { get; set; } = 30;
     public string HealthListenUrl { get; set; } = "http://0.0.0.0:8081";
 
@@ -85,6 +91,8 @@ public sealed class WorkerOptions
             throw new InvalidOperationException($"{SectionName}:TimerStartReconcileSeconds must be between 1 and 3600.");
         if (TimerStartReconcileBatchSize is < 1 or > 1000)
             throw new InvalidOperationException($"{SectionName}:TimerStartReconcileBatchSize must be between 1 and 1000.");
+        if (SignalExpirySweepSeconds is < 1 or > 3600)
+            throw new InvalidOperationException($"{SectionName}:SignalExpirySweepSeconds must be between 1 and 3600.");
         if (ShutdownDrainSeconds is < 1 or > 300)
             throw new InvalidOperationException($"{SectionName}:ShutdownDrainSeconds must be between 1 and 300.");
         if (!Uri.TryCreate(HealthListenUrl, UriKind.Absolute, out var healthUri)

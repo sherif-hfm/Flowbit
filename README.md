@@ -101,7 +101,7 @@ Conditional events observe declared, persisted instance variables. They evaluate
 
 - **REST service tasks:** template URLs, headers, and bodies; map typed outputs; validate responses; model failure handling with error boundaries.
 - **Message endpoints:** start a workflow or resume a waiting instance with authenticated delivery, typed payload mapping, and optional duplicate-delivery protection.
-- **Signals:** announce a change such as a new policy or a product recall once, from your application or from a step of another workflow, and every instance waiting for that signal at that moment continues, or stops or extends the task it is working on, while workflows that start on it begin a new case; follow each delivery, cancel what is no longer wanted, and retry failures.
+- **Signals:** announce a change such as a new policy or a product recall once, from your application or from a step of another workflow, and every instance waiting for that signal at that moment continues, or stops or extends the task it is working on, while workflows that start on it begin a new case; follow each delivery, let an announcement that is useless late expire, cancel what is no longer wanted, and retry failures.
 - **Rules and scripts:** use NCalc for conditions and assignments, or sandboxed JavaScript through Jint for richer transformations.
 - **Typed variables:** work with strings, numbers, booleans, dates, datetimes, arrays, and JSON, with defaults, required inputs, and validation rules.
 - **Shared state and context:** bind declared aliases to a shared-variable catalog and read allowlisted actor context, deployment configuration, and workflow settings.

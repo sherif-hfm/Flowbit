@@ -187,7 +187,7 @@ public sealed class OpenApiContractTests
 
         var request = schemas["ThrowSignalRequest"];
         Assert.Equal(
-            ["allWorkflows", "businessKey", "idempotencyKey", "instanceId", "name", "payload", "workflowKey"],
+            ["allWorkflows", "businessKey", "expiresAfter", "idempotencyKey", "instanceId", "name", "payload", "workflowKey"],
             request.Properties!.Keys.Order().ToArray());
         Assert.Contains("workflowKey", request.Properties["businessKey"].Description);
         Assert.Contains("whole scope", request.Properties["instanceId"].Description);
@@ -203,6 +203,34 @@ public sealed class OpenApiContractTests
             ["businessKey", "instanceId", "name", "workflowKey"],
             summary.Parameters!.Select(parameter => parameter.Name!).Order().ToArray());
         Assert.Equal(["200", "400", "401", "403"], summary.Responses!.Keys.Order().ToArray());
+    }
+
+    [Fact]
+    public async Task SignalExpiryMembersAreDocumented()
+    {
+        await using var factory = new WorkflowInstanceDetailEndpointTests.DetailApiFactory();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var provider = scope.ServiceProvider.GetRequiredKeyedService<IOpenApiDocumentProvider>("v1");
+        var document = await provider.GetOpenApiDocumentAsync();
+        var schemas = document.Components!.Schemas!;
+
+        var expiresAfter = schemas["ThrowSignalRequest"].Properties!["expiresAfter"];
+        Assert.Contains("ISO-8601", expiresAfter.Description, StringComparison.Ordinal);
+        Assert.Contains("P365D", expiresAfter.Description, StringComparison.Ordinal);
+        foreach (var name in new[] { "SignalBroadcastSummaryDto", "SignalBroadcastDetailDto" })
+        {
+            var properties = schemas[name].Properties!;
+            Assert.Contains("database", properties["expiresAt"].Description, StringComparison.Ordinal);
+            Assert.True(properties["expiresAt"].Type!.Value.HasFlag(Microsoft.OpenApi.JsonSchemaType.Null),
+                "A broadcast without an expiry has a null expiresAt.");
+            Assert.Contains("expiry", properties["expiredCount"].Description, StringComparison.Ordinal);
+            Assert.Contains("expired", properties["status"].Description, StringComparison.Ordinal);
+        }
+
+        var throwOperation = document.Paths["/api/signal-broadcasts"].Operations![HttpMethod.Post];
+        Assert.Contains("expiresAfter", throwOperation.Description, StringComparison.Ordinal);
+        var retry = document.Paths["/api/signal-broadcasts/{id}/retry-failed"].Operations![HttpMethod.Post];
+        Assert.Contains("expir", retry.Description, StringComparison.Ordinal);
     }
 
     [Fact]

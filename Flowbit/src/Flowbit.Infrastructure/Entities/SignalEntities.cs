@@ -74,6 +74,18 @@ public sealed class SignalBroadcastEntity
     public int SkippedCount { get; set; }
     public int FailedCount { get; set; }
     public int CancelledCount { get; set; }
+
+    /// <summary>
+    /// The skipped deliveries whose result is <c>broadcast_expired</c>; part of
+    /// <see cref="SkippedCount"/>.
+    /// </summary>
+    public int ExpiredCount { get; set; }
+
+    /// <summary>
+    /// When the broadcast expires, computed by the database's clock at the throw; null means
+    /// never. It never changes after the throw, so every check reads it without a lock.
+    /// </summary>
+    public DateTimeOffset? ExpiresAt { get; set; }
     public string RecipientsJson { get; set; } = "[]";
     public bool RecipientsTruncated { get; set; }
     public string ThrownByKind { get; set; } = string.Empty;

@@ -721,7 +721,10 @@ public sealed class WorkflowJobRepository(
 
     // A signal delivery job whose final lease expired fails its own pending deliveries,
     // those of its broadcast and definition, and recounts the broadcast. Like cancel, it
-    // locks the broadcast before the delivery rows.
+    // locks the broadcast before the delivery rows. A delivery of a broadcast whose expiry
+    // has passed did not run either, so it ends as expired rather than failed (EVENT-04E).
+    // The recount derives the status from the rows as SignalBroadcastRepository's
+    // RefreshCountsAsync does; the two statements change together.
     private static async Task ReconcileExhaustedSignalBroadcastsAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -755,16 +758,29 @@ public sealed class WorkflowJobRepository(
             return;
         }
 
+        // The clock is read once, so one job's deliveries all end on one side of the expiry.
         await using (var deliveries = new NpgsqlCommand(
             """
+            WITH database_now AS (SELECT clock_timestamp() AS value)
             UPDATE flowbit.signal_deliveries AS delivery
-            SET "Status" = 'failed',
-                "ResultCode" = 'lease_exhausted',
-                "ResultDescription" = 'The final permitted worker attempt lost its lease.',
-                "AttemptCount" = delivery."AttemptCount" + 1,
-                "UpdatedAt" = clock_timestamp(),
-                "CompletedAt" = clock_timestamp()
+            SET "Status" = CASE WHEN expired.yes THEN 'skipped' ELSE 'failed' END,
+                "ResultCode" = CASE WHEN expired.yes THEN 'broadcast_expired' ELSE 'lease_exhausted' END,
+                "ResultDescription" = CASE
+                    WHEN expired.yes THEN NULL
+                    ELSE 'The final permitted worker attempt lost its lease.'
+                END,
+                "AttemptCount" = CASE
+                    WHEN expired.yes THEN delivery."AttemptCount"
+                    ELSE delivery."AttemptCount" + 1
+                END,
+                "UpdatedAt" = database_now.value,
+                "CompletedAt" = database_now.value
             FROM flowbit.signal_broadcast_jobs AS link
+            JOIN flowbit.signal_broadcasts AS broadcast ON broadcast."Id" = link."BroadcastId"
+            CROSS JOIN database_now
+            CROSS JOIN LATERAL (
+                SELECT COALESCE(broadcast."ExpiresAt" <= database_now.value, FALSE) AS yes
+            ) AS expired
             WHERE link."JobId" = ANY(@jobIds)
               AND delivery."BroadcastId" = link."BroadcastId"
               AND delivery."WorkflowDefinitionId" = link."WorkflowDefinitionId"
@@ -786,7 +802,9 @@ public sealed class WorkflowJobRepository(
                     count(*) FILTER (WHERE delivery."Status" = 'delivered')::int AS delivered,
                     count(*) FILTER (WHERE delivery."Status" = 'skipped')::int AS skipped,
                     count(*) FILTER (WHERE delivery."Status" = 'failed')::int AS failed,
-                    count(*) FILTER (WHERE delivery."Status" = 'cancelled')::int AS cancelled
+                    count(*) FILTER (WHERE delivery."Status" = 'cancelled')::int AS cancelled,
+                    count(*) FILTER (WHERE delivery."Status" = 'skipped'
+                                       AND delivery."ResultCode" = 'broadcast_expired')::int AS expired
                 FROM flowbit.signal_deliveries AS delivery
                 WHERE delivery."BroadcastId" = ANY(@broadcastIds)
                 GROUP BY delivery."BroadcastId"
@@ -796,14 +814,16 @@ public sealed class WorkflowJobRepository(
                 "SkippedCount" = counts.skipped,
                 "FailedCount" = counts.failed,
                 "CancelledCount" = counts.cancelled,
+                "ExpiredCount" = counts.expired,
                 "Status" = CASE
-                    WHEN broadcast."Status" = 'cancelled' THEN 'cancelled'
+                    WHEN broadcast."Status" IN ('cancelled', 'expired') THEN broadcast."Status"
                     WHEN counts.pending > 0 THEN 'delivering'
+                    WHEN counts.expired > 0 THEN 'expired'
                     WHEN counts.failed > 0 THEN 'completedWithIssues'
                     ELSE 'completed'
                 END,
                 "CompletedAt" = CASE
-                    WHEN broadcast."Status" <> 'cancelled' AND counts.pending > 0 THEN NULL
+                    WHEN broadcast."Status" NOT IN ('cancelled', 'expired') AND counts.pending > 0 THEN NULL
                     ELSE COALESCE(broadcast."CompletedAt", clock_timestamp())
                 END,
                 "UpdatedAt" = clock_timestamp()

@@ -77,11 +77,13 @@ public sealed record IncidentOpenedEventDataDto(
     string Status);
 
 /// <summary>
-/// Data of <c>signalBroadcast.completed</c>, <c>signalBroadcast.completedWithIssues</c>, and
-/// <c>signalBroadcast.cancelled</c>: the broadcast's counts as the transaction that finished it commits them.
-/// <c>Scope</c> is <c>workflow</c>, <c>businessKey</c>, <c>instance</c>, or <c>allWorkflows</c>, and
-/// <c>ThrownByKind</c> is <c>user</c>, <c>client</c>, or <c>instance</c>; only an <c>instance</c> thrower
-/// carries <c>ThrownByInstanceId</c>. The four outcome counters add up to <c>TotalDeliveryCount</c>.
+/// Data of <c>signalBroadcast.completed</c>, <c>signalBroadcast.completedWithIssues</c>,
+/// <c>signalBroadcast.cancelled</c>, and <c>signalBroadcast.expired</c>: the broadcast's counts as the
+/// transaction that finished it commits them. <c>Scope</c> is <c>workflow</c>, <c>businessKey</c>,
+/// <c>instance</c>, or <c>allWorkflows</c>, and <c>ThrownByKind</c> is <c>user</c>, <c>client</c>, or
+/// <c>instance</c>; only an <c>instance</c> thrower carries <c>ThrownByInstanceId</c>. The four outcome
+/// counters add up to <c>TotalDeliveryCount</c>. Only <c>signalBroadcast.expired</c> carries
+/// <c>ExpiredCount</c>, the skipped deliveries the expiry ended; the other three bodies have no such field.
 /// </summary>
 public sealed record SignalBroadcastEventDataDto(
     long BroadcastId,
@@ -95,7 +97,8 @@ public sealed record SignalBroadcastEventDataDto(
     int DeliveredCount,
     int SkippedCount,
     int FailedCount,
-    int CancelledCount);
+    int CancelledCount,
+    int? ExpiredCount = null);
 
 /// <summary>Data of the <c>webhook.test</c> event that the test route queues for one subscription.</summary>
 public sealed record WebhookTestEventDataDto(Guid SubscriptionId);

@@ -1899,10 +1899,19 @@ A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference
 
   A blank `workflowKey` or `businessKey` returns `400` instead of reaching more. `businessKey` is trimmed as a start trims it, then compared exactly and case-sensitively, and has at most 300 characters. `400` also answers a `workflowKey` that no workflow definition has, a `businessKey` for a family that has not enabled business keys, and an `instanceId` that no instance has. A scope that matches no waiting event is accepted and completes with no deliveries: no running instance owns the key, or the instance is not waiting for the name or has finished. A repeated `idempotencyKey` returns its broadcast before any of these lookups, so it replays even after the family's last version has been deleted.
 - **Paging.** The two list routes take `page` (default 1) and `pageSize` (default 50, clamped to 1-200).
-- **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipients, waits and starts together (default 10,000, at most 100,000), returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few. Broadcasts that workflows threw do not count toward it; they have their own budget, `Signals.MaxOpenWorkflowBroadcasts`.
+- **Limits.** A payload is an optional JSON object of at most 256 KiB; the throw body is limited to 1 MiB and the cancel and retry bodies to 64 KiB (`413` beyond). A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipients, waits and starts together (default 10,000, at most 100,000), returns `400` and stores nothing. When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API (default 20, at most 1,000) are still delivering, a throw returns `409`; concurrent throws can pass this soft limit by a few. A broadcast whose `expiresAt` has passed does not count, even while it is still `delivering` because no Worker has settled it yet. Broadcasts that workflows threw do not count toward it; they have their own budget, `Signals.MaxOpenWorkflowBroadcasts`.
+- **Expiry.** `expiresAfter` is an optional fixed ISO-8601 duration from 1 second to 365 days: weeks, or days, hours, minutes, and seconds, with optional fractions, such as `PT30S`, `PT10M`, or `P1D`, the grammar of timer durations. Years and months are refused, because their length is not fixed. The database computes `expiresAt` from its own clock when the throw runs, and the response carries it; `createdAt` is the API host's time, so the two can differ from the requested length by the hosts' clock difference, and `expiresAt` is the one to trust. The expiry counts from the throw and includes the time a delivery job waits in the queue and the deliveries before it: one job delivers a workflow definition's recipients one at a time, about 20 a second, so size the expiry for the whole broadcast, using `totalDeliveryCount` in the response. A delivery that has not run by `expiresAt` ends as `skipped` with `broadcast_expired`: it writes nothing, a start creates no instance, and the wait stays open for a later signal. A delivery that passed its check before the expiry finishes, so an instance can show a signal received moments after `expiresAt`. Once no delivery is pending, a broadcast whose expiry ended at least one delivery has the status `expired`. Without `expiresAfter` the broadcast never expires and `expiresAt` is null. The first problem returns `400`:
+
+  | Problem | Message |
+  | --- | --- |
+  | Present and blank | `expiresAfter cannot be blank; omit it for a signal that does not expire.` |
+  | Not a fixed duration | `expiresAfter must be a fixed ISO-8601 duration such as PT10M or P1D.` |
+  | Outside the range | `expiresAfter must be between 1 second and 365 days.` |
+
+  A well-formed duration too long to compute, such as `P9999999999999999D`, is outside the range. A number, such as `"expiresAfter": 600`, fails binding with the usual `{"error": ...}` body and its path. These checks run before an `idempotencyKey` replays. A broadcast that a workflow throws never expires.
 - **Throwers.** `thrownByKind` is `user` or `client` for a throw through these routes, and `instance` for a broadcast a workflow threw. Such a broadcast has `thrownBy` set to the instance ID as text, `thrownByInstanceId`, `thrownByNodeId`, and `thrownByNodeName` naming the throwing instance and event, empty `thrownByRoles`, and no idempotency key. A user with a role from `Signals.RequiredRole` lists, reads, cancels, and retries it as any other; a managed client never sees it (`404`). It outlives its thrower: cancelling the throwing instance does not cancel it.
-- **Idempotency.** `idempotencyKey` is optional, trimmed, at most 300 characters, and unique per thrower (user or client). Repeating the same name, scope, and payload with it returns the first broadcast with `200`; the payload is compared as parsed JSON, so whitespace and member order do not matter, and a business key is compared after trimming. The same key with a different request, including another business key, another instance, or another kind of scope, returns `409`. The key can be used again only after retention has removed the broadcast.
-- **Outcomes.** A broadcast is `delivering` until no delivery is pending, then `completed`, or `completedWithIssues` when any delivery failed; `cancelled` stops its pending deliveries. Each change to one of these three statuses raises a `signalBroadcast.*` [lifecycle webhook event](developer-guide.md#event-catalog) for subscriptions that list its type, so a receiver need not poll. Each delivery ends once:
+- **Idempotency.** `idempotencyKey` is optional, trimmed, at most 300 characters, and unique per thrower (user or client). Repeating the same name, scope, and payload with it returns the first broadcast with `200`; the payload is compared as parsed JSON, so whitespace and member order do not matter, and a business key is compared after trimming. The same key with a different request, including another business key, another instance, or another kind of scope, returns `409`. `expiresAfter` is compared by its parsed length, so `PT60S` replays a request sent with `PT1M`; another length, or an expiry where the first request had none, returns `409`. A replay returns the first broadcast with its first `expiresAt`, also when that time has passed; it never extends the expiry. The key can be used again only after retention has removed the broadcast.
+- **Outcomes.** A broadcast is `delivering` until no delivery is pending, then `expired` when its expiry ended any delivery, else `completedWithIssues` when any delivery failed, else `completed`; `cancelled` stops its pending deliveries. An `expired` broadcast keeps its delivered, failed, and other skipped deliveries; `skippedCount` includes `expiredCount`, so the four outcome counters still add up to `totalDeliveryCount`. Each change to one of the four finished statuses raises a `signalBroadcast.*` [lifecycle webhook event](developer-guide.md#event-catalog) for subscriptions that list its type, so a receiver need not poll. Each delivery ends once:
 
 | Status | `resultCode` | Meaning |
 | --- | --- | --- |
@@ -1914,6 +1923,7 @@ A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference
 | `skipped` | `subscription_ended` | The wait ended, or the instance stopped running, between the throw and the delivery. For a start, the family's published default no longer starts on the name. |
 | `skipped` | `stale` | The instance changed in a way that makes the delivery obsolete, such as a cancelled call above it. |
 | `skipped` | `business_key_conflict` | A start's business key belongs to an instance already; the description names that instance, never the key. |
+| `skipped` | `broadcast_expired` | The broadcast's expiry passed before the delivery ran. Nothing was written, no instance was started, and a wait stays open; `attemptCount` is unchanged and `resultDescription` is null. |
 | `failed` | `signal_payload_invalid` | The payload failed a typed mapping. Nothing was written and the instance still waits, or no instance was started. |
 | `failed` | `signal_delivery_rejected` | Another workflow rule failed after the mapping, such as routing that found no flow, or a start met a conflict. Nothing was written. |
 | `failed` | `signal_token_limit` | A non-interrupting boundary's new branch would exceed the instance's `Workflow.Gateway.MaxActiveTokens` active tokens (default 1,000). Nothing was written and the boundary keeps listening. |
@@ -1962,6 +1972,12 @@ A broadcast to every family sends `"allWorkflows": true` in place of `workflowKe
 { "name": "warehouse.price-update", "instanceId": 42, "payload": { "unitPrice": 12.5 } }
 ```
 
+A signal that is useless when it arrives late sets `expiresAfter`; deliveries that have not run ten minutes after the throw are skipped, and the response's `expiresAt` says when that is:
+
+```json
+{ "name": "warehouse.product-recall", "workflowKey": "example-signal-boundaries-recall", "payload": { "reason": "Supplier recall" }, "expiresAfter": "PT10M" }
+```
+
 Response example (object bodies may be excerpts; see the full linked schema):
 
 ```http
@@ -1994,7 +2010,9 @@ Content-Type: application/json
   "createdAt": "2026-11-16T10:00:00Z",
   "updatedAt": "2026-11-16T10:00:00Z",
   "completedAt": null,
-  "cancelledAt": null
+  "cancelledAt": null,
+  "expiresAt": null,
+  "expiredCount": 0
 }
 ```
 
@@ -2008,7 +2026,7 @@ List broadcasts, newest first, without payloads.
 | --- | --- | --- | --- | --- |
 | `name` | query | string | No | Exact signal name. |
 | `workflowKey` | query | string | No | Exact workflow family named by the throw, or the family of the instance it named; broadcasts to all workflows have none. |
-| `status` | query | string | No | `delivering`, `completed`, `completedWithIssues`, or `cancelled`; another value returns `400`. |
+| `status` | query | string | No | `delivering`, `completed`, `completedWithIssues`, `expired`, or `cancelled`; another value returns `400`. |
 | `thrownByKind` | query | array of string | No | Repeatable: `user`, `client`, or `instance`. Keeps only broadcasts with one of the given thrower kinds; without it every kind is listed. Another value returns `400` with `Unknown thrownByKind 'x'; use user, client, or instance.` |
 | `page` | query | integer (int32) | No | Default 1. |
 | `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
@@ -2137,7 +2155,7 @@ Cancel a broadcast's pending deliveries.
 **Success:** `200` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
-Every pending delivery becomes `cancelled` with `broadcast_cancelled`, and the broadcast becomes `cancelled`. A delivery already in its own transaction finishes normally, and the waits that were not delivered stay subscribed. Repeating the request on a cancelled broadcast changes nothing and returns it; a broadcast that already finished returns `409`.
+Every pending delivery becomes `cancelled` with `broadcast_cancelled`, and the broadcast becomes `cancelled`. A delivery already in its own transaction finishes normally, and the waits that were not delivered stay subscribed. A broadcast that is still `delivering` can be cancelled whether or not its `expiresAt` has passed; whichever of a cancel and an expiry's settle holds the broadcast's row first decides the status. Repeating the request on a cancelled broadcast changes nothing and returns it; a broadcast that already finished, `expired` included, returns `409`.
 
 ```http
 POST /api/signal-broadcasts/42/cancel HTTP/1.1
@@ -2167,7 +2185,7 @@ Return a broadcast's failed deliveries to pending and queue them again.
 **Success:** `200` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
-Allowed only for a `completedWithIssues` broadcast, with its current `updatedAt`. A missing `expectedUpdatedAt` returns `400`; any other status, a stale `expectedUpdatedAt`, or no failed delivery returns `409`. The broadcast returns to `delivering`. Each retried delivery moves to the workflow version its instance runs now, its `workflowDefinitionId` changes to match, and a new `signalBroadcastDeliver` job is queued for each of those versions. So retrying after moving the instances to a version with corrected mappings applies those mappings, and a retry does not depend on the version that was current at the throw, which may since have been deleted. A delivery whose wait has ended meanwhile is skipped.
+Allowed only for a `completedWithIssues` broadcast, with its current `updatedAt`, before its `expiresAt`. A missing `expectedUpdatedAt` returns `400`; any other status, `expired` included, a stale `expectedUpdatedAt`, or no failed delivery returns `409`. Once the expiry has passed, checked with the database's clock under the broadcast's row lock, the retry returns `409` with `Signal broadcast #57 expired at 2026-11-23T09:10:00Z; its failed deliveries cannot be retried. Throw the signal again to reach the waits that are still open.` and changes nothing. Otherwise the broadcast returns to `delivering` with its original `expiresAt`, so a retried delivery that runs after it ends as `broadcast_expired` and the broadcast finishes as `expired`. Each retried delivery moves to the workflow version its instance runs now, its `workflowDefinitionId` changes to match, and a new `signalBroadcastDeliver` job is queued for each of those versions. So retrying after moving the instances to a version with corrected mappings applies those mappings, and a retry does not depend on the version that was current at the throw, which may since have been deleted. A delivery whose wait has ended meanwhile is skipped.
 
 ```http
 POST /api/signal-broadcasts/42/retry-failed HTTP/1.1
@@ -7042,7 +7060,7 @@ Content-Type: application/json
 All routes require Settings administrator permission, including reads and secret rotation. They manage subscriptions that send committed lifecycle events to external receivers, signed according to [Standard Webhooks](https://www.standardwebhooks.com/). The event catalog, payloads, signature verification, retries, and receiver guidance are in the [developer guide](developer-guide.md#lifecycle-webhooks); operations are in [deployment](deployment.md#lifecycle-webhooks).
 
 - **Authority.** A subscription's optional `workflowKey` filters which events match; it grants no authority, and workflow managers cannot manage webhooks.
-- **Validation.** `name` is 1–200 characters; `description` at most 1,000. `endpointUrl` is an absolute HTTPS URL of at most 2,048 characters without user information or a fragment, on port 443 unless the operator's allowlist names its host and port. A query string is allowed so tokenized catch URLs work. An IP-literal or `localhost` destination must be public or allowlisted. `eventTypes` is a nonempty list of the fourteen [subscribable types](developer-guide.md#event-catalog); duplicates collapse, the list is stored in catalog order, and `webhook.test` is refused. `workflowKey` must name an existing workflow family exactly. `maxConcurrency` is 1–16, default 4.
+- **Validation.** `name` is 1–200 characters; `description` at most 1,000. `endpointUrl` is an absolute HTTPS URL of at most 2,048 characters without user information or a fragment, on port 443 unless the operator's allowlist names its host and port. A query string is allowed so tokenized catch URLs work. An IP-literal or `localhost` destination must be public or allowlisted. `eventTypes` is a nonempty list of the fifteen [subscribable types](developer-guide.md#event-catalog); duplicates collapse, the list is stored in catalog order, and `webhook.test` is refused. `workflowKey` must name an existing workflow family exactly. `maxConcurrency` is 1–16, default 4.
 - **Confidential URLs.** The full URL can carry a receiver token. Only these settings-administrator reads return it; logs, metrics, audit entries, and error text use the scheme, host, and port (`origin`).
 - **States.** Subscriptions are created `paused` (reason `administrator`) so you can configure the receiver and send a test first. `active` subscriptions match new events. A paused subscription holds captured work and matches nothing new; resume never backfills the gap. The Worker pauses a subscription itself on `410 Gone` (reason `receiverGone`) or after 72 hours of continuous receiver backoff (`receiverUnavailable`). `archived` is irreversible: outstanding deliveries are discarded in bounded batches and its keys retire. Only reads remain: edit, pause, resume, test, rotate, and revoke return `409`. So do single and bulk retry and discard of its deliveries, which the Worker discards itself; their list items and detail report `canRetry` and `canDiscard` as `false`. At most 100 subscriptions may be non-archived.
 - **Secrets.** Create and rotate return a `whsec_`-prefixed Base64 secret exactly once with `Cache-Control: no-store`; no route returns it again. The server generates 256-bit secrets and stores them only as certificate-protected Data Protection payloads.
@@ -11116,12 +11134,12 @@ One thrown signal with its counters, payload, and recipients per workflow family
 | `allWorkflows` | boolean | Yes | True when `workflowKey` is null. |
 | `businessKey` | null or string | Yes | The trimmed business key of a business-key scope; otherwise null. |
 | `instanceId` | null or integer (int64) | Yes | The instance of an instance scope; otherwise null. |
-| `status` | string | Yes | `delivering`, `completed`, `completedWithIssues` (finished with at least one failed delivery), or `cancelled`. A broadcast with no recipients is `completed` at once. |
+| `status` | string | Yes | `delivering`, `completed`, `completedWithIssues` (finished with at least one failed delivery), `expired` (the expiry ended at least one delivery; wins over failed deliveries), or `cancelled`. A broadcast with no recipients is `completed` at once. |
 | `totalDeliveryCount` | integer (int32) | Yes | Recipients frozen by the throw. |
 | `pendingCount` | integer (int32) | Yes | Deliveries not yet finished. |
 | `deliveredCount` | integer (int32) | Yes | Deliveries that reached their wait. |
-| `skippedCount` | integer (int32) | Yes | Deliveries whose wait had ended or whose instance had changed. |
-| `failedCount` | integer (int32) | Yes | Deliveries that failed; these can be retried. |
+| `skippedCount` | integer (int32) | Yes | Deliveries whose wait had ended or whose instance had changed, including those the expiry ended. |
+| `failedCount` | integer (int32) | Yes | Deliveries that failed; these can be retried until `expiresAt` passes. |
 | `cancelledCount` | integer (int32) | Yes | Deliveries cancelled with the broadcast. |
 | `thrownBy` | string | Yes | The user's actor identity, the managed client's ID, or the throwing instance's ID as text. |
 | `thrownByKind` | string | Yes | `user`, `client`, or `instance` (a workflow's signal throw or end event). |
@@ -11139,6 +11157,8 @@ One thrown signal with its counters, payload, and recipients per workflow family
 | `thrownByNodeId` | null or integer (int32) | No | The signal throw or end event that threw the signal when `thrownByKind` is `instance`; otherwise null. |
 | `thrownByNodeName` | null or string | No | That event's name when it threw; otherwise null. |
 | `startCount` | integer (int32) | No | How many of `totalDeliveryCount` are starts of a workflow family, each of which creates an instance when it is delivered. Default: `0`. |
+| `expiresAt` | null or string (date-time) | No | When the broadcast expires, computed by the database's clock at the throw from `expiresAfter`; null when it never expires. It never changes, also on a retry or a replay. |
+| `expiredCount` | integer (int32) | No | How many of `skippedCount` the expiry ended (`broadcast_expired`). Default: `0`. |
 
 </details>
 
@@ -11173,6 +11193,8 @@ A list row of a broadcast, without its payload, roles, recipients, or cancellati
 | `thrownByNodeId` | null or integer (int32) | No | — |
 | `thrownByNodeName` | null or string | No | — |
 | `startCount` | integer (int32) | No | — |
+| `expiresAt` | null or string (date-time) | No | — |
+| `expiredCount` | integer (int32) | No | — |
 
 </details>
 
@@ -11412,6 +11434,7 @@ Throws a signal. It states exactly one scope: `workflowKey`, `workflowKey` with 
 | `instanceId` | null or integer (int64) | No | Only this instance; not combined with any other scope field. The instance must exist; it need not be waiting or running. |
 | `payload` | null or object | No | A JSON object of at most 262,144 bytes as PostgreSQL prints it. Missing and null both mean no payload. |
 | `idempotencyKey` | null or string | No | Trimmed, at most 300 characters, unique per thrower. Repeating the same request with it returns the first broadcast with `200`; a different request with it returns `409`. |
+| `expiresAfter` | null or string | No | A fixed ISO-8601 duration from `PT1S` to `P365D`, such as `PT10M`; trimmed. The broadcast expires that long after the database's time at the throw, and deliveries that have not run by then are skipped with `broadcast_expired`. Missing and null both mean it never expires. A number fails binding. See [Signals](#signals). |
 
 </details>
 

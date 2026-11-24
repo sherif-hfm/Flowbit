@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using SignalScopeChoice = FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalScopeChoice;
 using SignalsPage = FlowbitUi::Flowbit.Ui.Components.Pages.Signals;
 using TokenState = FlowbitUi::Flowbit.Ui.Auth.TokenState;
+using TypedInputEventArgs = FlowbitUi::Flowbit.Ui.Components.Shared.TypedInputEventArgs;
 using WorkflowApiClient = FlowbitUi::Flowbit.Ui.Clients.WorkflowApiClient;
 using Xunit;
 
@@ -384,6 +385,210 @@ public sealed class SignalsPageTests
             await harness.HtmlAsync(component), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ReviewedThrow_WithAnExpirySendsItsIsoDuration()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "10" });
+        await harness.CallAsync("ReviewAsync");
+        var html = await harness.HtmlAsync(component);
+        Assert.Contains("10 minutes after the throw", html, StringComparison.Ordinal);
+
+        harness.DetailExpiresAt = Now.AddMinutes(10);
+        await harness.CallAsync("ThrowAsync");
+        var post = Assert.Single(harness.Posts);
+        Assert.Equal("PT10M", post.Body.GetProperty("expiresAfter").GetString());
+
+        // The open broadcast shows its expiry; it has not passed yet, so no note.
+        html = await harness.HtmlAsync(component);
+        Assert.Contains("signal-expiry", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("The expiry has passed", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReviewedThrow_WithoutAnExpirySaysNeverAndSendsNone()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("ReviewAsync");
+        Assert.Matches("signal-review-expiry\"[^>]*>Never</dd>", await harness.HtmlAsync(component));
+
+        await harness.CallAsync("ThrowAsync");
+        var post = Assert.Single(harness.Posts);
+        Assert.Equal(JsonValueKind.Null, post.Body.GetProperty("expiresAfter").ValueKind);
+    }
+
+    [Fact]
+    public async Task ExpiryEdit_EndsTheReview()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "10" });
+        await harness.CallAsync("ReviewAsync");
+        Assert.NotNull(await harness.ValueAsync<object?>("review"));
+
+        // Changing the unit ends the review.
+        await harness.CallAsync("OnExpiryUnitChangedAsync", new ChangeEventArgs { Value = "Hours" });
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        Assert.Null(await harness.ValueAsync<string?>("draftIdempotencyKey"));
+        Assert.Contains("Review signal", await harness.HtmlAsync(component), StringComparison.Ordinal);
+
+        await harness.CallAsync("ReviewAsync");
+        Assert.Contains("10 hours after the throw", await harness.HtmlAsync(component), StringComparison.Ordinal);
+
+        // So does changing the amount.
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "11" });
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        Assert.Empty(harness.Posts);
+    }
+
+    [Theory]
+    [InlineData("0", "Minutes", "Enter the expiry as a whole number of 1 or more, or leave it empty.")]
+    [InlineData("2.5", "Minutes", "Enter the expiry as a whole number of 1 or more, or leave it empty.")]
+    [InlineData("366", "Days", "A signal can expire after at most 365 days.")]
+    public async Task Review_RefusesAnInvalidExpiryBeforeAnyRequest(string amount, string unit, string message)
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("OnExpiryUnitChangedAsync", new ChangeEventArgs { Value = unit });
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = amount });
+        var requestsBefore = harness.Paths.Count;
+        await harness.CallAsync("ReviewAsync");
+
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        Assert.Contains(message, await harness.HtmlAsync(component), StringComparison.Ordinal);
+        Assert.Equal(requestsBefore, harness.Paths.Count);
+        Assert.Empty(harness.Posts);
+    }
+
+    [Fact]
+    public async Task Review_RefusesTextTheBrowserCouldNotReadInsteadOfSayingNever()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        // A number box reports 5- or 10e as an empty value, with badInput set.
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "", BadInput = true });
+        var requestsBefore = harness.Paths.Count;
+        await harness.CallAsync("ReviewAsync");
+
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        var html = await harness.HtmlAsync(component);
+        Assert.Contains("Enter the expiry as a whole number of 1 or more, or leave it empty.", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("signal-review-expiry", html, StringComparison.Ordinal);
+        Assert.Equal(requestsBefore, harness.Paths.Count);
+
+        // Emptying the box for real means no expiry again.
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "" });
+        await harness.CallAsync("ReviewAsync");
+        Assert.Matches("signal-review-expiry\"[^>]*>Never</dd>", await harness.HtmlAsync(component));
+        Assert.Empty(harness.Posts);
+    }
+
+    [Fact]
+    public async Task ExpiryBox_LeavingItWithoutAChangeKeepsTheReview()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "10" });
+        await harness.CallAsync("ReviewAsync");
+        var key = await harness.ValueAsync<string?>("draftIdempotencyKey");
+        Assert.NotNull(key);
+
+        // typedcommit on focus leaving the box reports the same text: the review stays, with its key.
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = " 10 " });
+        Assert.NotNull(await harness.ValueAsync<object?>("review"));
+        Assert.Equal(key, await harness.ValueAsync<string?>("draftIdempotencyKey"));
+
+        // Text the browser cannot read is a change.
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "", BadInput = true });
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        Assert.Contains("Review signal", await harness.HtmlAsync(component), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExpiryBox_IsUncontrolledAndReportsThroughTheTypedEvents()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "10" });
+        var box = System.Text.RegularExpressions.Regex.Match(
+            await harness.HtmlAsync(component), "<input id=\"signal-expiry-amount\"[^>]*>").Value;
+        Assert.NotEmpty(box);
+        // The page never writes a value back, so a re-render cannot wipe text the browser reports as empty.
+        Assert.DoesNotContain(" value=", box, StringComparison.Ordinal);
+        Assert.Contains("data-typed-input", box, StringComparison.Ordinal);
+        Assert.Contains("type=\"number\"", box, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OpenBroadcast_ShowsTheNoteOnceTheExpiryIsBehindTheUisClock()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        harness.DetailStatus = SignalBroadcastStatuses.Delivering;
+        harness.DetailExpiresAt = Now.AddSeconds(5);
+        await harness.CallAsync("OpenBroadcastAsync", 41L);
+        var html = await harness.HtmlAsync(component);
+        Assert.Contains(">Expiry</dt>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("The expiry has passed", html, StringComparison.Ordinal);
+
+        harness.Clock.Now = Now.AddSeconds(6);
+        await harness.CallAsync("RefreshCurrentBroadcastAsync");
+        html = await harness.HtmlAsync(component);
+        Assert.Contains("The expiry has passed. A Worker ends the pending deliveries when it runs.", html, StringComparison.Ordinal);
+        // A delivering broadcast can still be cancelled.
+        Assert.Contains("Cancel pending deliveries", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RetryFailed_IsHiddenWithItsReasonOnceTheExpiryHasPassed()
+    {
+        await using var harness = new Harness();
+        var component = await harness.RenderAsync();
+        harness.DetailStatus = SignalBroadcastStatuses.CompletedWithIssues;
+        harness.DetailFailedCount = 2;
+        harness.DetailExpiresAt = Now.AddSeconds(10);
+        await harness.CallAsync("OpenBroadcastAsync", 41L);
+        var html = await harness.HtmlAsync(component);
+        Assert.Contains("Retry 2 failed", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("signal-retry-expired", html, StringComparison.Ordinal);
+
+        harness.Clock.Now = Now.AddSeconds(10);
+        await harness.CallAsync("RefreshCurrentBroadcastAsync");
+        html = await harness.HtmlAsync(component);
+        Assert.DoesNotContain("Retry 2 failed", html, StringComparison.Ordinal);
+        Assert.Contains(
+            "This broadcast has expired, so its failed deliveries cannot be retried. Throw the signal again to reach the waits that are still open.",
+            html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task IdentityChange_ClearsTheExpiry()
+    {
+        await using var harness = new Harness();
+        await harness.RenderAsync();
+        await harness.CallAsync("OnExpiryUnitChangedAsync", new ChangeEventArgs { Value = "Days" });
+        await harness.CallAsync("OnExpiryAmountTypedAsync", new TypedInputEventArgs { Value = "3" });
+
+        await harness.ChangeIdentityAsync("other-token");
+
+        Assert.Equal(string.Empty, await harness.ValueAsync<string>("expiryAmount"));
+        Assert.Equal("Minutes", (await harness.ValueAsync<object>("expiryUnit")).ToString());
+    }
+
     private static SignalBroadcastDetailDto Detail(long id, string status) =>
         new(id, "claims.policy-changed", "claims", false, null, null, status, 3,
             status == SignalBroadcastStatuses.Delivering ? 3 : 0,
@@ -394,6 +599,14 @@ public sealed class SignalsPageTests
             status == SignalBroadcastStatuses.Delivering ? null : Now, null);
 
     private sealed record RecordedPost(string Path, JsonElement Body);
+
+    /// <summary>A clock a test sets by hand.</summary>
+    private sealed class ManualClock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
 
     private sealed class Harness : IAsyncDisposable
     {
@@ -423,6 +636,15 @@ public sealed class SignalsPageTests
 
         private readonly TokenState token = new();
 
+        /// <summary>The UI's clock; a test moves it to put a broadcast's expiry behind it.</summary>
+        public ManualClock Clock { get; } = new(Now);
+
+        /// <summary>When set, broadcast 41's detail carries this expiry.</summary>
+        public DateTimeOffset? DetailExpiresAt { get; set; }
+
+        /// <summary>Broadcast 41's failed deliveries.</summary>
+        public int DetailFailedCount { get; set; }
+
         public Harness()
         {
             var http = new HttpClient(new Handler(this)) { BaseAddress = new Uri("https://flowbit.test") };
@@ -431,6 +653,7 @@ public sealed class SignalsPageTests
             services.AddLogging();
             services.AddSingleton(new WorkflowApiClient(http));
             services.AddSingleton(token);
+            services.AddSingleton<TimeProvider>(Clock);
             services.AddSingleton<IComponentActivator>(activator);
             provider = services.BuildServiceProvider();
             renderer = new HtmlRenderer(provider, provider.GetRequiredService<ILoggerFactory>());
@@ -510,7 +733,10 @@ public sealed class SignalsPageTests
                 {
                     var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
                     lock (harness.Posts) harness.Posts.Add(new RecordedPost(path, body));
-                    return Json(HttpStatusCode.Accepted, Detail(41, SignalBroadcastStatuses.Delivering));
+                    return Json(HttpStatusCode.Accepted, Detail(41, SignalBroadcastStatuses.Delivering) with
+                    {
+                        ExpiresAt = harness.DetailExpiresAt
+                    });
                 }
 
                 if (path.StartsWith("/api/signal-subscriptions/summary", StringComparison.Ordinal)
@@ -565,7 +791,11 @@ public sealed class SignalsPageTests
                     {
                         await hold.WaitAsync(cancellationToken);
                     }
-                    return Json(HttpStatusCode.OK, Detail(41, harness.DetailStatus));
+                    return Json(HttpStatusCode.OK, Detail(41, harness.DetailStatus) with
+                    {
+                        ExpiresAt = harness.DetailExpiresAt,
+                        FailedCount = harness.DetailFailedCount
+                    });
                 }
 
                 if (path == "/api/signal-broadcasts/42")

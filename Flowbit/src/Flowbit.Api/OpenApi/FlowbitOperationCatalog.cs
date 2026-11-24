@@ -189,12 +189,12 @@ internal static partial class FlowbitOperationCatalog
             ["GET /api/webhook-deliveries/{id}/attempts"] = "List a delivery's attempts by number with timing, HTTP status, signing key ids, and unknown outcomes. Response bodies are never stored.",
             ["POST /api/webhook-deliveries/{id}/retry"] = "Queue a failed delivery for a new retry generation using expectedRevision, keeping its event id, body, and captured destination.",
             ["POST /api/webhook-deliveries/{id}/discard"] = "Discard a pending, scheduled, or failed delivery using expectedRevision. An active lease or an archived subscription returns 409.",
-            ["POST /api/signal-broadcasts"] = "Throw a named signal to every signal wait active in one workflow family, in the instance with one business key in a family, in one instance, or in all workflows. Recipients are frozen at once and the Worker delivers them; a reused idempotency key replays the first broadcast or returns 409.",
+            ["POST /api/signal-broadcasts"] = "Throw a named signal to every signal wait active in one workflow family, in the instance with one business key in a family, in one instance, or in all workflows. Recipients are frozen at once and the Worker delivers them; an optional expiresAfter makes deliveries that have not run by then end as skipped with broadcast_expired. A reused idempotency key replays the first broadcast or returns 409.",
             ["GET /api/signal-broadcasts"] = "List signal broadcasts newest first, filtered by name, workflow family, and status. A managed API client sees only its own broadcasts.",
             ["GET /api/signal-broadcasts/{id}"] = "Retrieve one signal broadcast with its delivery counts, thrower, payload, and recipients by workflow family.",
             ["GET /api/signal-broadcasts/{id}/deliveries"] = "List a broadcast's deliveries in ascending id, filtered by status or instance. A managed API client receives result codes without descriptions.",
             ["POST /api/signal-broadcasts/{id}/cancel"] = "Cancel a broadcast's pending deliveries. Deliveries already running finish normally, and a finished broadcast returns 409.",
-            ["POST /api/signal-broadcasts/{id}/retry-failed"] = "Queue a finished broadcast's failed deliveries again using expectedUpdatedAt; a stale timestamp returns 409.",
+            ["POST /api/signal-broadcasts/{id}/retry-failed"] = "Queue a finished broadcast's failed deliveries again using expectedUpdatedAt; a stale timestamp, or a broadcast whose expiry has passed, returns 409.",
             ["GET /api/signal-subscriptions/summary"] = "Count the active signal waits by signal name and workflow family, optionally for one name, family, business key in a family, or instance. Requires a user with the signal role."
         };
 

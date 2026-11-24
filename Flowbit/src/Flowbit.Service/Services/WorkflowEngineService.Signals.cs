@@ -175,6 +175,14 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
             return new SignalDeliveryOutcome(delivery.Status, delivery.ResultCode, null);
         }
 
+        // EVENT-04E: the expiry is checked after the three locks, with the database's clock,
+        // so a delivery that waited for its instance cannot act after the expiry. It comes
+        // before every other outcome, as the settle statement would have decided.
+        if (await signalBroadcasts.IsExpiredAsync(delivery.BroadcastId, cancellationToken))
+        {
+            return await ExpireLockedDeliveryAsync(transaction, deliveryId, cancellationToken);
+        }
+
         if (instance is null
             || subscription is null
             || subscription.Status != SignalSubscriptionStatuses.Active
@@ -587,6 +595,30 @@ public sealed partial class WorkflowEngineService : ISignalDeliveryExecutor
         }
         await transaction.CommitAsync(cancellationToken);
         return new SignalDeliveryOutcome(status, resultCode, description);
+    }
+
+    /// <summary>
+    /// Ends a locked, pending delivery of an expired broadcast as skipped with
+    /// <c>broadcast_expired</c>, writing nothing else: no variable, history row, node visit,
+    /// token, subscription, or instance. Its timestamps come from the database's clock and
+    /// no attempt is counted.
+    /// </summary>
+    private async Task<SignalDeliveryOutcome> ExpireLockedDeliveryAsync(
+        IWorkflowTransaction transaction,
+        long deliveryId,
+        CancellationToken cancellationToken)
+    {
+        if (!await signalBroadcasts!.ExpireDeliveryAsync(deliveryId, cancellationToken))
+        {
+            throw new InvalidOperationException(
+                $"Signal delivery #{deliveryId} changed while its row was locked.");
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new SignalDeliveryOutcome(
+            SignalDeliveryStatuses.Skipped,
+            SignalDeliveryResultCodes.BroadcastExpired,
+            null);
     }
 }
 

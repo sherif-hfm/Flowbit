@@ -6,9 +6,9 @@ using Xunit;
 namespace Flowbit.BrowserTests;
 
 /// <summary>
-/// R17: the Webhooks subscription form offers the signal broadcast event types (EVENT-04D) with their labels and
-/// type names, notes the family rule while one of them is ticked and a workflow family is typed, and lists them in
-/// the delivery filter. The smoke stack has no webhook key ring, so the scenario never saves a subscription.
+/// R17: the Webhooks subscription form offers the four signal broadcast event types (EVENT-04D, and
+/// signalBroadcast.expired from EVENT-04E) with their labels and type names, notes the family rule while one of them
+/// is ticked and a workflow family is typed, and lists them in the delivery filter. The smoke stack has no webhook key ring, so the scenario never saves a subscription.
 /// </summary>
 [Collection(BrowserCollection.Name)]
 public sealed class WebhooksSmokeTests(BrowserStackFixture stack)
@@ -20,7 +20,8 @@ public sealed class WebhooksSmokeTests(BrowserStackFixture stack)
     [
         ("signalBroadcast.completed", "Signal broadcast completed"),
         ("signalBroadcast.completedWithIssues", "Signal broadcast completed with issues"),
-        ("signalBroadcast.cancelled", "Signal broadcast cancelled")
+        ("signalBroadcast.cancelled", "Signal broadcast cancelled"),
+        ("signalBroadcast.expired", "Signal broadcast expired")
     ];
 
     [Theory]
@@ -85,7 +86,7 @@ public sealed class WebhooksSmokeTests(BrowserStackFixture stack)
             await Assertions.Expect(note).ToHaveCountAsync(0);
             await Assertions.Expect(family).ToHaveAttributeAsync("aria-describedby", "webhook-workflow-key-help");
 
-            // The delivery filter offers the three types too.
+            // The delivery filter offers the four types too.
             var options = await page.Locator("#delivery-type option").EvaluateAllAsync<string[]>(
                 "options => options.map(option => option.value)");
             foreach (var (type, _) in SignalBroadcastTypes)

@@ -19,7 +19,7 @@ namespace Flowbit.BrowserAcceptanceTests;
 /// scenarios never match. Tests poll real state with bounded waits and never edit rows.
 /// </summary>
 [Collection(ExampleAcceptanceCollection.Name)]
-public sealed class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
+public sealed partial class SignalAcceptanceTests(ExampleAcceptanceFixture fixture)
 {
     private static readonly TimeSpan ScenarioBudget = TimeSpan.FromMinutes(8);
     private static readonly string[] OperatorRoles = ["admin"];

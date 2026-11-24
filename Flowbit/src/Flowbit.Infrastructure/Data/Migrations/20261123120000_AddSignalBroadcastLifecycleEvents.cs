@@ -46,7 +46,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
         // character a body stays under 3 KiB, far below CK_lifecycle_events_body. A status
         // without an event type is ignored, so a status added later never fails a commit here;
         // it needs its type added to this function, LifecycleEventCatalog, and the tests.
-        private const string CaptureFunctionSql = """
+        // AddSignalBroadcastExpiry replaces the function and restores this version on Down.
+        internal const string CaptureFunctionSql = """
             CREATE OR REPLACE FUNCTION flowbit.capture_signal_broadcast_lifecycle()
             RETURNS trigger
             LANGUAGE plpgsql

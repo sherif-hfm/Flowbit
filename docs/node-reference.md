@@ -840,6 +840,7 @@ The example assumes `policyVersion` is undeclared or a declared scalar `number` 
 
 - **When it waits.** A token that arrives on the catch creates a signal subscription for that visit and rests there. The subscription ends in the same transaction as the wait: when a signal is delivered, when an attached boundary interrupts the catch, or when the instance or the token's branch is cancelled. A loop that returns to the catch subscribes again for the new visit.
 - **What it receives.** A throw freezes its recipients when it runs, so a catch reached after the throw does not receive it, and a signal is not stored for later waits. One broadcast advances one wait: when a catch is followed by another catch of the same name, the second subscribes after the first was delivered, and the same broadcast does not reach it.
+- **Expired signals.** A throw through the API can set `expiresAfter`. A signal whose expiry passes before its delivery runs never reaches the catch: the delivery is skipped with `broadcast_expired`, nothing is written, and the catch keeps waiting and subscribed. Attach a timer boundary to a catch that must not wait forever. See [letting a signal expire](developer-guide.md#let-a-signal-expire).
 - **Delivery.** The delivery runs as the fixed system actor `signal`, with no roles or claims. It writes the mapped values on the catch's visit, lets conditional events observe them, and then follows the outgoing flow if the token is still waiting. History records a `signalReceived` row whose payload names the broadcast, the signal, and its thrower, with `thrownByInstanceId` and `thrownByNodeId` when a workflow threw it; the catch's visit completes with reason `signalReceived`, and the outgoing flow's traversal evidence has kind `signalCatch`. Routing after the catch runs in the Worker, so a later service or script task becomes a durable job of its own.
 - **Failures.** A payload that fails a mapping fails only that delivery with `signal_payload_invalid`, writes nothing, and leaves the catch waiting and subscribed.
 - **Boundaries.** Timer, conditional, and [signal](#signalboundaryevent) boundaries may attach, for example to stop waiting after seven days; see [boundary host rules](#boundary-host-rules). A signal boundary on the catch must use another signal name than the catch. A conditional boundary that the mapped values make true can take the token before the catch continues.
@@ -1488,6 +1489,8 @@ A throw freezes its recipients in one statement, inside the transaction of the s
 - a throw to many recipients holds its locks in the Worker, not in a request.
 
 The [order cancellation example](../examples/signals/03-signal-throw-order-cancellation.json) needs no such task, because its shipment task has waited since an earlier transaction.
+
+**Expiry.** A frozen recipient still receives the signal only if its delivery runs before the broadcast's expiry, when the broadcast has one. A broadcast thrown through the API with `expiresAfter` skips every delivery that has not run by then with `broadcast_expired`, and its waits stay open. A signal throw or end event cannot set an expiry, so the broadcasts it creates never expire. See [letting a signal expire](developer-guide.md#let-a-signal-expire).
 
 ### Refused signal throws
 

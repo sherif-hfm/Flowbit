@@ -6,6 +6,7 @@
 @using static Flowbit.Ui.Components.Shared.Signals.SignalFormatting
 @inject WorkflowApiClient Api
 @inject TokenState Token
+@inject TimeProvider Clock
 
 <PageTitle>Signals · Flowbit</PageTitle>
 
@@ -118,6 +119,23 @@ else
             <div class="col-12">
                 <p class="mb-0 signal-match-line" role="status" aria-live="polite">@MatchSummary</p>
             </div>
+            <div class="col-md-6">
+                <label class="form-label" for="signal-expiry-amount">Expires after (optional)</label>
+                <div class="input-group">
+                    @* A number of a unit; the review turns them into the ISO-8601 duration the throw sends.
+                       Uncontrolled: the browser reports text it cannot read (5-, 10e) as an empty value,
+                       so the page keeps what typed-inputs.js reports, badInput included, and never
+                       writes the box back. A reset of the form replaces it through the section's key. *@
+                    <input id="signal-expiry-amount" type="number" min="1" step="1" class="form-control" inputmode="numeric"
+                           data-typed-input @ontypedinput="OnExpiryAmountTypedAsync" @ontypedcommit="OnExpiryAmountTypedAsync"
+                           aria-describedby="signal-expiry-help" />
+                    <select id="signal-expiry-unit" class="form-select signal-expiry-unit" value="@expiryUnit"
+                            @onchange="OnExpiryUnitChangedAsync" aria-label="Expiry unit">
+                        @foreach (var unit in ExpiryUnits) { <option value="@unit.Unit">@unit.Label</option> }
+                    </select>
+                </div>
+                <div id="signal-expiry-help" class="form-text">Deliveries that have not run by then are skipped, and their waits stay open for a later signal. Leave it empty for a signal that does not expire.</div>
+            </div>
         </div>
     </section>
 
@@ -157,6 +175,7 @@ else
                 <dt class="col-md-3">Signal</dt><dd class="col-md-9"><code>@review.Name</code></dd>
                 <dt class="col-md-3">Scope</dt><dd class="col-md-9 signal-scope">@ScopeLabel(review.WorkflowKey, review.BusinessKey, review.InstanceId)</dd>
                 <dt class="col-md-3">Reaches now</dt><dd class="col-md-9 signal-review-reach">@CountsText(review.Waiting, review.Starts)@(review.Truncated ? " or more" : null)</dd>
+                <dt class="col-md-3">Expires</dt><dd class="col-md-9 signal-review-expiry">@review.ExpiresText</dd>
                 <dt class="col-md-3">Payload</dt>
                 <dd class="col-md-9">
                     @if (review.Payload is null)
@@ -191,7 +210,8 @@ else
                     <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshCurrentBroadcastAsync" disabled="@refreshingBroadcast"><AppIcon Name="refresh" /> Refresh</button>
                 </div>
             </div>
-            <SignalBroadcastSummary Broadcast="currentBroadcast" />
+            @{ var now = Clock.GetUtcNow(); }
+            <SignalBroadcastSummary Broadcast="currentBroadcast" Now="now" />
             <div class="d-flex flex-wrap gap-2 px-3 pb-3">
                 @if (CanCancel(currentBroadcast.Status))
                 {
@@ -199,9 +219,13 @@ else
                            placeholder="Cancellation reason (optional)" aria-label="Cancellation reason" />
                     <button class="btn btn-outline-danger" @onclick="CancelAsync" disabled="@broadcastOperation">Cancel pending deliveries</button>
                 }
-                @if (CanRetry(currentBroadcast))
+                @if (CanRetry(currentBroadcast, now))
                 {
                     <button class="btn btn-outline-primary" @onclick="RetryFailedAsync" disabled="@broadcastOperation">Retry @currentBroadcast.FailedCount.ToString("N0") failed</button>
+                }
+                else if (RetryHiddenReason(currentBroadcast, now) is { } retryReason)
+                {
+                    <p class="form-text mb-0 signal-retry-expired">@retryReason</p>
                 }
             </div>
             <div class="border-top px-3 pt-3">
@@ -286,6 +310,9 @@ else
     private long? instanceId;
     private string? payloadText;
     private string? payloadError;
+    // The expiry as typed (ReadExpiryAmount); empty means the signal does not expire.
+    private string expiryAmount = string.Empty;
+    private SignalExpiryUnit expiryUnit = SignalExpiryUnit.Minutes;
     private SignalSubscriptionSummaryDto? summary;
     private SignalSubscriptionSummaryDto? scopedSummary;
     private bool scopedCountFailed;
@@ -316,6 +343,7 @@ else
     /// <summary>
     /// The draft as reviewed. Only the fields of its scope are set: a family scope has a
     /// workflow key and maybe a business key, an instance scope only its ID.
+    /// <see cref="ExpiresAfter"/> is the ISO-8601 duration the throw sends, or null.
     /// </summary>
     private sealed record ThrowReview(
         string Name,
@@ -327,7 +355,9 @@ else
         int Starts,
         bool Truncated,
         JsonElement? Payload,
-        string? PayloadText);
+        string? PayloadText,
+        string? ExpiresAfter,
+        string ExpiresText);
 
     /// <summary>The draft's scope fields that a throw would send, as one comparable value.</summary>
     private sealed record DraftScope(SignalScopeChoice Scope, string? WorkflowKey, string? BusinessKey, long? InstanceId);
@@ -492,6 +522,24 @@ else
         ClearReview();
     }
 
+    // Edits of the expiry end the review, as every other edit does. Focus leaving the box
+    // without a change (typedcommit) keeps it.
+    private Task OnExpiryAmountTypedAsync(TypedInputEventArgs args)
+    {
+        var amount = ReadExpiryAmount(args.Value, args.BadInput);
+        if (amount == expiryAmount) return Task.CompletedTask;
+        expiryAmount = amount;
+        ClearReview();
+        return Task.CompletedTask;
+    }
+
+    private Task OnExpiryUnitChangedAsync(ChangeEventArgs args)
+    {
+        expiryUnit = Enum.TryParse<SignalExpiryUnit>(args.Value?.ToString(), out var unit) ? unit : SignalExpiryUnit.Minutes;
+        ClearReview();
+        return Task.CompletedTask;
+    }
+
     private async Task ReviewAsync()
     {
         error = null;
@@ -521,6 +569,13 @@ else
             error = $"The business key can have at most {BusinessKeyRules.MaxLength} characters.";
             return;
         }
+        var amount = expiryAmount;
+        var unit = expiryUnit;
+        if (TryBuildExpiry(amount, unit, out var expiresAfter) is { } expiryProblem)
+        {
+            error = expiryProblem;
+            return;
+        }
 
         var epoch = Interlocked.Read(ref identityEpoch);
         try
@@ -529,12 +584,14 @@ else
             var counts = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync(
                 name, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId));
             // The draft may have changed while the counts were loading; that edit ended the review.
-            if (name != signalName || scope != CurrentScope || text != payloadText) return;
+            if (name != signalName || scope != CurrentScope || text != payloadText
+                || amount != expiryAmount || unit != expiryUnit) return;
             var matching = counts.Items.Where(item => item.Name == name).ToList();
             review = new ThrowReview(
                 name, scope.Scope, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId,
                 matching.Sum(item => item.Count), matching.Sum(item => item.StartCount),
-                counts.Truncated, payload, text);
+                counts.Truncated, payload, text,
+                expiresAfter, ExpiryReviewText(expiresAfter is null ? null : amount, unit));
             // One key per reviewed draft, so a retried request after a timeout cannot throw twice.
             draftIdempotencyKey = $"ui-{Guid.NewGuid():N}";
         }
@@ -574,7 +631,8 @@ else
                 reviewed.Payload,
                 key,
                 reviewed.BusinessKey,
-                reviewed.InstanceId)));
+                reviewed.InstanceId,
+                reviewed.ExpiresAfter)));
             success = thrown.TotalDeliveryCount == 0
                 ? $"Broadcast #{thrown.Id} found no waiting events; it completed with no deliveries."
                 : thrown.StartCount == 0
@@ -845,6 +903,7 @@ else
         // The draft goes too: the next identity starts from an empty form.
         signalName = string.Empty; scopeChoice = SignalScopeChoice.Family; workflowKey = string.Empty;
         businessKey = string.Empty; instanceId = null; payloadText = null; formGeneration++;
+        expiryAmount = string.Empty; expiryUnit = SignalExpiryUnit.Minutes;
         summary = null; scopedSummary = null; scopedCountFailed = false; scopedSummaryRequest++; review = null; draftIdempotencyKey = null; payloadError = null;
         broadcastView++; deliveriesRequest++; historyRequest++;
         currentBroadcast = null; deliveries = null; deliveryStatus = null; deliveryKind = null; deliveryPage = 1;

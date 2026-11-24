@@ -900,6 +900,14 @@ events included, so the publication gate needs
    it enters a throw or end event.
 10. A throw from a workflow commits with its step, never waits for another
     instance or for a delivery, and a refused throw fails its step.
+11. One clock decides an expiry (EVENT-04E): the database computes `ExpiresAt`
+    at the throw and every decision that ends or refuses a delivery compares it
+    with `clock_timestamp()`. No host clock decides, and no `now()`, except the
+    soft open-broadcast count.
+12. After the expiry, no delivery acts: a pending delivery of an expired
+    broadcast gets no outcome other than `skipped` with `broadcast_expired`,
+    unless a cancel arrives first, and an expiry writes nothing to an instance
+    and locks none to settle a broadcast.
 
 **Subscriptions.** `EnsureSignalSubscriptionsAsync` runs in
 `ResolvePassThroughAsync` for the token's current node, after
@@ -1041,6 +1049,60 @@ the broadcast, so the two cannot deadlock. A transition that starts or ends a wa
 already holds the instance lock when it writes subscription rows, and a version
 change locks open signal subscriptions last, after jobs, incidents, timers, and
 conditional-boundary subscriptions.
+
+**Expiry (EVENT-04E).** A throw through the API may set `expiresAfter`, which
+`SignalExpiryRules` (`Flowbit.Shared`) parses with
+`TimerDefinitionRules.TryParseFixedDuration` and bounds to 1 second to 365 days;
+the service and the Signals page both call it. The hash gains a line with the
+parsed length only when the field is present, so stored keys still replay.
+`SignalBroadcastRepository.AddAsync` reads `clock_timestamp()` once for a
+broadcast with a duration and stores `ExpiresAt`, which never changes; a
+workflow's throw passes none. The rules:
+
+- **Check after the locks.** `DeliverSignalAsync` asks `IsExpiredAsync`
+  (`COALESCE("ExpiresAt" <= clock_timestamp(), FALSE)` by primary key, no
+  payload, no lock) right after the delivery row is locked and found pending,
+  before any other outcome; `StartFromSignalAsync` asks it after the family lock
+  and the delivery row, before it reads the default. A true answer ends the row
+  through `ExpireDeliveryAsync`: `skipped`, `broadcast_expired`, no description,
+  both timestamps from one `clock_timestamp()`, `AttemptCount` unchanged.
+- **Settle under the broadcast's row lock.** `SignalBroadcastExpirer` locks the
+  broadcast `FOR UPDATE`, stops unless it is `delivering`, reads the database time
+  once, ends every pending delivery in one `UPDATE` whose condition compares
+  `ExpiresAt` with `clock_timestamp()` (`ExpirePendingDeliveriesAsync`), recounts,
+  commits, and then adds the ended count to `flowbit.signals.deliveries` and logs
+  one line. It locks no instance, so it never waits for one; the `UPDATE` waits for
+  a delivery inside its transaction and leaves it as it finished.
+  `SignalBroadcastJobProcessor` calls it before any page once the broadcast has
+  expired, and as soon as a delivery reports `broadcast_expired`. After that
+  settle the job completes, even when a delivery earlier in the run failed
+  unexpectedly: the settle ended that delivery too, so a retry would find
+  nothing pending.
+- **Sweep.** `SignalBroadcastExpiryService` in the Worker runs every
+  `FlowbitWorker:SignalExpirySweepSeconds` (default 5), reads the database time
+  once, and settles at most 20 broadcasts through `ExpireNextDueAsync`, each
+  claimed with `FOR UPDATE SKIP LOCKED` by comparing `ExpiresAt` with that value
+  on `IX_signal_broadcasts_open_expiry`. PostgreSQL never uses `clock_timestamp()`
+  as an index condition, so the claim compares with a value; the settle statement
+  still decides with the clock.
+- **Derived status.** The status is derived from the rows, never set by a settle:
+  a delivering broadcast with nothing pending is `expired` when any delivery is
+  `skipped` with `broadcast_expired`, else `completedWithIssues` when any failed,
+  else `completed`; `cancelled` and `expired` stay. **`RefreshCountsAsync` and the
+  raw SQL of `ReconcileExhaustedSignalBroadcastsAsync` are the only two statements
+  that derive it, and change together.** The lost-lease statement reads
+  `clock_timestamp()` once in a common table expression and ends a job's pending
+  deliveries as expired, without an attempt, when the expiry has passed by then,
+  else as `failed` with `lease_exhausted`; the incident opens in both cases.
+- **Limits and retry.** `CountOpenAsync` leaves out a broadcast whose `ExpiresAt`
+  is not later than `now()`, the one comparison with the transaction's time.
+  `RetryFailedAsync` asks `IsExpiredAsync` under the broadcast's row lock, after the
+  status check and before the `expectedUpdatedAt` check, and returns `409` past the
+  expiry.
+
+Lock order: a delivery holds runtime rows and one delivery row and never asks for
+the broadcast row; settle, sweep, retry, cancel, recount, and the lost-lease
+reconciliation take the broadcast row first and never a runtime row.
 
 **Versions, reactivation, and analyses.** `WorkflowVersionCompatibilityEvaluator.ValidateOpenSignalSubscriptions`
 blocks with `open_signal_subscription_node_missing` or
@@ -1376,7 +1438,7 @@ Outbound lifecycle webhooks (INT-01) deliver committed transitions to external r
 
 **Capture is in the database, not the engine.** Deferred constraint triggers on `workflow_instances`, `user_tasks`, `workflow_incidents`, and `user_delegations` (`capture_*_lifecycle()` in the `AddOutboundLifecycleWebhooks` migration), and on `signal_broadcasts` (`capture_signal_broadcast_lifecycle()` in `AddSignalBroadcastLifecycleEvents`), derive events from `OLD`/`NEW`, match active subscription revisions, and insert `lifecycle_events` with the exact body bytes. Runtime C# code never describes events, so every API, Worker, raw-SQL, set-based, and `ON CONFLICT DO NOTHING` path is covered by construction. **A new lifecycle status, source column, or source table must update these capture functions**; tests in `LifecycleEventCaptureTests` pin the catalog rules. A new job kind must be classified in `LifecycleEventCaptureTests`, and listed in `capture_workflow_incident_lifecycle()` when its incidents have no authored node. Every string a body copies is bounded by its column, and an incident's node external id longer than the 300 characters a running node can hold is reported as null rather than truncated.
 
-- **Signal broadcasts (EVENT-04D).** `signalBroadcast.completed`, `signalBroadcast.completedWithIssues`, and `signalBroadcast.cancelled` are raised for each committed change of a broadcast's `Status` to that value, whichever writer made it: a delivery job's recount, `SetRecipientsAsync` for a throw that froze no recipient (in the throwing step's transaction for a workflow), a cancel, a retry that leaves nothing pending, and the raw-SQL `ReconcileExhaustedSignalBroadcastsAsync` of a lost lease. The `WHEN` clauses skip a recount that keeps the status and a change back to `delivering`. At commit the function reads the row again by its primary key, without `PayloadJson`, so the event carries the counts the transaction commits (a cancel writes its status before it recounts), and a replaced status or a deleted row raises nothing. The envelope's family and instance are the scope's, so a broadcast to all workflows matches only subscriptions without a family. **A new broadcast status must extend `capture_signal_broadcast_lifecycle()`, `LifecycleEventCatalog`, and `SignalBroadcastLifecycleEventTests` together**; until then the function ignores it. A broadcast that stays `delivering` behind a job incident raises nothing.
+- **Signal broadcasts (EVENT-04D, EVENT-04E).** `signalBroadcast.completed`, `signalBroadcast.completedWithIssues`, `signalBroadcast.cancelled`, and `signalBroadcast.expired` are raised for each committed change of a broadcast's `Status` to that value, whichever writer made it: a delivery job's recount, `SetRecipientsAsync` for a throw that froze no recipient (in the throwing step's transaction for a workflow), a cancel, a retry that leaves nothing pending, an expiry's settle by a delivery job or the Worker's sweep, and the raw-SQL `ReconcileExhaustedSignalBroadcastsAsync` of a lost lease. `AddSignalBroadcastExpiry` replaced the function to read `ExpiredCount` and append `,"expiredCount":n` to the `expired` body only, so the three earlier bodies are unchanged. The `WHEN` clauses skip a recount that keeps the status and a change back to `delivering`. At commit the function reads the row again by its primary key, without `PayloadJson`, so the event carries the counts the transaction commits (a cancel writes its status before it recounts), and a replaced status or a deleted row raises nothing. The envelope's family and instance are the scope's, so a broadcast to all workflows matches only subscriptions without a family. **A new broadcast status must extend `capture_signal_broadcast_lifecycle()`, `LifecycleEventCatalog`, and `SignalBroadcastLifecycleEventTests` together**; until then the function ignores it. A broadcast that stays `delivering` behind a job incident raises nothing.
 - **Capture configuration.** The canonical `Webhooks.CaptureEnabled` engine setting stores lowercase `true`/`false`; database guards reject alternate keys, invalid values, and deletion. Settings administrators edit it through the existing page/API, while SQL operators retain `set_lifecycle_event_capture(boolean, text)`. A database audit trigger records one management audit event per actual toggle. API metadata-only saves still advance `UpdatedAt`/`UpdatedBy`; unchanged SQL helper calls do nothing. Capture catalog `changedAt`/`changedBy` mean the latest setting edit. `ConsolidateLifecycleCaptureSettings` removes the former singleton table and requires a coordinated upgrade; see [rollout](../docs/deployment.md#rollout).
 - **Commit semantics.** Column lists and `WHEN` clauses decide at row-change time whether a call is queued, so unrelated updates queue nothing. Queued calls run at commit in change order, after rows written later in the transaction (node executions) exist, and read the definition applying at commit. Rollback, savepoint rollback, an unchanged update, capture off, `SET LOCAL flowbit.lifecycle_events = 'off'`, or no matching target store nothing. A trigger failure fails the source commit.
 - **Locks.** Capture runs after every runtime lock its transaction takes and takes none itself; it reads subscription rows without locks and has no foreign keys to them. Management, dispatch, and cleanup never lock runtime rows. Webhook rows locked together follow subscription → dispatch state → signing key → delivery → attempt. Fanout locks its batch of events, then share-locks their subscriptions before reading their state, so it waits for an archive in progress and never leaves a pending delivery behind a settled archive. Call activities keep their one-existing-instance-per-transaction rule: parent and child events belong to their own transactions.
@@ -2144,7 +2206,7 @@ The live API runner writes Markdown and JSON evidence under the repository-level
 
 To prove that the [lifecycle capture triggers](#lifecycle-webhooks) accept every
 producer path, run the same suite as a producer sweep. It turns capture on with an
-active subscription to all fourteen subscribable event types before the first test, and appends
+active subscription to all fifteen subscribable event types before the first test, and appends
 the number of recorded events per type to the report file when the run ends. Tests
 that delete events make those counts lower bounds:
 
@@ -2220,7 +2282,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E25, hosted-editor H1–H18, and runtime R1–R17 scenarios (see the project
+The suite covers editor E1–E25, hosted-editor H1–H18, and runtime R1–R18 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

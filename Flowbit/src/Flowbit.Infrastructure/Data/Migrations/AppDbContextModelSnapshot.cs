@@ -3152,6 +3152,14 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Property<int>("DeliveredCount")
                         .HasColumnType("integer");
 
+                    b.Property<int>("ExpiredCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int>("FailedCount")
                         .HasColumnType("integer");
 
@@ -3236,6 +3244,10 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("IX_signal_broadcasts_open_expiry")
+                        .HasFilter("\"Status\" = 'delivering' AND \"ExpiresAt\" IS NOT NULL");
+
                     b.HasIndex("ThrownByKind")
                         .HasDatabaseName("IX_signal_broadcasts_open_thrower")
                         .HasFilter("\"Status\" = 'delivering'");
@@ -3254,13 +3266,15 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_signal_broadcasts_counts", "\"TotalDeliveryCount\" BETWEEN 0 AND 100000 AND \"DeliveredCount\" >= 0 AND \"SkippedCount\" >= 0 AND \"FailedCount\" >= 0 AND \"CancelledCount\" >= 0 AND \"DeliveredCount\" + \"SkippedCount\" + \"FailedCount\" + \"CancelledCount\" <= \"TotalDeliveryCount\"");
 
+                            t.HasCheckConstraint("CK_signal_broadcasts_expiry", "\"ExpiredCount\" BETWEEN 0 AND \"SkippedCount\" AND (\"ExpiresAt\" IS NOT NULL OR (\"ExpiredCount\" = 0 AND \"Status\" <> 'expired')) AND (\"Status\" <> 'expired' OR \"ExpiredCount\" > 0)");
+
                             t.HasCheckConstraint("CK_signal_broadcasts_payload", "\"PayloadJson\" IS NULL OR (jsonb_typeof(\"PayloadJson\") = 'object' AND octet_length(\"PayloadJson\"::text) <= 262144)");
 
                             t.HasCheckConstraint("CK_signal_broadcasts_scope", "(\"BusinessKey\" IS NULL OR \"InstanceId\" IS NULL) AND ((\"BusinessKey\" IS NULL AND \"InstanceId\" IS NULL) OR \"WorkflowKey\" IS NOT NULL) AND (\"BusinessKey\" IS NULL OR \"BusinessKey\" <> '') AND (\"InstanceId\" IS NULL OR \"InstanceId\" > 0)");
 
                             t.HasCheckConstraint("CK_signal_broadcasts_start_count", "\"StartDeliveryCount\" BETWEEN 0 AND \"TotalDeliveryCount\"");
 
-                            t.HasCheckConstraint("CK_signal_broadcasts_status", "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'cancelled')");
+                            t.HasCheckConstraint("CK_signal_broadcasts_status", "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'expired', 'cancelled')");
 
                             t.HasCheckConstraint("CK_signal_broadcasts_terminal_time", "(\"Status\" = 'delivering' AND \"CompletedAt\" IS NULL) OR (\"Status\" <> 'delivering' AND \"CompletedAt\" IS NOT NULL)");
 

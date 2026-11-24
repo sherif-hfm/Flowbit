@@ -464,13 +464,43 @@ Content-Type: application/json
 
 The throw freezes its recipients in one statement: the signal waits that are committed and active at that moment. It does not wait for any instance's transaction, and nothing is added later, however long delivery takes. A signal therefore reaches neither an instance that arrives at its catch a moment later nor a second catch of the same name that the same instance reaches after the first one received it.
 
-Delivery happens when the Worker runs each recipient, not at the moment of the throw. A wait that ended in between, for example because a timer boundary fired or the instance was cancelled, is skipped with `subscription_ended`. While no Worker runs, deliveries wait and act when it returns; nothing expires. If a signal is no longer wanted, cancel the broadcast: pending deliveries become `cancelled` and the waits stay subscribed.
+Delivery happens when the Worker runs each recipient, not at the moment of the throw. A wait that ended in between, for example because a timer boundary fired or the instance was cancelled, is skipped with `subscription_ended`. While no Worker runs, deliveries wait and act when it returns, unless the throw [set an expiry](#let-a-signal-expire) that has passed by then. If a signal is no longer wanted, cancel the broadcast: pending deliveries become `cancelled` and the waits stay subscribed.
 
-A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipients, waits and [signal starts](#start-a-workflow-with-a-signal) together, is rejected with `400` rather than truncated; narrow its scope or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API are still delivering, a throw returns `409`; wait for one to finish or cancel one. Broadcasts that workflows threw do not count toward that limit.
+A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipients, waits and [signal starts](#start-a-workflow-with-a-signal) together, is rejected with `400` rather than truncated; narrow its scope or raise the [setting](engine-settings.md#signal-settings). When `Signals.MaxOpenBroadcasts` broadcasts thrown through the API are still delivering, a throw returns `409`; wait for one to finish or cancel one. Broadcasts that workflows threw, and broadcasts past their expiry, do not count toward that limit.
+
+### Let a signal expire
+
+Some announcements are useless when they arrive late: a signal meant to interrupt work now should not act hours later, when a stopped Worker returns. Set `expiresAfter` on the throw, a fixed ISO-8601 duration from 1 second to 365 days, such as `PT30S`, `PT10M`, or `P1D`:
+
+```http
+POST /api/signal-broadcasts HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "warehouse.product-recall",
+  "workflowKey": "example-signal-boundaries-recall",
+  "payload": { "reason": "Supplier recall" },
+  "expiresAfter": "PT10M"
+}
+```
+
+The response carries `expiresAt`, which the database computed from its own clock when the throw ran. That clock decides every expiry; the caller's, the API host's, and the Worker host's play no part.
+
+- **What an expiry does.** A delivery that has not run by `expiresAt` ends as `skipped` with `broadcast_expired`. It writes nothing to its instance, a start creates no instance, and the wait stays open: **a catch keeps waiting for a signal that will not come**, and a boundary keeps listening. A wait that must not wait forever needs a [timer boundary](node-reference.md#timerboundaryevent) beside it, which a later signal or the deadline then ends. Once nothing is pending, the broadcast finishes as `expired`, with `expiredCount` counting the deliveries the expiry ended.
+- **A delivery that has started finishes.** The expiry is a check each delivery makes after its locks, not a stop: a delivery that passed its check finishes its transaction, so an instance can show a `signalReceived` row committed moments after `expiresAt`.
+- **Size it for the whole broadcast.** The expiry counts from the throw and includes the time a delivery job waits in the queue and the deliveries before it. One job delivers a workflow definition's recipients one at a time, about 20 a second, in ascending ID, so a broadcast to 10,000 waits of one definition needs about eight minutes, and a shorter expiry skips the later deliveries although nothing is wrong. Check `totalDeliveryCount` in the response, and allow for a queue of other Worker activity.
+- **While no Worker runs.** Nothing settles; the broadcast stays `delivering` with a passed `expiresAt`, but it no longer counts toward `Signals.MaxOpenBroadcasts`. The first delivery job or expiry sweep after a Worker starts ends its pending deliveries in one statement, without locking any instance.
+- **Retries and replays.** Failed deliveries can be retried only before `expiresAt`; afterwards the retry returns `409`, and a new throw reaches the waits that are still open. A retry keeps the original `expiresAt`. A repeated `idempotencyKey` replays the first broadcast with its first `expiresAt`, so retrying a request never extends an expiry; another length under the same key returns `409`.
+- **Finding the deliveries that expired for one instance.** An instance shows no trace of an expired signal; its wait is still listed under `signalSubscriptions`. Read the broadcast's deliveries filtered by instance: `GET /api/signal-broadcasts/{id}/deliveries?instanceId=42`, whose row has `resultCode` `broadcast_expired`.
+- **Hearing of it.** A receiver that waits for a finish event of its own throws must add `signalBroadcast.expired` to its webhook subscription before it sends `expiresAfter`; otherwise an expired broadcast is silent for it. See the [event catalog](#event-catalog).
+
+A broadcast that a workflow throws never expires. See the [API rules](api-guide.md#signals) for the grammar, the messages, and the result codes.
 
 ### Read progress
 
-- Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed. In place of polling, a receiver can subscribe to the `signalBroadcast.*` [lifecycle webhook events](#event-catalog), which announce how each broadcast finished and with which counts; `signalBroadcast.completedWithIssues` alone suits alerting.
+- Poll `GET /api/signal-broadcasts/{id}` until `status` leaves `delivering`. It ends `completed`, or `completedWithIssues` when any delivery failed, or `expired` when its [expiry](#let-a-signal-expire) ended any delivery. In place of polling, a receiver can subscribe to the `signalBroadcast.*` [lifecycle webhook events](#event-catalog), which announce how each broadcast finished and with which counts; `signalBroadcast.completedWithIssues` suits alerting, together with `signalBroadcast.expired` when callers send `expiresAfter`.
 - Page through `GET /api/signal-broadcasts/{id}/deliveries`, filtered by `status`, `instanceId`, or `kind` (`wait` or `start`), for each recipient's `resultCode`. A start's `instanceId` is the instance it created, and is null until then. A managed client sees only its own broadcasts and no `resultDescription`.
 - `GET /api/signal-broadcasts` lists every thrower's broadcasts; repeat `thrownByKind` (`user`, `client`, or `instance`) to keep only some, for example `thrownByKind=instance` for the broadcasts workflows threw.
 - Instance detail's `signalSubscriptions` lists the signals an instance is waiting for now, armed boundaries included, and its history records each delivered signal as a `signalReceived` row naming the broadcast and its thrower.
@@ -478,7 +508,7 @@ A throw that would reach more than `Signals.MaxSubscriptionsPerBroadcast` recipi
 
 ### Handle failed deliveries
 
-A payload that fails a mapping fails only that delivery with `signal_payload_invalid`: nothing is written and the instance keeps waiting with its subscription. Either throw a new signal with a corrected payload, which reaches the waits that are still open, or correct the workflow, move the waiting instances to the corrected version, and call `POST /api/signal-broadcasts/{id}/retry-failed` with the broadcast's current `updatedAt`. Retried deliveries use the instance's current definition, and one whose wait has ended meanwhile is skipped. See the [result codes](api-guide.md#signals).
+A payload that fails a mapping fails only that delivery with `signal_payload_invalid`: nothing is written and the instance keeps waiting with its subscription. Either throw a new signal with a corrected payload, which reaches the waits that are still open, or correct the workflow, move the waiting instances to the corrected version, and call `POST /api/signal-broadcasts/{id}/retry-failed` with the broadcast's current `updatedAt`. Retried deliveries use the instance's current definition, and one whose wait has ended meanwhile is skipped. A broadcast whose [expiry](#let-a-signal-expire) has passed cannot be retried (`409`); throw the signal again instead. See the [result codes](api-guide.md#signals).
 
 ### React while work is in progress
 
@@ -989,10 +1019,11 @@ Event types are case-sensitive. `GET /api/webhook-event-types` returns the same 
 | `signalBroadcast.completed` | A signal broadcast's status changes to `completed`: every delivery ended as delivered, skipped, or cancelled. Also a throw that reached no recipient (in the throw's transaction, including a workflow's throwing step) and a retry that left nothing pending. |
 | `signalBroadcast.completedWithIssues` | The status changes to `completedWithIssues`: every delivery ended and at least one failed, including a delivery job that lost its last lease. |
 | `signalBroadcast.cancelled` | The status changes to `cancelled` while the broadcast was delivering. |
+| `signalBroadcast.expired` | The status changes to `expired`: the broadcast's [expiry](#let-a-signal-expire) passed, the deliveries that had not run were skipped, and their waits stay open. Raised by the delivery job or the Worker's sweep that settles the broadcast, by the reconciliation of a delivery job that lost its last lease, or by the recount after a delivery's own check ended the last pending one. Only a broadcast thrown with `expiresAfter` can have it. |
 
 One row change that qualifies for several events emits them in the order created, assigned, then completed or cancelled. A transition that commits in one transaction can emit both its start and end events, even if no one observed the waiting state.
 
-A signal broadcast event is raised for a committed status change only. Its counters changing while it delivers, a retry that reopens it, a repeated `idempotencyKey` that returns the stored broadcast, a throw refused at the recipient limit, and retention raise nothing. A broadcast that finishes with issues, is retried, and finishes again raises a second event with a new `eventId`, so deduplicate by event id, not by `broadcastId`. A subscription limited to a workflow family receives the broadcasts whose scope names that family: one family, a business key in it, or one of its instances. **A broadcast to all workflows reaches only subscriptions without a family**, even when instances of a family received it, so a receiver that alerts on failed signal deliveries subscribes without a family, or its callers throw to a family. For alerting, `signalBroadcast.completedWithIssues` alone avoids an event for every successful broadcast.
+A signal broadcast event is raised for a committed status change only. Its counters changing while it delivers, a retry that reopens it, a repeated `idempotencyKey` that returns the stored broadcast, a throw refused at the recipient limit, and retention raise nothing. A broadcast that finishes with issues, is retried, and finishes again raises a second event with a new `eventId`, so deduplicate by event id, not by `broadcastId`. A subscription limited to a workflow family receives the broadcasts whose scope names that family: one family, a business key in it, or one of its instances. **A broadcast to all workflows reaches only subscriptions without a family**, even when instances of a family received it, so a receiver that alerts on failed signal deliveries subscribes without a family, or its callers throw to a family. For alerting, `signalBroadcast.completedWithIssues` alone avoids an event for every successful broadcast. A broadcast that expired with failed deliveries raises `signalBroadcast.expired`, not `signalBroadcast.completedWithIssues`, so a receiver that alerts on problems and whose callers send `expiresAfter` subscribes to both. No existing subscription receives `signalBroadcast.expired` until an administrator adds it; add it before sending `expiresAfter`.
 
 `webhook.test` is not subscribable: the test route queues it for one subscription so you can verify a receiver.
 
@@ -1040,6 +1071,7 @@ Every body has the same envelope, in this field order, as compact UTF-8 JSON wit
 | `delegation.granted` | `delegationId`, `acceptanceState`. |
 | `incident.opened` | `incidentId`, `jobId` (the incident's original job), `executionTokenId` (nullable), `nodeId` and `nodeExternalId` (null when no authored node applies, as for version-change and variable-update batch jobs; `nodeExternalId` is also null when the node has none or it is longer than 300 characters), `status: "open"`. |
 | `signalBroadcast.completed`, `signalBroadcast.completedWithIssues`, `signalBroadcast.cancelled` | `broadcastId`, `signalName`, `scope` (`workflow`, `businessKey`, `instance`, or `allWorkflows`), `thrownByKind` (`user`, `client`, or `instance`), `thrownByInstanceId` (the throwing instance; null unless `thrownByKind` is `instance`), `status` (matches the type), `totalDeliveryCount` (waits and family starts the throw froze), `startCount` (how many of them are family starts), `deliveredCount`, `skippedCount`, `failedCount`, `cancelledCount`. The counts are those the finishing transaction commits, and the four outcome counters add up to `totalDeliveryCount`: a `completed` broadcast can have skipped deliveries, and a cancelled one delivered ones. |
+| `signalBroadcast.expired` | The same twelve fields, with `status: "expired"`, then `expiredCount`: the deliveries the expiry ended before they ran, which `skippedCount` includes. `failedCount` can be above zero; those deliveries can no longer be retried. The body carries no `expiresAt`; read the broadcast for it. |
 | `webhook.test` | `subscriptionId`. |
 
 A broadcast that a workflow threw to one family and that finished with one failed delivery:
@@ -1076,7 +1108,7 @@ Prefer the version-stable `nodeExternalId` to the version-scoped `nodeId`. Every
 Three behaviors matter to a receiver of signal broadcast events:
 
 - A broadcast stays `delivering`, and raises nothing, while one of its delivery jobs waits in an incident other than a lost lease. "Still open" is not a status change. A receiver that must hear of every problem subscribes to `incident.opened` as well; that body names the job, not the broadcast.
-- A delivery job that loses its last lease fails its pending deliveries in the transaction that opens its `lease_exhausted` incident, so that commit can store an `incident.opened` and a `signalBroadcast.completedWithIssues` event together.
+- A delivery job that loses its last lease fails its pending deliveries in the transaction that opens its `lease_exhausted` incident, so that commit can store an `incident.opened` and a `signalBroadcast.completedWithIssues` event together. When the broadcast's expiry has passed by then, those deliveries end as expired instead, and the event is `signalBroadcast.expired`.
 - A throw that reaches nothing stores its event with the broadcast, so the event can arrive before the caller has read the broadcast's id from the response. A receiver that matches events to its own throws must accept a `broadcastId` it has not stored yet.
 
 ### Verify a request

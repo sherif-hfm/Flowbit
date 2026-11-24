@@ -7,13 +7,19 @@ public static class SignalBroadcastStatuses
     public const string Delivering = "delivering";
     public const string Completed = "completed";
     public const string CompletedWithIssues = "completedWithIssues";
+
+    /// <summary>
+    /// No delivery is pending, and the broadcast's expiry ended at least one (EVENT-04E).
+    /// Only a broadcast thrown with <c>expiresAfter</c> can have it.
+    /// </summary>
+    public const string Expired = "expired";
     public const string Cancelled = "cancelled";
 
     public static IReadOnlyList<string> All { get; } =
-        [Delivering, Completed, CompletedWithIssues, Cancelled];
+        [Delivering, Completed, CompletedWithIssues, Expired, Cancelled];
 
     public static bool IsFinished(string status) =>
-        status is Completed or CompletedWithIssues or Cancelled;
+        status is Completed or CompletedWithIssues or Expired or Cancelled;
 }
 
 public static class SignalDeliveryStatuses
@@ -43,6 +49,12 @@ public static class SignalDeliveryResultCodes
     public const string DeliveryError = "delivery_error";
     public const string LeaseExhausted = "lease_exhausted";
     public const string BroadcastCancelled = "broadcast_cancelled";
+
+    /// <summary>
+    /// The broadcast's expiry passed before the delivery ran: a skipped delivery that wrote
+    /// nothing, created no instance, and left its wait open.
+    /// </summary>
+    public const string BroadcastExpired = "broadcast_expired";
 
     /// <summary>A start delivery created an instance.</summary>
     public const string Started = "started";
@@ -99,6 +111,7 @@ public static class SignalConstraints
 /// <param name="IdempotencyKey">An optional key, unique per thrower, that makes a repeated request return the first broadcast.</param>
 /// <param name="BusinessKey">Limits the signal to the instance of workflowKey with this business key. Trimmed, then compared exactly and case-sensitively; 1 to 300 characters.</param>
 /// <param name="InstanceId">Limits the signal to the waits of one instance. States the whole scope.</param>
+/// <param name="ExpiresAfter">An optional fixed ISO-8601 duration from PT1S to P365D, such as PT10M or P1D. The broadcast expires that long after the database's time at the throw; deliveries that have not run by then are skipped with broadcast_expired and their waits stay open. Null or absent means the broadcast never expires.</param>
 public sealed record ThrowSignalRequest(
     string? Name,
     string? WorkflowKey = null,
@@ -106,7 +119,8 @@ public sealed record ThrowSignalRequest(
     JsonElement? Payload = null,
     string? IdempotencyKey = null,
     string? BusinessKey = null,
-    long? InstanceId = null);
+    long? InstanceId = null,
+    string? ExpiresAfter = null);
 
 /// <summary>The recipients of a broadcast in one workflow family.</summary>
 /// <param name="WorkflowKey">The family.</param>
@@ -121,11 +135,11 @@ public sealed record SignalRecipientCountDto(string WorkflowKey, int Count, int 
 /// <param name="AllWorkflows">True when the broadcast addressed every workflow family.</param>
 /// <param name="BusinessKey">The trimmed business key a business-key scope names; otherwise null.</param>
 /// <param name="InstanceId">The instance an instance scope names; otherwise null.</param>
-/// <param name="Status">delivering, completed, completedWithIssues, or cancelled.</param>
+/// <param name="Status">delivering, completed, completedWithIssues, expired, or cancelled.</param>
 /// <param name="TotalDeliveryCount">The recipients the throw froze.</param>
 /// <param name="PendingCount">Deliveries not yet finished.</param>
 /// <param name="DeliveredCount">Deliveries that reached their wait.</param>
-/// <param name="SkippedCount">Deliveries whose wait had ended or whose instance had changed.</param>
+/// <param name="SkippedCount">Deliveries whose wait had ended or whose instance had changed, including those the expiry ended.</param>
 /// <param name="FailedCount">Deliveries that failed.</param>
 /// <param name="CancelledCount">Deliveries cancelled with the broadcast.</param>
 /// <param name="ThrownBy">The user's actor identity, the managed client's ID, or the throwing instance's ID as text.</param>
@@ -137,6 +151,8 @@ public sealed record SignalRecipientCountDto(string WorkflowKey, int Count, int 
 /// <param name="ThrownByNodeId">The throw or end event that threw the signal when thrownByKind is instance; otherwise null.</param>
 /// <param name="ThrownByNodeName">That event's name when it threw; otherwise null.</param>
 /// <param name="StartCount">How many of the recipients are starts of a workflow family; each creates an instance when it is delivered.</param>
+/// <param name="ExpiresAt">When the broadcast expires, computed by the database at the throw; null when it never expires. Deliveries that have not run by then are skipped with broadcast_expired.</param>
+/// <param name="ExpiredCount">How many of the skipped deliveries the expiry ended.</param>
 public sealed record SignalBroadcastSummaryDto(
     long Id,
     string Name,
@@ -159,7 +175,9 @@ public sealed record SignalBroadcastSummaryDto(
     long? ThrownByInstanceId = null,
     int? ThrownByNodeId = null,
     string? ThrownByNodeName = null,
-    int StartCount = 0);
+    int StartCount = 0,
+    DateTimeOffset? ExpiresAt = null,
+    int ExpiredCount = 0);
 
 /// <summary>One broadcast with its counts, thrower, payload, and recipients by workflow family.</summary>
 /// <param name="Id">The broadcast ID.</param>
@@ -168,12 +186,12 @@ public sealed record SignalBroadcastSummaryDto(
 /// <param name="AllWorkflows">True when the broadcast addressed every workflow family.</param>
 /// <param name="BusinessKey">The trimmed business key a business-key scope names; otherwise null.</param>
 /// <param name="InstanceId">The instance an instance scope names; otherwise null.</param>
-/// <param name="Status">delivering, completed, completedWithIssues, or cancelled.</param>
+/// <param name="Status">delivering, completed, completedWithIssues, expired, or cancelled.</param>
 /// <param name="TotalDeliveryCount">The recipients the throw froze.</param>
 /// <param name="PendingCount">Deliveries not yet finished.</param>
 /// <param name="DeliveredCount">Deliveries that reached their wait.</param>
-/// <param name="SkippedCount">Deliveries whose wait had ended or whose instance had changed.</param>
-/// <param name="FailedCount">Deliveries that failed; they can be retried.</param>
+/// <param name="SkippedCount">Deliveries whose wait had ended or whose instance had changed, including those the expiry ended.</param>
+/// <param name="FailedCount">Deliveries that failed; they can be retried until the broadcast's expiry passes.</param>
 /// <param name="CancelledCount">Deliveries cancelled with the broadcast.</param>
 /// <param name="ThrownBy">The user's actor identity, the managed client's ID, or the throwing instance's ID as text.</param>
 /// <param name="ThrownByKind">user, client, or instance.</param>
@@ -191,6 +209,8 @@ public sealed record SignalBroadcastSummaryDto(
 /// <param name="ThrownByNodeId">The throw or end event that threw the signal when thrownByKind is instance; otherwise null.</param>
 /// <param name="ThrownByNodeName">That event's name when it threw; otherwise null.</param>
 /// <param name="StartCount">How many of the recipients are starts of a workflow family; each creates an instance when it is delivered.</param>
+/// <param name="ExpiresAt">When the broadcast expires, computed by the database at the throw; null when it never expires. Deliveries that have not run by then are skipped with broadcast_expired.</param>
+/// <param name="ExpiredCount">How many of the skipped deliveries the expiry ended.</param>
 public sealed record SignalBroadcastDetailDto(
     long Id,
     string Name,
@@ -220,7 +240,9 @@ public sealed record SignalBroadcastDetailDto(
     long? ThrownByInstanceId = null,
     int? ThrownByNodeId = null,
     string? ThrownByNodeName = null,
-    int StartCount = 0);
+    int StartCount = 0,
+    DateTimeOffset? ExpiresAt = null,
+    int ExpiredCount = 0);
 
 /// <summary>
 /// One recipient of a broadcast: a wait of an instance, or the start of a workflow family.

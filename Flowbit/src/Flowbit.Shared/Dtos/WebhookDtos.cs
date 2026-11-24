@@ -20,6 +20,9 @@ public static class LifecycleEventTypes
     public const string SignalBroadcastCompletedWithIssues = "signalBroadcast.completedWithIssues";
     public const string SignalBroadcastCancelled = "signalBroadcast.cancelled";
 
+    /// <summary>A broadcast's expiry ended at least one delivery and nothing is pending (EVENT-04E).</summary>
+    public const string SignalBroadcastExpired = "signalBroadcast.expired";
+
     /// <summary>Queued only by the test route; never matched by a subscription's event set.</summary>
     public const string WebhookTest = "webhook.test";
 
@@ -31,13 +34,15 @@ public static class LifecycleEventTypes
     [
         InstanceStarted, InstanceCompleted, InstanceFaulted, InstanceCancelled, InstanceReactivated,
         TaskCreated, TaskAssigned, TaskCompleted, TaskCancelled, DelegationGranted, IncidentOpened,
-        SignalBroadcastCompleted, SignalBroadcastCompletedWithIssues, SignalBroadcastCancelled
+        SignalBroadcastCompleted, SignalBroadcastCompletedWithIssues, SignalBroadcastCancelled,
+        SignalBroadcastExpired
     ];
 
-    /// <summary>The types that announce how a signal broadcast finished (EVENT-04D).</summary>
+    /// <summary>The types that announce how a signal broadcast finished (EVENT-04D, EVENT-04E).</summary>
     public static readonly IReadOnlyList<string> SignalBroadcastTypes =
     [
-        SignalBroadcastCompleted, SignalBroadcastCompletedWithIssues, SignalBroadcastCancelled
+        SignalBroadcastCompleted, SignalBroadcastCompletedWithIssues, SignalBroadcastCancelled,
+        SignalBroadcastExpired
     ];
 }
 

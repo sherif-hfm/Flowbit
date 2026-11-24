@@ -51,7 +51,7 @@ Each item is a follow-up subtask with its own page. The list is in the [recommen
 2. [EVENT-04B](event-04b-signal-throw-and-end-events.md): intermediate signal throw events and signal end events. A throw from a workflow creates the same broadcast inside the throwing instance's transaction. Done.
 3. [EVENT-04C](event-04c-signal-start-events.md): signal start events. A workflow family listens through its published default, and a throw to the family or to all workflows starts one instance per listening family. Done.
 4. [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md): lifecycle webhook event types for broadcasts: `signalBroadcast.completed`, `signalBroadcast.completedWithIssues`, and `signalBroadcast.cancelled`. Done.
-5. [EVENT-04E](event-04e-signal-broadcast-expiry.md): an expiry time for a broadcast, after which undelivered work is skipped.
+5. [EVENT-04E](event-04e-signal-broadcast-expiry.md): an expiry for a broadcast thrown through the API, after which undelivered work is skipped and the broadcast finishes as `expired`, with the webhook event `signalBroadcast.expired`. Done.
 6. [EVENT-04F](event-04f-signal-catalog.md): a catalog of signal definitions with declared payload contracts and permissions per signal.
 7. [EVENT-04G](event-04g-parallel-signal-delivery.md): parallel delivery of one large broadcast, and a higher recipient limit.
 8. [EVENT-04H](event-04h-expression-signal-names.md): a signal name built from an expression, such as a name that contains an order number.

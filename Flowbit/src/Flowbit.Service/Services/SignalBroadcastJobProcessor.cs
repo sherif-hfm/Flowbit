@@ -12,7 +12,9 @@ namespace Flowbit.Service.Services;
 /// <summary>
 /// Delivers the pending deliveries of one broadcast for one workflow definition, in pages
 /// of 100 in ascending id with a cursor, so a failing delivery cannot starve later ones.
-/// Every delivery runs in its own scope and transaction.
+/// Every delivery runs in its own scope and transaction. Before each page, and when a
+/// delivery's own check finds the broadcast expired, it settles the whole broadcast through
+/// <see cref="ISignalBroadcastExpirer"/> instead of delivering further (EVENT-04E).
 /// </summary>
 public sealed class SignalBroadcastJobProcessor(
     IServiceScopeFactory scopeFactory,
@@ -47,20 +49,34 @@ public sealed class SignalBroadcastJobProcessor(
         var isFinalAttempt = lease.AttemptNumber >= lease.Job.MaxAttempts;
         long afterId = 0;
         Exception? firstUnexpectedFailure = null;
+        var settled = false;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             IReadOnlyList<long> page;
+            var expired = false;
             await using (var pageScope = scopeFactory.CreateAsyncScope())
             {
-                page = await pageScope.ServiceProvider
-                    .GetRequiredService<ISignalBroadcastRepository>()
-                    .ListPendingDeliveryIdsAsync(
+                var broadcasts = pageScope.ServiceProvider.GetRequiredService<ISignalBroadcastRepository>();
+                // EVENT-04E: once the expiry has passed, one statement under the broadcast's
+                // row lock ends every pending delivery, so a Worker that returns after an
+                // outage locks no instance for an expired broadcast.
+                expired = await broadcasts.IsExpiredAsync(payload.BroadcastId, cancellationToken);
+                page = expired
+                    ? []
+                    : await broadcasts.ListPendingDeliveryIdsAsync(
                         payload.BroadcastId,
                         payload.WorkflowDefinitionId,
                         afterId,
                         DeliveryPageSize,
                         cancellationToken);
+            }
+
+            if (expired)
+            {
+                await ExpireAsync(payload.BroadcastId, cancellationToken);
+                settled = true;
+                break;
             }
 
             if (page.Count == 0)
@@ -70,8 +86,21 @@ public sealed class SignalBroadcastJobProcessor(
 
             foreach (var deliveryId in page)
             {
-                var unexpected = await DeliverAsync(deliveryId, isFinalAttempt, cancellationToken);
+                var (unexpected, outcome) = await DeliverAsync(deliveryId, isFinalAttempt, cancellationToken);
                 firstUnexpectedFailure ??= unexpected;
+                if (outcome?.ResultCode == SignalDeliveryResultCodes.BroadcastExpired)
+                {
+                    // The delivery's own check found the expiry passed: settle the rest now.
+                    expired = true;
+                    break;
+                }
+            }
+
+            if (expired)
+            {
+                await ExpireAsync(payload.BroadcastId, cancellationToken);
+                settled = true;
+                break;
             }
 
             afterId = page[^1];
@@ -79,16 +108,18 @@ public sealed class SignalBroadcastJobProcessor(
         }
 
         await RefreshCountsAsync(payload.BroadcastId, cancellationToken);
-        if (firstUnexpectedFailure is not null && !isFinalAttempt)
+        if (firstUnexpectedFailure is not null && !isFinalAttempt && !settled)
         {
-            // A delivery that failed unexpectedly stays pending, and the job retries it.
+            // A delivery that failed unexpectedly stays pending, and the job retries it. After a
+            // settle no delivery of the broadcast is pending (the settle ended the one that
+            // failed), so a retry would find nothing to do: the job completes instead.
             ExceptionDispatchInfo.Capture(firstUnexpectedFailure).Throw();
         }
 
         await jobs.CompleteAsync(Fence(lease), cancellationToken);
     }
 
-    private async Task<Exception?> DeliverAsync(
+    private async Task<(Exception? Unexpected, SignalDeliveryOutcome? Outcome)> DeliverAsync(
         long deliveryId,
         bool isFinalAttempt,
         CancellationToken cancellationToken)
@@ -100,7 +131,7 @@ public sealed class SignalBroadcastJobProcessor(
                 .GetRequiredService<ISignalDeliveryExecutor>()
                 .DeliverSignalAsync(deliveryId, cancellationToken);
             SignalRuntimeTelemetry.RecordDelivery(outcome.Status, outcome.ResultCode);
-            return null;
+            return (null, outcome);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -108,7 +139,7 @@ public sealed class SignalBroadcastJobProcessor(
         }
         catch (SignalStartOutcomeException exception)
         {
-            await RecordAsync(
+            var recorded = await RecordAsync(
                 deliveryId,
                 exception.Status,
                 exception.ResultCode,
@@ -116,37 +147,37 @@ public sealed class SignalBroadcastJobProcessor(
                 cancellationToken,
                 exception.WorkflowDefinitionId,
                 exception.SignalNodeId);
-            return null;
+            return (null, recorded);
         }
         catch (SignalPayloadException exception)
         {
-            await RecordAsync(
+            var recorded = await RecordAsync(
                 deliveryId,
                 SignalDeliveryStatuses.Failed,
                 SignalDeliveryResultCodes.PayloadInvalid,
                 exception.Message,
                 cancellationToken);
-            return null;
+            return (null, recorded);
         }
         catch (SignalTokenLimitException exception)
         {
-            await RecordAsync(
+            var recorded = await RecordAsync(
                 deliveryId,
                 SignalDeliveryStatuses.Failed,
                 SignalDeliveryResultCodes.TokenLimit,
                 exception.Message,
                 cancellationToken);
-            return null;
+            return (null, recorded);
         }
         catch (WorkflowDomainException exception)
         {
-            await RecordAsync(
+            var recorded = await RecordAsync(
                 deliveryId,
                 SignalDeliveryStatuses.Failed,
                 SignalDeliveryResultCodes.DeliveryRejected,
                 exception.Message,
                 cancellationToken);
-            return null;
+            return (null, recorded);
         }
         catch (Exception exception) when (exception is SignalDeliveryInvariantException or WorkflowCallChainException)
         {
@@ -156,23 +187,23 @@ public sealed class SignalBroadcastJobProcessor(
                 exception,
                 "Signal delivery {DeliveryId} found inconsistent durable state.",
                 deliveryId);
-            await RecordAsync(
+            var recorded = await RecordAsync(
                 deliveryId,
                 SignalDeliveryStatuses.Failed,
                 SignalDeliveryResultCodes.DeliveryError,
                 exception.Message,
                 cancellationToken);
-            return null;
+            return (null, recorded);
         }
         catch (WorkflowConflictException exception)
         {
-            await RecordAsync(
+            var recorded = await RecordAsync(
                 deliveryId,
                 SignalDeliveryStatuses.Skipped,
                 SignalDeliveryResultCodes.Stale,
                 exception.Message,
                 cancellationToken);
-            return null;
+            return (null, recorded);
         }
         catch (Exception exception)
         {
@@ -182,23 +213,26 @@ public sealed class SignalBroadcastJobProcessor(
                 deliveryId);
             if (isFinalAttempt)
             {
-                await RecordAsync(
+                var recorded = await RecordAsync(
                     deliveryId,
                     SignalDeliveryStatuses.Failed,
                     SignalDeliveryResultCodes.DeliveryError,
                     "The delivery failed unexpectedly on every attempt; see the Worker log.",
                     cancellationToken);
-                return null;
+                return (null, recorded);
             }
-            return exception;
+            return (exception, null);
         }
     }
 
     /// <summary>
-    /// Finishes a delivery that is still pending. A start that tried a version and node gives
-    /// them, so the row names what its description is about.
+    /// Finishes a delivery that is still pending, and returns the outcome it wrote, or null when
+    /// the delivery had ended already. A start that tried a version and node gives them, so the
+    /// row names what its description is about. A delivery of a broadcast whose expiry has passed
+    /// by now ends as expired instead (EVENT-04E): its failure was rolled back, so it wrote
+    /// nothing, and after the expiry no delivery gets another outcome.
     /// </summary>
-    private async Task RecordAsync(
+    private async Task<SignalDeliveryOutcome?> RecordAsync(
         long deliveryId,
         string status,
         string resultCode,
@@ -211,6 +245,26 @@ public sealed class SignalBroadcastJobProcessor(
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var broadcasts = scope.ServiceProvider.GetRequiredService<ISignalBroadcastRepository>();
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        var delivery = await broadcasts.GetDeliveryForUpdateAsync(deliveryId, cancellationToken);
+        if (delivery is null || delivery.Status != SignalDeliveryStatuses.Pending)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+
+        if (await broadcasts.IsExpiredAsync(delivery.BroadcastId, cancellationToken))
+        {
+            var expired = await broadcasts.ExpireDeliveryAsync(deliveryId, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            if (!expired)
+            {
+                return null;
+            }
+
+            SignalRuntimeTelemetry.RecordDelivery(SignalDeliveryStatuses.Skipped, SignalDeliveryResultCodes.BroadcastExpired);
+            return new SignalDeliveryOutcome(SignalDeliveryStatuses.Skipped, SignalDeliveryResultCodes.BroadcastExpired, null);
+        }
+
         var limited = UnicodeText.Limit(description, SignalConstraints.MaxResultDescriptionLength);
         var now = timeProvider.GetUtcNow();
         var finished = startDefinitionId is long definitionId && startNodeId is int nodeId
@@ -231,10 +285,25 @@ public sealed class SignalBroadcastJobProcessor(
                 now,
                 cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        if (finished)
+        if (!finished)
         {
-            SignalRuntimeTelemetry.RecordDelivery(status, resultCode);
+            return null;
         }
+
+        SignalRuntimeTelemetry.RecordDelivery(status, resultCode);
+        return new SignalDeliveryOutcome(status, resultCode, limited);
+    }
+
+    /// <summary>
+    /// Ends every pending delivery of an expired broadcast in one statement under its row
+    /// lock, in a scope of its own, and finishes the broadcast as expired.
+    /// </summary>
+    private async Task ExpireAsync(long broadcastId, CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        await scope.ServiceProvider
+            .GetRequiredService<ISignalBroadcastExpirer>()
+            .ExpireAsync(broadcastId, cancellationToken);
     }
 
     /// <summary>

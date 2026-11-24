@@ -28,6 +28,7 @@ public static class WebhookFormatting
         LifecycleEventTypes.SignalBroadcastCompleted => "Signal broadcast completed",
         LifecycleEventTypes.SignalBroadcastCompletedWithIssues => "Signal broadcast completed with issues",
         LifecycleEventTypes.SignalBroadcastCancelled => "Signal broadcast cancelled",
+        LifecycleEventTypes.SignalBroadcastExpired => "Signal broadcast expired",
         LifecycleEventTypes.WebhookTest => "Test event",
         _ => type
     };

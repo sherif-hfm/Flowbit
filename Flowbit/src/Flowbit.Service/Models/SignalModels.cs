@@ -300,8 +300,13 @@ public sealed record NewSignalBroadcastRecord(
     long? ThrowerInstanceId = null,
     int? ThrowerNodeId = null,
     string? ThrowerNodeName = null,
-    int AutomaticActivationCount = 0);
+    int AutomaticActivationCount = 0,
+    TimeSpan? ExpiresAfter = null);
 
+/// <summary>
+/// A stored broadcast. <see cref="ExpiresAt"/> was computed by the database at the throw and
+/// never changes; <see cref="ExpiredCount"/> counts the skipped deliveries the expiry ended.
+/// </summary>
 public sealed record SignalBroadcastRecord(
     long Id,
     string SignalName,
@@ -333,7 +338,9 @@ public sealed record SignalBroadcastRecord(
     int? ThrowerNodeId = null,
     string? ThrowerNodeName = null,
     int AutomaticActivationCount = 0,
-    int StartDeliveryCount = 0)
+    int StartDeliveryCount = 0,
+    DateTimeOffset? ExpiresAt = null,
+    int ExpiredCount = 0)
 {
     public int PendingCount =>
         Math.Max(0, TotalDeliveryCount - DeliveredCount - SkippedCount - FailedCount - CancelledCount);

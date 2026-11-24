@@ -1,5 +1,6 @@
 // Registers the typedinput and typedcommit events used by the typed number,
-// date, and date-time controls on start and action forms. Each reports whether
+// date, and date-time controls on start and action forms, and by the Signals
+// page's expiry amount. Each reports whether
 // the browser rejected the entry and, for a date-time, the browser's UTC offset
 // for that local moment. Reading them in the same event keeps the stored value
 // ahead of any later click. typedinput follows the input event; typedcommit

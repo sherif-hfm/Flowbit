@@ -99,7 +99,7 @@ public static class LifecycleEventCatalog
         " A subscription limited to a workflow family receives the broadcasts whose scope names that family;"
         + " a broadcast to all workflows reaches only subscriptions without a family.";
 
-    // One field list for all three broadcast types, in body order. The counts are the ones the
+    // One field list for the three earlier broadcast types, in body order. The counts are the ones the
     // transaction that finished the broadcast commits, and the four outcome counters add up to the total.
     private static readonly LifecycleEventFieldDto[] SignalBroadcastFields =
     [
@@ -115,6 +115,24 @@ public static class LifecycleEventCatalog
         new("skippedCount", "integer", false, "Deliveries skipped because their recipient no longer waited or listened."),
         new("failedCount", "integer", false, "Deliveries that failed."),
         new("cancelledCount", "integer", false, "Deliveries that a cancel of the broadcast stopped.")
+    ];
+
+    // signalBroadcast.expired (EVENT-04E): the shared list with a status of its own, because the shared
+    // one lists three values, and expiredCount appended after the shared fields.
+    private static readonly LifecycleEventFieldDto[] SignalBroadcastExpiredFields =
+    [
+        .. SignalBroadcastFields.Select(field => field.Name switch
+        {
+            "status" => new LifecycleEventFieldDto("status", "string", false, "Always expired."),
+            "skippedCount" => new LifecycleEventFieldDto(
+                "skippedCount", "integer", false,
+                "Deliveries skipped because their recipient no longer waited or listened, or because the expiry passed; includes expiredCount."),
+            "failedCount" => new LifecycleEventFieldDto(
+                "failedCount", "integer", false,
+                "Deliveries that failed; they can no longer be retried."),
+            _ => field
+        }),
+        new("expiredCount", "integer", false, "Deliveries that the broadcast's expiry ended before they ran; their waits stay open.")
     ];
 
     public static IReadOnlyList<LifecycleEventFieldDto> EnvelopeFields { get; } =
@@ -210,6 +228,13 @@ public static class LifecycleEventCatalog
             + SignalBroadcastMatching,
             true,
             SignalBroadcastFields),
+        new(LifecycleEventTypes.SignalBroadcastExpired,
+            "A signal broadcast's status changed to expired: its expiry passed, the deliveries that had not run were skipped, and their waits stay open."
+            + " Only a broadcast thrown with expiresAfter can expire; add this type before sending expiresAfter if you wait for a broadcast to finish."
+            + " A broadcast that expired with failed deliveries raises this type, not completedWithIssues."
+            + SignalBroadcastMatching,
+            true,
+            SignalBroadcastExpiredFields),
         new(LifecycleEventTypes.WebhookTest,
             "A signed test event queued for one subscription by the test route, delivered even while paused.",
             false,

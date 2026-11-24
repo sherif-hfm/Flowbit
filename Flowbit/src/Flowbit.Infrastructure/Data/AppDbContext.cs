@@ -140,6 +140,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<SignalBroadcastEntity> SignalBroadcasts => Set<SignalBroadcastEntity>();
 
+    /// <summary>CK_signal_broadcasts_expiry, which AddSignalBroadcastExpiry adds.</summary>
+    internal const string SignalBroadcastExpiryCheck =
+        "\"ExpiredCount\" BETWEEN 0 AND \"SkippedCount\" "
+        + "AND (\"ExpiresAt\" IS NOT NULL OR (\"ExpiredCount\" = 0 AND \"Status\" <> 'expired')) "
+        + "AND (\"Status\" <> 'expired' OR \"ExpiredCount\" > 0)";
+
     public DbSet<SignalStartSubscriptionEntity> SignalStartSubscriptions => Set<SignalStartSubscriptionEntity>();
 
     public DbSet<SignalDeliveryEntity> SignalDeliveries => Set<SignalDeliveryEntity>();
@@ -2470,7 +2476,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                     "\"StartDeliveryCount\" BETWEEN 0 AND \"TotalDeliveryCount\"");
                 table.HasCheckConstraint(
                     "CK_signal_broadcasts_status",
-                    "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'cancelled')");
+                    "\"Status\" IN ('delivering', 'completed', 'completedWithIssues', 'expired', 'cancelled')");
+                // EVENT-04E: expired deliveries are part of the skipped ones, only a broadcast
+                // with an expiry has them, and an expired broadcast has at least one.
+                table.HasCheckConstraint(
+                    "CK_signal_broadcasts_expiry",
+                    SignalBroadcastExpiryCheck);
                 table.HasCheckConstraint(
                     "CK_signal_broadcasts_counts",
                     "\"TotalDeliveryCount\" BETWEEN 0 AND 100000 "
@@ -2537,6 +2548,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasIndex(e => e.ThrownByKind)
                 .HasDatabaseName("IX_signal_broadcasts_open_thrower")
                 .HasFilter("\"Status\" = 'delivering'");
+            // The Worker's expiry sweep claims the delivering broadcasts whose expiry has
+            // passed; the index is empty unless broadcasts with an expiry are delivering.
+            entity.HasIndex(e => e.ExpiresAt)
+                .HasDatabaseName("IX_signal_broadcasts_open_expiry")
+                .HasFilter("\"Status\" = 'delivering' AND \"ExpiresAt\" IS NOT NULL");
+            entity.Property(e => e.ExpiredCount).HasDefaultValue(0);
             entity.HasIndex(e => new { e.Status, e.UpdatedAt, e.Id });
             entity.HasIndex(e => new { e.SignalName, e.CreatedAt, e.Id });
             entity.HasIndex(e => new { e.ThrownByKind, e.ThrownBy, e.CreatedAt, e.Id });

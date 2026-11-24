@@ -74,10 +74,45 @@ public interface ISignalBroadcastRepository
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// The broadcasts of the given thrower kinds still delivering, counted without a lock up
-    /// to <paramref name="stopAt"/>: a budget needs to know only whether it is used up.
+    /// The broadcasts of the given thrower kinds still delivering and not past their expiry,
+    /// counted without a lock up to <paramref name="stopAt"/>: a budget needs to know only
+    /// whether it is used up. The expiry is compared with the database's transaction time.
     /// </summary>
     Task<int> CountOpenAsync(IReadOnlyList<string> thrownByKinds, int stopAt, CancellationToken cancellationToken);
+
+    /// <summary>The database's clock (<c>clock_timestamp()</c>), read once.</summary>
+    Task<DateTimeOffset> GetDatabaseTimeAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether the broadcast's expiry has passed by the database's clock as it is when the
+    /// statement runs; false for a broadcast without an expiry or one that does not exist.
+    /// Locks nothing and reads no payload.
+    /// </summary>
+    Task<bool> IsExpiredAsync(long broadcastId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Ends one pending delivery as skipped with <c>broadcast_expired</c>, with both timestamps
+    /// from one reading of the database's clock and no attempt counted; false when it was no
+    /// longer pending. The caller holds the delivery's row lock.
+    /// </summary>
+    Task<bool> ExpireDeliveryAsync(long deliveryId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Ends every pending delivery of an expired broadcast as skipped with
+    /// <c>broadcast_expired</c>, in one statement whose condition compares the expiry with
+    /// the database's clock. Ends nothing before the expiry. The caller holds the broadcast's
+    /// row lock.
+    /// </summary>
+    Task<int> ExpirePendingDeliveriesAsync(
+        long broadcastId,
+        DateTimeOffset databaseNow,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Locks the delivering broadcast whose expiry passed earliest by
+    /// <paramref name="databaseNow"/>, skipping rows another transaction holds; null when none.
+    /// </summary>
+    Task<long?> ClaimNextExpiredAsync(DateTimeOffset databaseNow, CancellationToken cancellationToken);
 
     /// <summary>Pending deliveries and the creation time of the oldest broadcast still delivering.</summary>
     Task<SignalBacklogRecord> GetBacklogAsync(CancellationToken cancellationToken);
@@ -158,8 +193,9 @@ public interface ISignalBroadcastRepository
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Writes the counters and, when nothing is pending, the final status. A
-    /// cancelled broadcast keeps its status. Returns the updated row. The caller holds
+    /// Writes the counters and, when nothing is pending, the final status: expired when the
+    /// expiry ended any delivery, else completedWithIssues when any failed, else completed. A
+    /// cancelled or expired broadcast keeps its status. Returns the updated row. The caller holds
     /// the broadcast's row lock (<see cref="GetAsync"/> with <c>forUpdate</c>) in its
     /// transaction: the counts and the status are read after that lock, so a recount
     /// never overwrites a status committed by a cancel or retry it waited for.
@@ -346,3 +382,26 @@ public interface ISignalBroadcastJobProcessor
 {
     Task ProcessAsync(WorkflowJobLeaseRecord lease, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Settles expired broadcasts (EVENT-04E), each in its own transaction under the broadcast's
+/// row lock, without locking any instance.
+/// </summary>
+public interface ISignalBroadcastExpirer
+{
+    /// <summary>
+    /// Settles the broadcast a delivery job names. Null when it was no longer delivering;
+    /// before its expiry it ends nothing.
+    /// </summary>
+    Task<SignalExpiryResult?> ExpireAsync(long broadcastId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Claims, with <c>SKIP LOCKED</c>, the delivering broadcast whose expiry passed earliest by
+    /// <paramref name="databaseNow"/>, a time read from the database, and settles it; null when
+    /// none was due or every due one is held by another transaction.
+    /// </summary>
+    Task<SignalExpiryResult?> ExpireNextDueAsync(DateTimeOffset databaseNow, CancellationToken cancellationToken);
+}
+
+/// <summary>What one settle did: the deliveries it ended and the broadcast's status after it.</summary>
+public sealed record SignalExpiryResult(long BroadcastId, int ExpiredDeliveries, string Status);

@@ -47,7 +47,18 @@ internal static class SignalRuntimeTelemetry
     }
 
     public static void RecordDelivery(string status, string? resultCode) =>
-        Deliveries.Add(1,
+        RecordDeliveries(status, resultCode, 1);
+
+    /// <summary>Counts several deliveries that one statement ended, such as an expiry's settle.</summary>
+    public static void RecordDeliveries(string status, string? resultCode, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        Deliveries.Add(count,
             new KeyValuePair<string, object?>("status", status),
             new KeyValuePair<string, object?>("result_code", resultCode ?? "none"));
+    }
 }

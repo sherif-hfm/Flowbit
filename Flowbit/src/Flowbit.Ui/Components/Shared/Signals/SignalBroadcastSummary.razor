@@ -4,7 +4,8 @@
         {<span class="data-subtitle signal-start-count">@StartCountText(Broadcast.StartCount)</span>}</div>
     <div class="summary-item"><span>Pending</span><strong>@Broadcast.PendingCount.ToString("N0")</strong></div>
     <div class="summary-item"><span>Delivered</span><strong>@Broadcast.DeliveredCount.ToString("N0")</strong></div>
-    <div class="summary-item"><span>Skipped</span><strong>@Broadcast.SkippedCount.ToString("N0")</strong></div>
+    <div class="summary-item"><span>Skipped</span><strong>@Broadcast.SkippedCount.ToString("N0")</strong>@if (Broadcast.ExpiredCount > 0)
+        {<span class="data-subtitle signal-expired-count">@($"{Broadcast.ExpiredCount:N0} expired")</span>}</div>
     <div class="summary-item"><span>Failed</span><strong>@Broadcast.FailedCount.ToString("N0")</strong></div>
     <div class="summary-item"><span>Cancelled</span><strong>@Broadcast.CancelledCount.ToString("N0")</strong></div>
 </div>
@@ -26,6 +27,12 @@
         @* One line, so the definition's text has no white space around the thrower. *@
         <dt class="col-md-2">Thrown by</dt><dd class="col-md-10">@if (Broadcast.ThrownByInstanceId is long throwerId) {<a href="@($"instances/{throwerId}")">@ThrowerLabel(Broadcast.ThrownBy, Broadcast.ThrownByKind, throwerId, Broadcast.ThrownByNodeId, Broadcast.ThrownByNodeName)</a>} else {@ThrowerLabel(Broadcast.ThrownBy, Broadcast.ThrownByKind)}</dd>
         <dt class="col-md-2">Thrown</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CreatedAt" /></dd>
+        @if (Broadcast.ExpiresAt is not null)
+        {
+            <dt class="col-md-2">Expiry</dt>
+            <dd class="col-md-10 signal-expiry"><LocalTime Value="@Broadcast.ExpiresAt" />@if (ExpiryNote(Broadcast, Now) is { } note)
+                {<span class="data-subtitle signal-expiry-note" role="status">@note</span>}</dd>
+        }
         <dt class="col-md-2">Finished</dt><dd class="col-md-10"><LocalTime Value="@Broadcast.CompletedAt" EmptyText="Still delivering" /></dd>
         @if (Broadcast.CancelledBy is not null)
         {
@@ -52,4 +59,7 @@
 
 @code {
     [Parameter, EditorRequired] public SignalBroadcastDetailDto Broadcast { get; set; } = null!;
+
+    /// <summary>The page's clock when it rendered, so the component stays display-only.</summary>
+    [Parameter, EditorRequired] public DateTimeOffset Now { get; set; }
 }

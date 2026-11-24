@@ -58,6 +58,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SignalBroadcastWriter>();
         services.AddScoped<ISignalBroadcastService, SignalBroadcastService>();
         services.AddScoped<ISignalBroadcastJobProcessor, SignalBroadcastJobProcessor>();
+        services.AddScoped<ISignalBroadcastExpirer, SignalBroadcastExpirer>();
         services.AddScoped<ISignalDeliveryExecutor>(provider =>
             provider.GetRequiredService<WorkflowEngineService>());
         services.AddScoped<IWorkflowJobProcessor, WorkflowJobProcessorRouter>();

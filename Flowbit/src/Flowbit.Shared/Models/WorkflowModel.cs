@@ -972,13 +972,32 @@ public static class TimerDefinitionRules
                 out timestamp);
     }
 
-    public static bool TryParseFixedDuration(string? value, out TimeSpan duration)
+    public static bool TryParseFixedDuration(string? value, out TimeSpan duration) =>
+        ReadFixedDuration(value, out duration) == FixedDurationReading.Parsed;
+
+    /// <summary>
+    /// Whether <paramref name="value"/> is written as a positive fixed duration, within
+    /// <see cref="MaxExpressionLength"/>, whose length is too large for a <see cref="TimeSpan"/>
+    /// (about 29,000 years), so <see cref="TryParseFixedDuration"/> refuses it. A caller that
+    /// bounds a duration can then report its range rather than its form.
+    /// </summary>
+    public static bool IsFixedDurationBeyondRange(string? value) =>
+        ReadFixedDuration(value, out _) == FixedDurationReading.BeyondRange;
+
+    private enum FixedDurationReading
+    {
+        Invalid,
+        BeyondRange,
+        Parsed
+    }
+
+    private static FixedDurationReading ReadFixedDuration(string? value, out TimeSpan duration)
     {
         duration = default;
         var candidate = value?.Trim();
         if (string.IsNullOrEmpty(candidate) || candidate.Length > MaxExpressionLength)
         {
-            return false;
+            return FixedDurationReading.Invalid;
         }
 
         var match = FixedDurationPattern.Match(candidate);
@@ -987,7 +1006,7 @@ public static class TimerDefinitionRules
             || !new[] { "weeks", "days", "hours", "minutes", "seconds" }
                 .Any(name => match.Groups[name].Success))
         {
-            return false;
+            return FixedDurationReading.Invalid;
         }
 
         try
@@ -1000,24 +1019,31 @@ public static class TimerDefinitionRules
                 + ReadDecimal(match, "seconds");
             if (totalSeconds <= 0)
             {
-                return false;
+                return FixedDurationReading.Invalid;
             }
 
             var ticks = decimal.Round(
                 totalSeconds * TimeSpan.TicksPerSecond,
                 0,
                 MidpointRounding.AwayFromZero);
-            if (ticks <= 0 || ticks > long.MaxValue)
+            if (ticks <= 0)
             {
-                return false;
+                return FixedDurationReading.Invalid;
+            }
+
+            if (ticks > long.MaxValue)
+            {
+                return FixedDurationReading.BeyondRange;
             }
 
             duration = TimeSpan.FromTicks(decimal.ToInt64(ticks));
-            return true;
+            return FixedDurationReading.Parsed;
         }
         catch (OverflowException)
         {
-            return false;
+            // Only a number of a unit too large for a decimal gets here: the digits are ASCII
+            // and the components are not negative.
+            return FixedDurationReading.BeyondRange;
         }
     }
 

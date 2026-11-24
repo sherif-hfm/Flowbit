@@ -127,9 +127,115 @@ public sealed class SignalFormattingTests
         Assert.False(SignalFormatting.IsLive(SignalBroadcastStatuses.Completed));
         Assert.True(SignalFormatting.CanCancel(SignalBroadcastStatuses.Delivering));
         Assert.False(SignalFormatting.CanCancel(SignalBroadcastStatuses.Cancelled));
-        Assert.True(SignalFormatting.CanRetry(Broadcast(SignalBroadcastStatuses.CompletedWithIssues, failed: 2)));
-        Assert.False(SignalFormatting.CanRetry(Broadcast(SignalBroadcastStatuses.CompletedWithIssues, failed: 0)));
-        Assert.False(SignalFormatting.CanRetry(Broadcast(SignalBroadcastStatuses.Delivering, failed: 2)));
+        Assert.True(SignalFormatting.CanRetry(Broadcast(SignalBroadcastStatuses.CompletedWithIssues, failed: 2), Now));
+        Assert.False(SignalFormatting.CanRetry(Broadcast(SignalBroadcastStatuses.CompletedWithIssues, failed: 0), Now));
+        Assert.False(SignalFormatting.CanRetry(Broadcast(SignalBroadcastStatuses.Delivering, failed: 2), Now));
+        Assert.False(SignalFormatting.IsLive(SignalBroadcastStatuses.Expired));
+        Assert.False(SignalFormatting.CanCancel(SignalBroadcastStatuses.Expired));
+    }
+
+    private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-11-23T09:10:00Z");
+
+    [Fact]
+    public void CanRetry_FollowsTheExpiryOnTheUisClock()
+    {
+        var beforeExpiry = Broadcast(SignalBroadcastStatuses.CompletedWithIssues, failed: 2) with { ExpiresAt = Now.AddSeconds(1) };
+        Assert.True(SignalFormatting.CanRetry(beforeExpiry, Now));
+        Assert.Null(SignalFormatting.RetryHiddenReason(beforeExpiry, Now));
+
+        // At the expiry, and after it, the button is hidden and the page says why.
+        var atExpiry = beforeExpiry with { ExpiresAt = Now };
+        Assert.False(SignalFormatting.CanRetry(atExpiry, Now));
+        Assert.Equal(
+            "This broadcast has expired, so its failed deliveries cannot be retried. Throw the signal again to reach the waits that are still open.",
+            SignalFormatting.RetryHiddenReason(atExpiry, Now));
+
+        // An expired broadcast with failures gives the same reason; one without failures needs none.
+        var expired = Broadcast(SignalBroadcastStatuses.Expired, failed: 1) with { ExpiresAt = Now.AddMinutes(-1), ExpiredCount = 2 };
+        Assert.False(SignalFormatting.CanRetry(expired, Now));
+        Assert.NotNull(SignalFormatting.RetryHiddenReason(expired, Now));
+        Assert.Null(SignalFormatting.RetryHiddenReason(expired with { FailedCount = 0 }, Now));
+        Assert.Null(SignalFormatting.RetryHiddenReason(Broadcast(SignalBroadcastStatuses.CompletedWithIssues, failed: 2), Now));
+    }
+
+    [Fact]
+    public void ExpiryNote_ShowsOnlyWhileDeliveringPastTheExpiry()
+    {
+        var delivering = Broadcast(SignalBroadcastStatuses.Delivering, failed: 0) with { ExpiresAt = Now.AddSeconds(-1) };
+        Assert.Equal("The expiry has passed. A Worker ends the pending deliveries when it runs.",
+            SignalFormatting.ExpiryNote(delivering, Now));
+        Assert.Null(SignalFormatting.ExpiryNote(delivering with { ExpiresAt = Now.AddSeconds(1) }, Now));
+        Assert.Null(SignalFormatting.ExpiryNote(delivering with { ExpiresAt = null }, Now));
+        Assert.Null(SignalFormatting.ExpiryNote(delivering with { Status = SignalBroadcastStatuses.Expired }, Now));
+    }
+
+    [Theory]
+    [InlineData(null, "Minutes", null, null)]
+    [InlineData("", "Minutes", null, null)]
+    [InlineData("  ", "Days", null, null)]
+    [InlineData("10", "Minutes", "PT10M", null)]
+    [InlineData("30", "Seconds", "PT30S", null)]
+    [InlineData("2", "Hours", "PT2H", null)]
+    [InlineData("365", "Days", "P365D", null)]
+    [InlineData("1", "Seconds", "PT1S", null)]
+    [InlineData("0", "Minutes", null, "Enter the expiry as a whole number of 1 or more, or leave it empty.")]
+    [InlineData("1.5", "Minutes", null, "Enter the expiry as a whole number of 1 or more, or leave it empty.")]
+    [InlineData("-5", "Minutes", null, "Enter the expiry as a whole number of 1 or more, or leave it empty.")]
+    [InlineData("366", "Days", null, "A signal can expire after at most 365 days.")]
+    [InlineData("525601", "Minutes", null, "A signal can expire after at most 365 days.")]
+    [InlineData("99999999999999999999999", "Seconds", null, "A signal can expire after at most 365 days.")]
+    // Amounts that fit a long but whose length a TimeSpan cannot hold.
+    [InlineData("9999999999999999", "Days", null, "A signal can expire after at most 365 days.")]
+    [InlineData("9223372036854775807", "Days", null, "A signal can expire after at most 365 days.")]
+    [InlineData("9223372036854775807", "Seconds", null, "A signal can expire after at most 365 days.")]
+    public void TryBuildExpiry_GivesTheIsoTextOrTheProblem(string? amount, string unit, string? expectedIso, string? expectedProblem)
+    {
+        var parsedUnit = Enum.Parse<FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalExpiryUnit>(unit);
+        Assert.Equal(expectedProblem, SignalFormatting.TryBuildExpiry(amount, parsedUnit, out var iso));
+        Assert.Equal(expectedIso, iso);
+        if (iso is not null)
+        {
+            // The page's text is exactly what the API accepts.
+            Assert.Equal(SignalExpiryProblem.None, SignalExpiryRules.Parse(iso, out _));
+        }
+    }
+
+    [Fact]
+    public void ReadExpiryAmount_KeepsTheTextOrMarksWhatTheBrowserCouldNotRead()
+    {
+        Assert.Equal("10", SignalFormatting.ReadExpiryAmount(" 10 ", badInput: false));
+        Assert.Equal(string.Empty, SignalFormatting.ReadExpiryAmount(null, badInput: false));
+        Assert.Equal(string.Empty, SignalFormatting.ReadExpiryAmount("", badInput: false));
+
+        // A number box reports 5- or 10e as an empty value with badInput: never "no expiry".
+        var unreadable = SignalFormatting.ReadExpiryAmount("", badInput: true);
+        Assert.Equal(SignalFormatting.UnreadableExpiryAmount, unreadable);
+        Assert.Equal(SignalFormatting.ExpiryAmountProblem, SignalFormatting.TryBuildExpiry(
+            unreadable, FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalExpiryUnit.Minutes, out var iso));
+        Assert.Null(iso);
+    }
+
+    [Fact]
+    public void ExpiryWording_NamesTheUnitAndThePastExpiry()
+    {
+        var units = FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalExpiryUnit.Minutes;
+        Assert.Equal("10 minutes after the throw", SignalFormatting.ExpiryReviewText("10", units));
+        Assert.Equal("1 minute after the throw", SignalFormatting.ExpiryReviewText("1", units));
+        Assert.Equal("1 day after the throw", SignalFormatting.ExpiryReviewText("1",
+            FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalExpiryUnit.Days));
+        Assert.Equal("90 seconds after the throw", SignalFormatting.ExpiryReviewText("90",
+            FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalExpiryUnit.Seconds));
+        Assert.Equal("Never", SignalFormatting.ExpiryReviewText(null, units));
+        Assert.Equal("Never", SignalFormatting.ExpiryReviewText("", units));
+        Assert.Equal(["Seconds", "Minutes", "Hours", "Days"], SignalFormatting.ExpiryUnits.Select(unit => unit.Label));
+
+        Assert.Equal("Expired", SignalFormatting.BroadcastStatusLabel(SignalBroadcastStatuses.Expired));
+        Assert.Equal("The broadcast expired before delivery",
+            SignalFormatting.ResultLabel(SignalDeliveryResultCodes.BroadcastExpired));
+        Assert.Equal("The broadcast expired before the start",
+            SignalFormatting.ResultLabel(SignalDeliveryResultCodes.BroadcastExpired, SignalDeliveryKinds.Start));
+        Assert.Equal("2 skipped · 1 failed", SignalFormatting.ProgressDetail(2, 1, 0));
+        Assert.Equal("3 skipped · 0 failed · 3 expired", SignalFormatting.ProgressDetail(3, 0, 3));
     }
 
     [Fact]

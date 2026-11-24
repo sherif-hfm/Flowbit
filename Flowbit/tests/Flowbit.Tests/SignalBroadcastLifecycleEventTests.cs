@@ -32,16 +32,21 @@ public sealed partial class SignalBroadcastLifecycleEventTests(PostgresApiFixtur
     public Task DisposeAsync() => SignalDeliveryJobLeftovers.RetireAsync(fixture);
 
     /// <summary>
-    /// A broadcast status added later, such as an expiry, fails here until it gets an event type in
+    /// A broadcast status added later fails here until it gets an event type in
     /// capture_signal_broadcast_lifecycle() and LifecycleEventCatalog, or is deliberately left out of this list.
+    /// The status list keeps expired before cancelled, while the type list appends each new type, so the two
+    /// are compared as sets.
     /// </summary>
     [Fact]
     public void EveryFinishedBroadcastStatusHasItsEventType()
     {
         Assert.Equal(
             SignalBroadcastStatuses.All.Where(status => status != SignalBroadcastStatuses.Delivering)
-                .Select(status => "signalBroadcast." + status),
-            LifecycleEventTypes.SignalBroadcastTypes);
+                .Select(status => "signalBroadcast." + status)
+                .Order(StringComparer.Ordinal),
+            LifecycleEventTypes.SignalBroadcastTypes.Order(StringComparer.Ordinal));
+        Assert.Equal(LifecycleEventTypes.SignalBroadcastExpired, LifecycleEventTypes.SignalBroadcastTypes[^1]);
+        Assert.Equal(LifecycleEventTypes.SignalBroadcastExpired, LifecycleEventTypes.Subscribable[^1]);
         var constants = typeof(SignalBroadcastStatuses)
             .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
             .Where(field => field.IsLiteral)
@@ -805,5 +810,7 @@ public sealed partial class SignalBroadcastLifecycleEventTests(PostgresApiFixtur
              body.Data.Status, body.Data.TotalDeliveryCount, body.Data.StartCount, body.Data.DeliveredCount,
              body.Data.SkippedCount, body.Data.FailedCount, body.Data.CancelledCount));
         Assert.Equal((row.WorkflowKey, row.InstanceId), (body.WorkflowKey, body.InstanceId));
+        // Only signalBroadcast.expired carries expiredCount (EVENT-04E).
+        Assert.Equal(row.Status == SignalBroadcastStatuses.Expired ? row.ExpiredCount : null, body.Data.ExpiredCount);
     }
 }

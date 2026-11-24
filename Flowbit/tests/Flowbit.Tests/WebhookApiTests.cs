@@ -228,31 +228,35 @@ public sealed class WebhookApiTests(PostgresApiFixture fixture)
     }
 
     [Fact]
-    public async Task EventCatalogListsTheFourteenSubscribableTypesAndTheCaptureSwitch()
+    public async Task EventCatalogListsTheFifteenSubscribableTypesAndTheCaptureSwitch()
     {
         using var response = await SendAsync(HttpMethod.Get, "/api/webhook-event-types");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var catalog = await ReadAsync<WebhookEventCatalogDto>(response);
         Assert.Equal(1, catalog.SchemaVersion);
-        Assert.Equal(14, LifecycleEventTypes.Subscribable.Count);
+        Assert.Equal(15, LifecycleEventTypes.Subscribable.Count);
         Assert.Equal(LifecycleEventTypes.Subscribable, catalog.EventTypes.Where(type => type.Subscribable).Select(type => type.Type));
         Assert.Contains(catalog.EventTypes, type => type.Type == LifecycleEventTypes.WebhookTest && !type.Subscribable);
         Assert.Equal("eventId", catalog.EnvelopeFields[1].Name);
         Assert.NotNull(catalog.Capture);
 
         // The broadcast types come last, share one field list in the DTO's order, and state the family rule.
+        // signalBroadcast.expired (EVENT-04E) appends expiredCount, the DTO's last member; the others stop before it.
         Assert.Equal(
             LifecycleEventTypes.SignalBroadcastTypes,
             LifecycleEventTypes.Subscribable.Skip(11));
         var broadcastFields = typeof(SignalBroadcastEventDataDto).GetConstructors().Single().GetParameters()
             .Select(parameter => char.ToLowerInvariant(parameter.Name![0]) + parameter.Name[1..])
             .ToArray();
-        Assert.Equal(12, broadcastFields.Length);
+        Assert.Equal(13, broadcastFields.Length);
+        Assert.Equal("expiredCount", broadcastFields[^1]);
         foreach (var type in LifecycleEventTypes.SignalBroadcastTypes)
         {
             var entry = Assert.Single(catalog.EventTypes, item => item.Type == type);
             Assert.True(entry.Subscribable);
-            Assert.Equal(broadcastFields, entry.DataFields.Select(field => field.Name));
+            Assert.Equal(
+                type == LifecycleEventTypes.SignalBroadcastExpired ? broadcastFields : broadcastFields[..^1],
+                entry.DataFields.Select(field => field.Name));
             Assert.Equal([nameof(SignalBroadcastEventDataDto.ThrownByInstanceId)],
                 entry.DataFields.Where(field => field.Nullable).Select(field => char.ToUpperInvariant(field.Name[0]) + field.Name[1..]));
             Assert.EndsWith("a broadcast to all workflows reaches only subscriptions without a family.", entry.Description, StringComparison.Ordinal);
@@ -306,7 +310,7 @@ public sealed class WebhookApiTests(PostgresApiFixture fixture)
                 $"/api/webhook-subscriptions/{subscription.Id}/deliveries/retry",
                 AllDeliveries with { EventType = LifecycleEventTypes.SignalBroadcastCompletedWithIssues }));
 
-            // The test type stays unsubscribable, and the refusal lists the fourteen types.
+            // The test type stays unsubscribable, and the refusal lists the fifteen types.
             using var refused = await SendAsync(HttpMethod.Post, "/api/webhook-subscriptions",
                 CreateRequest(eventTypes: [LifecycleEventTypes.SignalBroadcastCompleted, LifecycleEventTypes.WebhookTest]));
             Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);

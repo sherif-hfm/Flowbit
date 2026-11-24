@@ -85,6 +85,7 @@ builder.Services.AddHostedService<JobDispatcher>();
 builder.Services.AddHostedService<QueueTelemetryService>();
 builder.Services.AddHostedService<RetentionCleanupService>();
 builder.Services.AddHostedService<TimerStartReconciliationService>();
+builder.Services.AddHostedService<SignalBroadcastExpiryService>();
 builder.Services.AddSingleton<WorkerTelemetry>();
 builder.Services.AddSingleton<WebhookTelemetry>();
 builder.Services.AddSingleton<PostgresLifecycleWakeupSignal>();
