@@ -53,7 +53,7 @@ Each item is a follow-up subtask with its own page. The list is in the [recommen
 4. [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md): lifecycle webhook event types for broadcasts: `signalBroadcast.completed`, `signalBroadcast.completedWithIssues`, and `signalBroadcast.cancelled`. Done.
 5. [EVENT-04E](event-04e-signal-broadcast-expiry.md): an expiry for a broadcast thrown through the API, after which undelivered work is skipped and the broadcast finishes as `expired`, with the webhook event `signalBroadcast.expired`. Done.
 6. [EVENT-04F](event-04f-signal-catalog.md): a catalog of signal definitions with declared payload contracts and permissions per signal. Done.
-7. [EVENT-04G](event-04g-parallel-signal-delivery.md): parallel delivery of one large broadcast, and a higher recipient limit.
+7. [EVENT-04G](event-04g-parallel-signal-delivery.md): parallel delivery of one large broadcast, and a higher recipient limit. Planned.
 8. [EVENT-04H](event-04h-expression-signal-names.md): a signal name built from an expression, such as a name that contains an order number.
 9. [EVENT-04I](event-04i-signal-boundaries-on-multi-instance-bodies.md): signal boundaries on multi-instance service, script, and call activities.
 10. [EVENT-04J](event-04j-shared-variables-in-signal-mappings.md): shared-variable aliases in signal mappings.
