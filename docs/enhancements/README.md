@@ -2,7 +2,7 @@
 
 [Documentation home](../index.md) · [BPMN support](../bpmn-support.md) · [Flowbit.Ui guide](../ui-guide.md)
 
-This backlog records candidate new task types, events, integrations, and Flowbit.Ui features. The items come from a review on 2026-10-24 of the [supported node types](../bpmn-support.md#supported-node-types), the [unsupported capabilities](../bpmn-support.md#unsupported-capabilities), and every Flowbit.Ui page. A second review the same day reordered the work toward everyday usability, split combined items, corrected effort estimates, and gave every item its dependencies and first release acceptance criteria. Items marked Open are not implemented or scheduled. In-progress items may have implemented behavior with outstanding verification.
+This backlog records candidate new task types, events, integrations, Flowbit.Ui features, and performance work. Most items come from a review on 2026-10-24 of the [supported node types](../bpmn-support.md#supported-node-types), the [unsupported capabilities](../bpmn-support.md#unsupported-capabilities), and every Flowbit.Ui page. A second review the same day reordered the work toward everyday usability, split combined items, corrected effort estimates, and gave every item its dependencies and first release acceptance criteria. Items marked Open are not implemented or scheduled. In-progress items may have implemented behavior with outstanding verification.
 
 Each item has its own page, described in [Item pages](#item-pages).
 
@@ -155,6 +155,14 @@ Signal catches behind an event-based gateway stay with [EVENT-03](event-03-event
 | [UI-14](ui-14-instance-diagram-history.md) | Instance diagram history | M | [UI-01](ui-01-live-instance-diagram.md) | Done |
 | [UI-15](ui-15-form-layout-and-data-options.md) | Form layout, data options, and start-form discovery | M | [UI-03](ui-03-rich-task-forms.md) | Not started |
 | [UI-16](ui-16-overdue-work-and-due-date-follow-ups.md) | Overdue work and due-date follow-ups | M | [UI-04](ui-04-task-due-date-and-priority.md) | Not started |
+
+## Performance and capacity
+
+These items come from measurements, recorded in [Capacity planning](../deployment.md#capacity-planning), not from the feature review.
+
+| ID | Item | Effort | Depends on | Status |
+| --- | --- | --- | --- | --- |
+| [PERF-01](perf-01-throughput-and-worker-capacity.md) | Throughput and Worker capacity | L | None | Not started |
 
 ## Documentation housekeeping
 
