@@ -16,6 +16,11 @@ Those definition/editor tests do not execute integrations. The separate
 executes the focused scenarios listed in the [coverage matrix](#coverage-matrix)
 through real HTTP endpoints and a controlled loopback REST service.
 
+The [lifecycle load test](../Flowbit/tools/LifecycleLoadTest/README.md) runs the
+purchase-request showcase, timer examples 02 and 05, and signal examples 02, 04,
+and 05 to measure capacity. It finds their nodes and flows by external ID, so
+keep those IDs when you change these definitions.
+
 ## Load and run an example
 
 New to the runtime? Follow the [HTTP getting-started guide](../docs/getting-started.md) for isolated PostgreSQL setup, authentication, import, publication, and a complete approval.

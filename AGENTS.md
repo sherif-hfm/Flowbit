@@ -2700,6 +2700,19 @@ dotnet run --project .\tools\InstanceLoadTest\InstanceLoadTest.csproj -- --multi
 Use the first run as warm-up; short cold runs include JIT, connection-pool, and
 database-cache startup costs and are not representative.
 
+To measure complete business processes rather than starts, `tools/LifecycleLoadTest`
+runs the purchase-request showcase from submission to order with one actor per
+role and, beside it, timer and signal cases from the example catalog (`--timer-users`,
+`--signal-users`). It reports completed cases per second, per-operation latency,
+how late timers and signals arrived, and, with `--database`, storage growth and
+how long Worker jobs waited. Its [README](Flowbit/tools/LifecycleLoadTest/README.md)
+has the PowerShell and Bash steps; the recorded results and the daily-volume
+estimate are in [capacity planning](docs/deployment.md#capacity-planning). The
+tool finds the nodes and flows of the six examples it runs (`--setup` lists them)
+by external id, so keep those ids when editing those examples. Run the Worker with
+`--Logging:LogLevel:Default Warning`: it logs through Microsoft logging, so
+Serilog overrides do not quiet it, and it otherwise prints every SQL command.
+
 The API listens on `http://localhost:5017` and the UI on
 `http://localhost:5152` by default. In development, the API applies EF
 migrations automatically. Migrations seed missing safe engine defaults and the

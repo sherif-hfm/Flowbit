@@ -12,6 +12,7 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/InstanceLoadTest/InstanceLoadTest.csproj" />
+    <Project Path="tools/LifecycleLoadTest/LifecycleLoadTest.csproj" />
     <Project Path="tools/MultiInstanceApiTests/MultiInstanceApiTests.csproj" />
     <Project Path="tools/MultiInstanceVerifier/MultiInstanceVerifier.csproj" />
   </Folder>

@@ -20,6 +20,7 @@ For a disposable development database and your first working instance, follow [G
 - [Cron timer starts](#cron-timer-starts)
 - [Lifecycle webhooks](#lifecycle-webhooks)
 - [Worker operation](#worker-operation)
+- [Capacity planning](#capacity-planning)
 - [Monitoring and recovery](#monitoring-and-recovery)
 - [Retention and backup](#retention-and-backup)
 
@@ -1211,6 +1212,66 @@ Worker option validation rejects inconsistent or out-of-range values at startup.
 External HTTP effects have **at-least-once** semantics. Retries may repeat a call after failure or lease loss; use the stable job ID as the remote service's idempotency key. Variable-version conflicts prevent silent overwrite and can open incidents. A timed-out caller, cancelled host, or database rollback cannot undo a remote side effect.
 
 A captured result is the invocation boundary. If finalizing it fails unexpectedly, the Worker keeps the result and retries finalization after a five-second, database-timed delay without repeating the external call. `flowbit_worker_finalization_retries_total` counts these retries; a steadily rising value indicates a persistent finalization defect to investigate in the Worker logs.
+
+## Capacity planning
+
+PostgreSQL sets most of Flowbit's throughput. Every transition is a short transaction that locks its instance row, so different instances run in parallel while the work inside one instance runs one transaction at a time; see [automatic multi-instance activities](#automatic-multi-instance-activities) for what that means for one large body. Requests are chatty: in the runs below, each HTTP request ran about 20 database transactions, counting every statement outside an explicit transaction as one. Timer firings, signal deliveries, and the tasks the Worker runs are Worker jobs, which need capacity of their own. Size the database first, keep its round trips short, and measure your own hardware and processes with the [lifecycle load test](../Flowbit/tools/LifecycleLoadTest/README.md).
+
+### Purchase requests on a development machine
+
+Recorded on 2026-11-25 at commit `a367ede` on one Windows machine with 4 logical processors and 32 GB. The API and a Worker ran as Release builds in Development with DevelopmentToken and warning-level logs. PostgreSQL 17 ran in Docker Desktop on the same machine with its default configuration, and the load tool and an idle Compose stack shared the machine too. Every run used the [purchase-request showcase](../examples/showcases/01-purchase-request-approval.json) with 20% of requests going to the board vote. One complete request made about 7.4 writes and 15.2 reads.
+
+| Run | Complete requests per second | **Approve**, p50 / p95 | Host CPU |
+| --- | ---: | --- | ---: |
+| 8 virtual users, 3 minutes | 3.87 | 363 / 451 ms | 97% |
+| 16 virtual users, 3 minutes | 4.13 | 629 / 829 ms | 99% |
+| 32 virtual users, 2 minutes | 4.11 | 1.2 / 1.7 s | 99% |
+| 16 virtual users with `--no-browse`, 2 minutes | 4.53 | 737 / 936 ms | 99% |
+| 16 virtual users with `--starts-only`, 1 minute | 42.9 starts | — | 98% |
+
+- **Saturation.** The machine was saturated from 8 users on: more users left throughput flat and only waited longer. A repeat of the 8-user run with the README's `dotnet run` commands gave 3.63 requests per second. No request failed and no transaction deadlocked in about 5,500 instances.
+- **Where the time went.** PostgreSQL used 50–60% of the host's processor time, about 2.2 processors, and the API about 24%, one processor; the Worker used under 1%. On this machine one complete request cost about 0.54 processor-seconds of PostgreSQL and 0.23 of the API.
+- **Reads are cheap.** Leaving out the browsing reads raised throughput by about 10%; the writes set the rate.
+- **Storage.** A completed request added about 50–54 KB and about 100 rows. `node_executions` was the largest table, at about 1.7 KB a row. A request that only started added about 12 KB.
+
+These runs used a small database: about 5,500 instances and 205 MB, with at most about 2,600 open. They did not cover months of history, 100,000 or more open tasks, REST service tasks, or webhooks; timers and signals are covered below.
+
+### Timers, signals, and the Worker
+
+Recorded the same day on the same machine with the load test's timer and signal cases, which its [README](../Flowbit/tools/LifecycleLoadTest/README.md#what-each-case-does) describes, against a fresh database and an API whose pool was capped at 60 connections. Timer firings run on the Worker's `control` queue; script tasks the Worker runs, such as each reminder's, and signal deliveries run on its `activity` queue.
+
+A mixed run of 8 purchase-request users, 120 timer users, and 4 signal users for 3 minutes, with one Worker at its default settings:
+
+- **No failures.** Every case completed, and all 792 reminders fired before their tasks closed.
+- **Throughput.** Purchase requests ran at 1.78 per second, against 3.6–3.9 alone, because the Worker's jobs and the timer and signal cases' own requests shared the machine. Timer cases ran at 2.21 per second, about 5 timer firings, and signal cases at 0.54, about 1.24 deliveries. The Worker finished about 9.5 jobs per second.
+- **Timers.** Timer jobs began 0.07–0.08 s after their due time at the median and 0.27–0.29 s at p95. The task a timer opens existed 0.34–0.48 s after it was due at the median, 0.65–0.79 s at p95, and 1.6 s at most.
+- **Signals.** The task a signal opens existed 0.4–0.45 s after the throw at the median, 1.75–1.95 s at p95, and 4.6 s at most, whether an API throw reached a boundary by business key, a signal end event reached another instance, or a throw started an instance.
+- **Where the time went.** PostgreSQL used 42% of the host's processor time, the API 14%, and the Worker 8%; the host was 82% busy.
+
+Timer and signal cases alone, with 8 signal users, to find the Worker's limit:
+
+| Timer users | Worker `MaxConcurrency` / `ActivityConcurrency` | Jobs finished per second | Timer jobs began after due, p50 / p95 | Reminder script jobs began after due, p50 / p95 | Signal throw to task, p50 / p95 |
+| ---: | --- | ---: | --- | --- | --- |
+| 300 | 8 / 6 (defaults) | 21 | 0.05 / 0.19 s | 6.6 / 8.5 s | 1.2–1.5 / 7.6–8.7 s |
+| 300 | 16 / 12 | 21.5 | 0.11 / 0.27 s | 1.5 / 3.5 s | 1.3–1.5 / 3.0–3.5 s |
+| 600 | 16 / 12 | 26 | 7.4 / 11.4 s | 127 / 176 s | 0.3–0.6 / 48–178 s |
+
+- **Worker capacity.** One Worker on this machine finished about 21–26 jobs per second, while PostgreSQL used 39–48% of the host. Count one job for each timer firing, each script or service task the Worker runs, and each signal delivery, and keep the expected peak well below what your Workers finish.
+- **Activity jobs wait first.** At 21 jobs per second, timer jobs stayed on time while reminder scripts waited 6.6 s at the median, and signal deliveries up to 9 s, with the default 8 slots. Doubling the slots cut the scripts' wait to 1.5 s, though each job then ran longer, about 0.35 s instead of 0.2 s, because the database was busier.
+- **Past capacity, work is late, not lost.** With 600 timer users more jobs came due each second than the Worker finished. Timers fired 7–12 seconds late, activity jobs and signal deliveries waited 2–3 minutes, and no case failed; the backlog drained once the load stopped. A task can then close while its reminder scripts are still queued, and its instance completes when they run.
+- **Connection pools.** The first mixed run, started before the cap and with all 132 users at once, failed 42 instance starts with `500` (`53300: sorry, too many clients already`) in its first minute. An API connection string without `Maximum Pool Size` lets Npgsql open 100 connections per API process, PostgreSQL's default `max_connections` is also 100, and the Worker needs its own. The Compose stack's connection string sets no pool size either.
+
+### Estimating daily volume
+
+A rate measured at saturation is a ceiling; latency rises steeply as load approaches it, so plan peaks well below it. At half its ceiling, the machine above would carry about 4.1 × 0.5 × 28,800 ≈ 59,000 purchase requests in an 8-hour business day, and about 83,000 at 70%. A process with more steps costs more, roughly in proportion to its writes.
+
+Measure a production design rather than scaling these figures. As a starting point only, the processor costs above suggest that PostgreSQL on its own 16-processor server at 70% would carry about 20 such requests per second, with about five processors of API replicas; that assumes linear scaling, which has not been tested, and lock waits or WAL writes may limit it first. Also plan for:
+
+- **One instance at a time.** Work inside one instance stays serial on any hardware.
+- **Worker jobs.** Estimate the timer firings, signal deliveries, and Worker-run tasks per second at your peak, and add Workers or slots until activity jobs start within your tolerance; see [timers, signals, and the Worker](#timers-signals-and-the-worker).
+- **Connection limits.** Set `Maximum Pool Size` on every API replica so that all API and [Worker](#worker-operation) pools, plus administrative connections, fit below PostgreSQL's `max_connections`.
+- **Storage growth.** At the figures above, 60,000 requests a day add about 3 GB a day. History is kept forever unless you configure [retention](#retention-and-backup).
+- **Upgrade downtime.** Several upgrades require stopping every API and Worker replica; see [upgrade and compatibility rules](#upgrade-and-compatibility-rules).
 
 ## Monitoring and recovery
 

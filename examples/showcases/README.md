@@ -22,6 +22,11 @@ production use.
 [`01-purchase-request-approval.json`](01-purchase-request-approval.json),
 workflow key `example-showcase-purchase-request`.
 
+The [lifecycle load test](../../Flowbit/tools/LifecycleLoadTest/README.md) runs
+this workflow's approval path to measure capacity. It finds the start event,
+tasks, and flows it uses by their external IDs, so keep those IDs when you
+change the definition.
+
 ### What it shows
 
 | Feature | Where |
