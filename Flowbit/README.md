@@ -834,6 +834,9 @@ flow, and a `signalEndEvent` throws as its token ends there (see
 [throw and end events](#signal-throw-and-end-events)). A `signalStartEvent` starts
 its family when a signal is thrown to the family or to all workflows, while its
 version is the published default (see [signal starts](#signal-start-events)).
+A [signal catalog](#signal-catalog) entry can give a name a payload contract and
+throw permissions; saves, publications, reactivations, and API throws are checked
+against it, and running instances never read it.
 Authoring is in the node reference for the
 [catch](../docs/node-reference.md#intermediatesignalcatchevent), the
 [boundary](../docs/node-reference.md#signalboundaryevent), the
@@ -908,6 +911,9 @@ events included, so the publication gate needs
     broadcast gets no outcome other than `skipped` with `broadcast_expired`,
     unless a cancel arrives first, and an expiry writes nothing to an instance
     and locks none to settle a broadcast.
+13. Delivery never reads the [signal catalog](#signal-catalog) (EVENT-04F):
+    every live version already fits its entries, so no runtime transaction
+    touches `signal_catalog_entries` or `workflow_definition_signal_names`.
 
 **Subscriptions.** `EnsureSignalSubscriptionsAsync` runs in
 `ResolvePassThroughAsync` for the token's current node, after
@@ -1333,6 +1339,106 @@ mirrors both (`SignalStartFixtures`).
   change, or deletion of a listening family. A definition whose only signal event
   is a start runs no signal statement in an instance transition
   (`HasSignalWaits` is false and it throws nothing).
+
+### Signal catalog
+
+The signal catalog (EVENT-04F) gives a signal name a description, a closed payload
+contract of typed fields, `throwRoles`, `allowClients`, and `allowWorkflows`.
+Settings administrators manage it through `/api/signal-catalog`
+(`SignalCatalogEndpoints`, `SignalCatalogService`, `SignalCatalogRepository`) and the
+**Signal catalog** page; catalog readers (a JWT role from `Settings.RequiredRole`,
+`Signals.RequiredRole`, or `Workflow.RequiredRole`, or a client with
+`signals.read` or `signals.throw`) use the `SignalCatalog.Read` policy
+(`SignalCatalogReadRequirement`). Contracts are in the
+[API reference](../docs/api-guide.md#signal-catalog) and the
+[node reference](../docs/node-reference.md#signal-catalog-checks).
+
+- **Rules.** `SignalCatalogEntryRules` (`Flowbit.Shared`) owns the entry limits,
+  normalization, messages, type words, and field lists, so the page checks a form
+  before any request; `SignalCatalogModes` parses `Signals.CatalogMode` (anything
+  but a trimmed `required`, in any casing, is `optional`).
+  `SignalCatalogContract` (`Flowbit.Service`) is the only check: `PayloadProblem`
+  for an API throw, and `FindDefinitionProblems(definition, entries, mode, stage,
+  onlyName)` with the stages `Draft`, `Publication`, and `Reactivation`, which
+  marks each problem as a save or publication problem. A field accepts exactly
+  what `TypedOutputValueValidator` accepts for a mapping of its type.
+  `SignalCatalogAccess` decides who may throw, cancel, or retry a cataloged name
+  and computes `canThrow`.
+- **Invariants.** (1) Every live version, a published one or one with a running
+  instance, fits its entries. (2) Runtime never reads the catalog: no delivery,
+  start, workflow throw, timer, job, or Worker pass touches its tables. (3) One
+  transaction advisory lock per name,
+  `pg_advisory_xact_lock(hashtext('signal-name'), hashtext(name))`, taken before
+  any runtime row: definition saves and publications take it shared for each
+  name, in ordinal order, after the family lock and before
+  `LockSignalStartsAsync`; a reactivation commit takes it shared for the expected
+  version's names before it locks the instance; an API throw takes it shared for
+  its name inside its transaction; a catalog write takes it exclusively, then the
+  entry row `FOR UPDATE`. No transaction takes a name lock while it holds a
+  runtime row, and a catalog write waits for nothing taken after a name lock. (4)
+  Definitions without signal events run no catalog statement. (5) Messages name
+  the signal, node, field, and types, never a value. (6) Names compare exactly.
+  (7) Catalog text is data: Razor encodes it and the editor sets it with text
+  properties.
+- **References.** `WorkflowDefinitionRepository.AddAsync` writes one
+  `workflow_definition_signal_names` row per signal event with a valid name
+  (`PersistSignalNamesAsync`), cataloged or not; a definition never changes, so
+  publication writes nothing. `AddSignalCatalog` backfills the rows from stored
+  definitions. Definitions inserted directly into the database get none, so a
+  catalog write cannot see them.
+- **Definition checks.** `WorkflowDefinitionReadinessChecker`
+  (`FindSignalCatalogProblemsAsync`, `ValidateSignalCatalogAsync`) checks without
+  locks: `Draft` or `Publication` on create and update, `Publication` on publish
+  and set default. `EnforceSignalCatalogAsync` repeats the check authoritatively
+  in `AddAsync` (stage from `isPublished`) and `SetPublishedAsync(true)`, right
+  after the family lock: shared name locks, `GetManyAsync`, the mode only at
+  publication and only when a name has no entry, then the first problem as a
+  `WorkflowDomainException`. `SetDefaultAsync` keeps only the readiness check,
+  because it accepts only published versions. `WorkflowAiAuthoringService` and
+  `POST /api/workflows/validate` add the `Publication`-stage problems as save or
+  publication blockers by their flag; the agent's own tools never see them.
+- **Reactivation.** `AddSignalCatalogReactivationBlockerAsync` adds
+  `signal_catalog_mismatch` with the first `Reactivation`-stage problem (mode
+  `optional`), and the commit takes the version's shared name locks
+  (`LockReactivationSignalNamesAsync`) before `GetInstanceForUpdateAsync`.
+- **Catalog writes.** Create, update, and reactivate run
+  `FindDefinitionProblems` at the `Publication` stage, limited to the candidate's
+  name (`onlyName`), over the live versions found through the references table,
+  in pages of 50, stopping once a sixth problem shows there are more; any problem
+  is a `WorkflowConflictException` naming at most five. `PreviewAsync` runs the same
+  check without a lock and returns up to 200. Archive counts five blockers
+  (`GetUsageCountsAsync`: published and running versions, active waits, family
+  starts, delivering broadcasts) and refuses while any is nonzero. Archiving an
+  archived entry and reactivating an active one return it unchanged before the
+  fence is compared. `UpdatedAt` is truncated to microseconds and moves forward on
+  every write.
+- **Throws, cancel, retry.** `SignalBroadcastService.ThrowAsync` runs
+  `CheckCatalogForThrowAsync` after the idempotency replay and before
+  `CountOpenAsync`: the shared name lock, the entry, the mode only for a name
+  without an entry, then archived (`400`), `SignalCatalogAccess.Refusal`
+  (`WorkflowForbiddenException` with code `signal_catalog_forbidden`, `403`), and
+  `PayloadProblem` (`400`). The request hash is unchanged, so stored keys replay.
+  `PayloadProblem` refuses a null field, optional ones included, because a
+  receiver's mapping refuses null unless its target is nullable; the matching
+  publication rule makes an optional payload entry whose variable can be null
+  (`CallSourceDeclaration.MayBeNull`) set `required`.
+  Cancel and retry read the entry without a lock after the broadcast is found
+  visible: retry refuses an archived name and follows the throw rules for
+  everyone; cancel skips the check for its thrower (same `ThrownByKind` and
+  `ThrownBy`) and ignores the archived status.
+- **Hosted editor.** `workflow-editor-host.js` passes the optional
+  `signalCatalog` capability (`entries()`, `entry(name)`) beside `timerSchedules`;
+  `WorkflowEditor.razor` answers through `GetSignalCatalog` (active entries in
+  pages of 200, at most 1,000 summaries with 120-character descriptions and no
+  fields) and `GetSignalCatalogEntry` (`ok`, `missing`, `forbidden`, or
+  `unavailable`). The list reply can reach about 290 KB at 1,000 entries with
+  100-character names and 120-character descriptions. The editor keeps replies in
+  per-mount state outside the model, history, saved baseline, and AI snapshots,
+  and its save validator does not check the catalog.
+
+Mixed API replicas are unsupported: an older replica publishes, reactivates, and
+throws without the catalog, and saves versions without references. See
+[deployment](../docs/deployment.md#signal-events).
 
 ## Instance-wide flow evidence (`FlowInfo`)
 
@@ -1828,6 +1934,12 @@ and in-flight gateway executions are not migrated.
   `POST /api/signal-broadcasts/{id}/retry-failed`
 - `GET /api/signal-subscriptions/summary` (users only; optional `businessKey` with
   `workflowKey`, or `instanceId`)
+- `GET /api/signal-catalog/entries`, `GET /api/signal-catalog/entries/{name}`
+  (catalog readers), and `POST /api/signal-catalog/entries`,
+  `PUT /api/signal-catalog/entries/{name}`, `POST .../{name}/archive`,
+  `POST .../{name}/reactivate`, `GET .../{name}/usage`,
+  `POST /api/signal-catalog/preview`, `GET /api/signal-catalog/uncataloged-names`
+  (`Settings.RequiredRole`); see [signal catalog](#signal-catalog)
 
 ## Terminal instance reactivation
 
@@ -1843,9 +1955,11 @@ same immutable version. Faulted or running instances are not supported.
 node executions for top-level, non-multi-instance `userTask` nodes. Async-before
 tasks, branch-scoped visits, unsafe gateway re-entry, currently true conditional
 boundaries, dirty runtime artifacts, unresolved durable work, and retained
-Complex Gateway state or lineage are rejected. The commit repeats every check
-under the instance lock and returns `409 Conflict` for drift or a business-key
-ownership conflict.
+Complex Gateway state or lineage are rejected, and so is a version with signal
+events that no longer fits the [signal catalog](#signal-catalog)
+(`signal_catalog_mismatch`). The commit repeats every check under the instance
+lock, after the shared locks of the version's signal names, and returns
+`409 Conflict` for drift or a business-key ownership conflict.
 
 Reactivation continues the current process state; it does not roll variables or
 external systems back. In one transaction the engine reacquires any released
@@ -2282,7 +2396,7 @@ dotnet test ./tests/Flowbit.BrowserTests/Flowbit.BrowserTests.csproj -c Release 
 ```
 
 Set `FLOWBIT_BROWSER_HEADED=1` to launch Chromium headed for local diagnosis.
-The suite covers editor E1–E25, hosted-editor H1–H18, and runtime R1–R18 scenarios (see the project
+The suite covers editor E1–E25, hosted-editor H1–H19, and runtime R1–R20 scenarios (see the project
 README); manual native-picker and full acceptance checks remain the caller's
 responsibility.
 

@@ -130,7 +130,20 @@ The key pieces:
   `PreviewTimerSchedule`/`GetTimerScheduleTimeZones` methods of
   `WorkflowEditor.razor`; Blazor calls the API with its own credentials and
   replies `{ status: ok|invalid|forbidden|unavailable, ... }`, never throwing to
-  the editor. Without it the editor behaves as standalone.
+  the editor. Without it the editor behaves as standalone. Beside it, an optional
+  `signalCatalog` capability (`entries()`, `entry(name)`) routes to
+  `GetSignalCatalog` (active entries in pages of 200, at most 1,000 summaries
+  with 120-character descriptions and no fields; about 290 KB at 1,000 entries
+  with 100-character names) and
+  `GetSignalCatalogEntry` (`ok`, `missing`, `forbidden`, or `unavailable`). The
+  editor asks for the list once per mount, for an entry when a selected signal
+  event's name matches one or the name field changes, and keeps replies in
+  per-mount state outside the model, history, saved baseline, and AI snapshots,
+  as `cronPreview` does. Catalog text reaches the DOM only through text
+  properties (`textContent`, option `value`/`label`), never through
+  `selectField`, `field()`, a template string, or `innerHTML`. A failed or
+  forbidden reply leaves the editor as standalone, and the save validator never
+  checks the catalog.
 - **Isolation**: CSS, DOM queries, theme, and keyboard handling belong to the
   mounting root. Responsive layout and inspector sizing use that container.
   Hosted mode uses the app's light appearance and a compact command bar;
@@ -216,7 +229,8 @@ The key pieces:
     checkpoints never save the workflow.
   - **Shared checks.** `WorkflowDefinitionReadinessChecker` owns the reusable catalog, shared-service durability,
     lock-order, and publication checks called by both definition lifecycle operations and read-only authoring
-    validation. Tests use mocked HTTP only; billed provider runs need explicit authorization. See
+    validation, including the signal catalog check, whose problems a proposal lists as save or publication
+    blockers while the agent itself never sees the catalog. Tests use mocked HTTP only; billed provider runs need explicit authorization. See
     [AI authoring](docs/ai-authoring.md).
 - **Save validator**: `validateModelForSave(candidate)` is a thin entry point.
   Each call builds a fresh context with `createSaveValidationContext(candidate)`
@@ -270,7 +284,7 @@ A repeatable Chromium smoke suite exists at
 real copied editor and the real published API/UI over localhost with a
 disposable PostgreSQL container; see its
 [README](Flowbit/tests/Flowbit.BrowserTests/README.md) for setup and the
-E1–E25/H1–H18/R1–R18 coverage matrix. It is the baseline for editor/runtime UI changes,
+E1–E25/H1–H19/R1–R20 coverage matrix. It is the baseline for editor/runtime UI changes,
 but it does not replace scenario-specific manual verification: the native
 file-picker success/cancel path, visual comparisons, and behaviors outside the
 matrix still need the manual steps above.
@@ -1223,6 +1237,58 @@ Storage follows the hybrid design:
     `businessKey` but not `idempotency`, and `ThrowProblems` refuses a throw
     whose scope includes the definition's own family when the definition starts
     on the name it throws.
+  - Signal catalog (EVENT-04F): `signal_catalog_entries` gives a name a closed
+    payload contract, `throwRoles`, `allowClients`, and `allowWorkflows`.
+    `SignalCatalogEntryRules` (`Flowbit.Shared`) owns the entry rules and
+    messages, `SignalCatalogContract` the payload and definition checks (stages
+    `Draft`, `Publication`, `Reactivation`, with the compatible-type table and
+    field lists), and `SignalCatalogAccess` who may throw, cancel, or retry. Every
+    live version (published, or with a running instance) fits its entries, so
+    **runtime never reads the catalog**: no delivery, start, workflow throw,
+    timer, job, or Worker pass touches its tables. Keep it that way; a new
+    runtime check of a cataloged name belongs at save, publication, or
+    reactivation instead.
+  - One transaction advisory lock per name,
+    `pg_advisory_xact_lock(hashtext('signal-name'), hashtext(name))`
+    (`SignalCatalogRepository.LockNamesAsync`), always in ordinal order and
+    before any runtime row. Definition saves and publications take it shared for
+    each name after the family lock and before `LockSignalStartsAsync`
+    (`WorkflowDefinitionRepository.EnforceSignalCatalogAsync`, called by
+    `AddAsync` with the stage `isPublished` gives and by
+    `SetPublishedAsync(true)`); a reactivation commit takes it shared for the
+    expected version's names before `GetInstanceForUpdateAsync`; an API throw
+    takes it shared for its one name inside its transaction, after the
+    idempotency replay and before `CountOpenAsync`; a catalog write takes it
+    exclusively, then the entry row `FOR UPDATE`, and reads definitions,
+    instances, subscriptions, and broadcasts without locks. `SetDefaultAsync`
+    takes no name lock: it accepts only published versions, which passed the
+    locked check. A new path that saves, publishes, or reactivates a version
+    with signal events must take the same locks and run the same check.
+  - `workflow_definition_signal_names` records one row per signal event with a
+    valid name, cataloged or not, written by `AddAsync`
+    (`PersistSignalNamesAsync`) and backfilled by `AddSignalCatalog`; it has no
+    foreign key to entries. Catalog writes find live versions through it, check
+    only the nodes that use their name, read pages of 50, and stop once a sixth
+    problem shows there are more than the five they list; the unlocked preview
+    lists up to 200. Definitions inserted directly
+    into the database have no rows, so tests create live versions through the
+    API. Reactivation adds the blocker `signal_catalog_mismatch`
+    (`AddSignalCatalogReactivationBlockerAsync`, mode `optional`). A definition
+    without signal events runs no catalog statement anywhere.
+  - A catalog `403` is `WorkflowForbiddenException` with code
+    `signal_catalog_forbidden` (`{"code","error"}` body); a policy refusal has no
+    body, and the **Signals** page branches on the code, never the text.
+    `Signals.CatalogMode` (`SignalCatalogModes.ParseMode`) decides only at
+    publication or an API throw when a name has no entry; the list and
+    uncataloged-name routes also read it to report the mode.
+  - No catalog field holds JSON null, because a receiver's mapping refuses null
+    unless its target is nullable: `SignalCatalogContract.PayloadProblem`
+    refuses a null field in an API throw, and at publication an optional payload
+    entry whose variable can be null (`CallSourceDeclaration.MayBeNull`) must set
+    `required`. A change (`PUT`) must state `fields`, `throwRoles`,
+    `allowClients`, and `allowWorkflows` (`[property: JsonRequired]`), so an
+    omission cannot widen who may throw. A managed client reads entries without
+    `createdBy`, `updatedBy`, or `signalRoles`.
   Every replica must be upgraded before a signal definition is saved: an older
   API routes a token onto a catch, or into a boundary's host, without a
   subscription, strands a token on a throw or signal end event, and changes a
@@ -1232,7 +1298,9 @@ Storage follows the hybrid design:
   an `instance` broadcast remains; start events need `AddSignalStartEvents` and
   then `ValidateSignalStartConstraints` (outside a transaction), and the down
   migration refuses while a start delivery or a definition with a signal start
-  remains.
+  remains. The catalog needs `AddSignalCatalog`, whose down migration refuses
+  while any entry exists; mixed API replicas would publish, reactivate, and
+  throw without it.
 - **Intermediate conditional catch events.** An
   `intermediateConditionalCatchEvent` is a persisted resting position with at
   least one incoming flow and exactly one unconditional outgoing flow. Its
@@ -2062,7 +2130,12 @@ Storage follows the hybrid design:
   create, update or delete it. It is managed only through `/ai-models` and
   `/api/ai-models` with the same `Settings.RequiredRole` authorization. Business
   calendars (`/business-calendars`, `/api/business-calendars`) use the same role
-  and `UpdatedAt` concurrency. Engine-setting create/update paths require an explicit
+  and `UpdatedAt` concurrency, and so do signal catalog writes, usage, preview,
+  and uncataloged names (`/signal-catalog`, `/api/signal-catalog`); reading the
+  catalog also accepts `Signals.RequiredRole`, `Workflow.RequiredRole`, and
+  clients with `signals.read` or `signals.throw` (`SignalCatalog.Read`).
+  `Signals.CatalogMode` (`optional` or `required`) is an ordinary engine-setting
+  row, seeded by `AddSignalCatalog`. Engine-setting create/update paths require an explicit
   authenticated actor, including AI-model create/update/delete writes to their
   containing row. `CreatedBy` and `UpdatedBy` are nullable 300-character strings;
   null preserves unknown historical attribution, creation sets both, and updates
@@ -2226,7 +2299,24 @@ what the cross-version `workflowKey` instance search matches.
   repeatable `thrownByKind` (`user`, `client`, `instance`; another value is
   `400`), and broadcasts thrown by instances carry `thrownByInstanceId`,
   `thrownByNodeId`, and `thrownByNodeName`. `SharedVariableCredentialSourceMiddleware`
-  rejects bearer plus client headers.
+  rejects bearer plus client headers. A cataloged name is checked against its
+  entry: a payload that does not fit, an archived name, or, in `required` mode, a
+  name without an entry is `400`, and a caller the entry does not allow is `403`
+  with `code` `signal_catalog_forbidden`. Retry follows the throw rules for
+  everyone; cancel skips them for the broadcast's thrower.
+- `SignalCatalogEndpoints` (`/api/signal-catalog`): catalog readers
+  (`SignalCatalog.Read`: `Settings.RequiredRole`, `Signals.RequiredRole`, or
+  `Workflow.RequiredRole` users, and clients with `signals.read` or
+  `signals.throw`) `GET /entries` (name prefix, status, paging, the mode, and the
+  roles of `Signals.RequiredRole`) and `GET /entries/{name}` (`canThrow` per
+  caller); settings administrators `POST /entries` (201), `PUT /entries/{name}`,
+  `POST /entries/{name}/archive` and `/reactivate` (`expectedUpdatedAt`),
+  `GET /entries/{name}/usage` (404 without an entry; versions newest first,
+  drafts included), `POST /preview` (up to 200 problems, no lock, no write), and
+  `GET /uncataloged-names` (live versions only, at most 200). Taken names, stale
+  timestamps, changing an archived entry, live versions that would not fit, and
+  archive blockers are `409`; archiving an archived entry or reactivating an
+  active one returns it unchanged.
 - `TaskDistributionEndpoints`
   (`/api/task-distribution/workflows/{workflowKey}/tasks`): `GET /` returns a
   paged family-scoped list using the same task/instance/workflow-version,
@@ -2446,7 +2536,26 @@ what the cross-version `workflowKey` instance search matches.
   expiry with `RetryHiddenReason`; the API's `409` remains the rule. Display-only
   children under `Components/Shared/Signals/` with the pure `SignalFormatting`;
   every call goes through an identity epoch guard, and `401`/`403` or an identity
-  change clears all signal data.
+  change clears all signal data. The exception is a `403` whose `code` is
+  `signal_catalog_forbidden` on throw, cancel, or retry: it is shown as that
+  request's refusal, then the broadcast list is read once, and only a refusal of
+  that read clears the page. The page reads one page of 200 active catalog
+  entries for the name datalist and looks up any other typed name; a catalog read
+  that fails only hides the display-only `SignalCatalogPanel` (description,
+  fields, `canThrow` text, **Insert payload template** into an empty payload box)
+  and the review's **Catalog** row.
+- `/signal-catalog` (`SignalCatalog.razor`) - settings-administrator list,
+  creation, editing, archive, and reactivation of signal catalog entries, after
+  **Signals** in the **Manage** group. `SignalCatalogForm` checks the form with
+  `SignalCatalogEntryRules` before any request; **Review changes** calls the
+  preview, and **Save** is offered only after a clean review of the form's current
+  fingerprint, so any edit ends the review; a stale `409` keeps the form and offers
+  **Reload latest**. `SignalCatalogFormatting` owns the two warnings (roles with
+  clients allowed; no role in `Signals.RequiredRole`), the archive panel's five
+  usage counts (**Archive** only when all are zero, after a confirmation), and the
+  mode text. **Names in use without an entry** reads `uncataloged-names` and
+  offers **Create entry**. An `identityVersion` guard drops late replies, and
+  catalog text is rendered through Razor's encoding only.
 - `/instances/{id}` (`InstanceDetailRoute.razor`, which keys `InstanceDetail.razor`
   by instance id, so a link between a parent and a child gets fresh state) - claim/unclaim, take available
   sequence flows, take authorized parent-level multi-instance interrupt actions,
@@ -3584,6 +3693,7 @@ when extending the model so new features stay close to BPMN terminology.
 | `type: "signalEndEvent"` | Signal End Event | Thick-ring end event with a filled triangle. Throws its signal when the token enters it, then ends the token as a none end event does. Simplified as the throw event; it throws in the step that moves the token there, so behind a fork it reaches no sibling branch. |
 | `type: "messageStartEvent"` | Message Start Event | An entry point started by an external system via `POST /api/workflows/{workflowKey}/message-start`; thin single-ring circle with an envelope glyph. Typed `message.outputMappings` declare its start variables. System-only (`IsStart` is false). The engine creates the instance and auto-advances off it (pass-through, history note `messageStart`). Simplified: instance-less credential resolution (no `sys.user`/`sys.roles`/`sys.instanceId` for credentials since there is no caller/instance yet). It shares the same optional node-level, database-claimed transport idempotency as `startEvent`. |
 | `type: "signalStartEvent"` | Signal Start Event | Thin single-ring circle with an outlined triangle. Starts an instance of its family each time a signal with its `signal.name` is thrown to the family or to all workflows, mapping the payload into start variables. Simplified: only the family's published default listens, a business-key or instance scope starts nothing, each delivery starts at most one instance per family in its own Worker transaction as the actor `signal`, and a definition cannot throw a name it starts on to a scope that includes itself. |
+| Signal catalog entry (`/api/signal-catalog`) | Signal (root element) with its `structureRef` | Deployment-wide, outside the definition: an event names its signal by literal `signal.name`, and an entry gives the name a description, a closed list of typed payload fields, throw roles, and `allowClients`/`allowWorkflows`. Saves, publications, reactivations, and API throws are checked against it; runtime never reads it. Simplified: no versioned contracts, no per-family entries, and no value rules on fields. |
 | `sequenceFlow` | Sequence Flow | First-class directed edge with its own id, `sourceRef`, `targetRef`. |
 | `sequenceFlow.condition` | Condition Expression | NCalc expression on user-task and gateway flows (comparisons, boolean/arithmetic operators, functions, bare-variable truthiness). |
 | `sequenceFlow.conditionPriority` | Engine extension | Unique positive evaluation order for non-default exclusive-gateway flows; lower values run first. Legacy all-missing values derive from JSON array order. |

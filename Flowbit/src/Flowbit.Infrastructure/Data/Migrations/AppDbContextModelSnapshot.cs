@@ -3332,6 +3332,71 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalCatalogEntryEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<bool>("AllowClients")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AllowWorkflows")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("ArchivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<JsonElement>("Fields")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .UseCollation("C");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<JsonElement>("ThrowRoles")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("signal_catalog_entries", "flowbit", t =>
+                        {
+                            t.HasCheckConstraint("CK_signal_catalog_entries_name", "\"Name\" ~ '^[a-z0-9][a-z0-9._-]{0,99}$'");
+
+                            t.HasCheckConstraint("CK_signal_catalog_entries_shape", "((\"Status\" = 'active' AND \"ArchivedAt\" IS NULL) OR (\"Status\" = 'archived' AND \"ArchivedAt\" IS NOT NULL)) AND jsonb_typeof(\"Fields\") = 'array' AND jsonb_typeof(\"ThrowRoles\") = 'array'");
+                        });
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.SignalDeliveryEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -4757,6 +4822,32 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_workflow_definition_shared_variable_bindings_access", "\"Access\" IN ('read', 'readWrite')");
                         });
+                });
+
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionSignalNameEntity", b =>
+                {
+                    b.Property<long>("WorkflowDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("NodeId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SignalName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .UseCollation("C");
+
+                    b.Property<string>("Usage")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.HasKey("WorkflowDefinitionId", "NodeId");
+
+                    b.HasIndex("SignalName");
+
+                    b.ToTable("workflow_definition_signal_names", "flowbit");
                 });
 
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", b =>
@@ -6803,6 +6894,17 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("WorkflowDefinition");
                 });
 
+            modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionSignalNameEntity", b =>
+                {
+                    b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
+                        .WithMany("SignalNames")
+                        .HasForeignKey("WorkflowDefinitionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("WorkflowDefinition");
+                });
+
             modelBuilder.Entity("Flowbit.Infrastructure.Entities.WorkflowDefinitionUserTaskConditionEntity", b =>
                 {
                     b.HasOne("Flowbit.Infrastructure.Entities.WorkflowDefinitionEntity", "WorkflowDefinition")
@@ -7198,6 +7300,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.Navigation("SequenceFlowOccurrences");
 
                     b.Navigation("SharedVariableBindings");
+
+                    b.Navigation("SignalNames");
 
                     b.Navigation("SourceVersionChangeBatches");
 

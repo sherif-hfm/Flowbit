@@ -17,6 +17,7 @@ All JSON property names below are the wire names. Database identifiers are integ
 - [AI authoring and read-only validation](#ai-authoring-and-read-only-validation)
 - [Instances and messages](#instances-and-messages)
 - [Signals](#signals)
+- [Signal catalog](#signal-catalog)
 - [User tasks](#user-tasks)
 - [Multi-instance executions](#multi-instance-executions)
 - [Task distribution](#task-distribution)
@@ -50,7 +51,7 @@ All three modes default to `Username`, then `ClaimTypes.Name` (`http://schemas.x
 | --- | --- |
 | Bearer | A valid JWT access token, plus the configured API scope in OpenIdConnect mode. Additional actor/task checks are described at the endpoint. |
 | Workflow administrator | Bearer plus any role in the comma-separated engine setting `Workflow.RequiredRole`, matched case-insensitively; missing/blank defaults to `admin`. A custom value replaces the default. Administrative-action routes also require a nonblank actor. |
-| Settings administrator | Bearer plus `Settings.RequiredRole`, default `admin`. Also manages the AI assistant's models and their keys. |
+| Settings administrator | Bearer plus `Settings.RequiredRole`, default `admin`. Also manages the AI assistant's models and their keys, business calendars, and the [signal catalog](#signal-catalog). |
 | Job operator | Bearer plus `WorkflowJobs.RequiredRole`, default `admin`. |
 | Delegation administrator | Bearer plus `Delegation.AdminRoles`, default `admin`, and a nonblank actor identity. |
 | Shared-variable administrator | Bearer plus `SharedVariables.RequiredRole`, default `admin`. This is required for JWT reads as well as writes. |
@@ -62,8 +63,9 @@ All three modes default to `Username`, then `ClaimTypes.Name` (`http://schemas.x
 | Message client | The target node's configured `X-Client-Id` and `X-Client-Secret`, plus its authored correlation header. These routes do not use bearer authorization. |
 | Distributor | Workflow-family `X-Client-Id` and `X-Client-Secret`; this is separate from message-client and shared-variable-client authentication. |
 | Shared-variable client | A managed deployment-wide API client with `shared-variables.read` or `shared-variables.write` as required. Send exactly one of each client header. |
-| Signal administrator | Bearer plus any role in `Signals.RequiredRole`, default `admin`. Throws, reads, cancels, and retries every signal broadcast and reads the subscription summary. |
-| Signal client | The same managed API client, with `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read. It sees only the broadcasts it threw. Send exactly one of each client header. |
+| Signal administrator | Bearer plus any role in `Signals.RequiredRole`, default `admin`. Throws, reads, cancels, and retries every signal broadcast and reads the subscription summary; a [signal catalog](#signal-catalog) entry can narrow throwing, cancelling, and retrying its name to its `throwRoles`. |
+| Signal client | The same managed API client, with `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read. It sees only the broadcasts it threw, and a catalog entry with `allowClients` false refuses it. Either scope also reads the signal catalog. Send exactly one of each client header. |
+| Signal catalog reader | Bearer plus any role in `Settings.RequiredRole`, `Signals.RequiredRole`, or `Workflow.RequiredRole`, or a signal client with `signals.read` or `signals.throw`. Lists and reads [signal catalog](#signal-catalog) entries only. |
 
 Shared-variable and signal routes reject combining bearer and client credentials with `400`. A write scope permits only `PUT /api/shared-variables/{key}/value`; catalog reads require the read scope. Contract creation, metadata/lifecycle changes, history, blockers, and client management require the JWT administrator.
 
@@ -84,7 +86,7 @@ The API does not have one universal error envelope. Clients should branch on HTT
 | `200`, `201`, `202`, `204` | Successful read/mutation, created resource, accepted durable work, or success without a response body. `201` and `202` endpoints described below set `Location`. A batch `202` means preparation is queued, not that its items have executed; a signal `202` means its recipients are frozen and their deliveries are queued. |
 | `400` | Domain validation and a request that cannot be bound both return `{"error":"description"}`. For a JSON body that cannot be read, the description gives the cause and the JSON path. Task role/claim/flow mismatches are often domain errors, not `403`. For example, an `errorMatch` listing `"409"` as a string returns `The value has the wrong JSON type. Path: $.definition.flowNodes[3].errorMatch.httpStatusCodes[0]`, and a misspelled selector returns `Unknown property 'httpStatusRangez'.` with its path. Neither names the boundary, because the request never reached validation. One that lists a duplicate status fails validation and names the boundary and host IDs. Text with a null character (U+0000) that would reach the database, in a query parameter, a JSON string or member name, or a value a synchronous script or service response produced, returns `400` with an `error` that names the character, because PostgreSQL can neither store nor search for it. Nothing is written. The response does not say which value held it. |
 | `401` | Missing/invalid JWT or machine credentials. JWT middleware may return an empty body; service authentication errors can return `{"error":"description"}`. |
-| `403` | Required OIDC API scope or administrator/manager permission missing. Endpoint filters may return an empty body; service-level forbiddance returns an `error` object. |
+| `403` | Required OIDC API scope or administrator/manager permission missing. Endpoint filters and authorization policies may return an empty body; service-level forbiddance returns an `error` object. A refusal by a [signal catalog](#signal-catalog) entry's rules, on a signal throw, cancel, or retry, returns `{"code":"signal_catalog_forbidden","error":"..."}`, so a client can tell it from a missing permission. |
 | `404` | Missing resource, or an intentionally hidden personal-task/node-execution resource. Do not use detail probing to infer task availability. |
 | `409` | Stale work, incompatible version/reactivation, optimistic revision mismatch, or a conflict described below. Refresh the resource before deciding whether to retry. |
 | `413`, `415` | Request exceeds the endpoint limit, or JSON media type is required. The server/reverse proxy may impose a lower limit. |
@@ -207,7 +209,7 @@ Standard errors include configuration `400`, credentials/session `401`, permissi
 
 ## Workflow definitions
 
-All operations here require workflow-administrator access except `message-start`, which authenticates the configured message client. The two `timer-schedules` routes are read-only authoring help for cron timer starts. Definition JSON is a versioned immutable snapshot. POST with an existing model `id` and PUT both create new version rows; neither mutates a running version. Multiple versions can be published, but only one is the default for key-based starts. Publication of durable features requires the configured Worker deployment capability. Publishing a version, creating or updating one with `publish: true`, and setting a default also return `400` when a signal throw or end event names, in its scope, a workflow family that has no definition, such as `Signal end event #3 throws to workflow 'shipping', which has no definition.`; a draft saves without that check. Definition deletion returns `409` when runtime state or retained audit references the version; it does not detach existing instances from their definition.
+All operations here require workflow-administrator access except `message-start`, which authenticates the configured message client. The two `timer-schedules` routes are read-only authoring help for cron timer starts. Definition JSON is a versioned immutable snapshot. POST with an existing model `id` and PUT both create new version rows; neither mutates a running version. Multiple versions can be published, but only one is the default for key-based starts. Publication of durable features requires the configured Worker deployment capability. Publishing a version, creating or updating one with `publish: true`, and setting a default also return `400` when a signal throw or end event names, in its scope, a workflow family that has no definition, such as `Signal end event #3 throws to workflow 'shipping', which has no definition.`; a draft saves without that check. A definition whose signal events use names with a [signal catalog](#signal-catalog) entry is checked against those entries: every save, drafts included, returns `400` for an archived name, a payload member or mapping path that is not a field, or a type that does not fit, and publication, including create or update with `publish: true` and setting a default, also for an incomplete fit, a throw the entry does not let workflows make, or, when `Signals.CatalogMode` is `required`, a name without an entry. The error is the first problem; see [signal catalog checks](node-reference.md#signal-catalog-checks). Definition deletion returns `409` when runtime state or retained audit references the version; it does not detach existing instances from their definition.
 
 ### GET /api/workflows
 
@@ -773,7 +775,11 @@ structure and authored rules. A structurally valid draft can still have missing
 shared-catalog entries, durability configuration, or other setup blockers. A signal
 throw or end event that names a workflow family without a definition is a
 publication blocker, never a save blocker, so two drafts that throw to each other
-can both be saved. Save and
+can both be saved. Every [signal catalog](#signal-catalog) problem is listed, not
+only the first: an archived name, a member or path that is not a field, and a type
+that does not fit are save blockers; the publication rules, including a name
+without an entry when `Signals.CatalogMode` is `required`, are publication
+blockers. See [signal catalog checks](node-reference.md#signal-catalog-checks). Save and
 publication operations re-check their authoritative gates at the time of mutation;
 a successful validation is not a reservation or permission to bypass them.
 
@@ -1402,6 +1408,8 @@ Content-Type: application/json
 
 A target's timer boundaries are activated again by a reactivation. The preview evaluates them against the instance's current variables: a target whose [expression](node-reference.md#expression-schedules) boundary cannot be scheduled is not offered, with blocker code `timer_boundary_unresolvable` when no target remains; a boundary, fixed or expression, whose date is already due adds a `timer_boundary_already_due` warning with the target's `nodeId` and the boundary's id in `stateId`, because it interrupts or fires for the reactivated task as soon as the Worker runs. A commit repeats the assessment, so it refuses a target the preview refused with `409`.
 
+Reactivation makes the instance's version live again, so a version with signal events must fit the [signal catalog](#signal-catalog)'s current entries. When it does not, the preview adds the blocker `signal_catalog_mismatch` whose `message` is the first problem, such as `Signal catch event #2 mapping to 'policyVersion' is number, but the catalog entry of 'claims.policy-changed' defines 'version' as string.` The check applies the save and publication rules of [signal catalog checks](node-reference.md#signal-catalog-checks), but not the `required` mode, because the version was published before. The commit takes the shared locks of the version's signal names before it locks the instance, repeats the check, and refuses with the same blocker; a version without signal events runs no catalog statement.
+
 ### POST /api/instances/{id}/reactivation
 
 Atomically creates a fresh user-task activation for an eligible completed or cancelled instance while preserving its prior runtime history. The response's `lastReactivationTokenId` is the new root token: execution positions with it or a later token ID belong to the new run.
@@ -1885,7 +1893,22 @@ Content-Type: application/json
 
 A signal broadcast reaches every [`intermediateSignalCatchEvent`](node-reference.md#intermediatesignalcatchevent) that is waiting for its name when it is thrown, and every [`signalBoundaryEvent`](node-reference.md#signalboundaryevent) with its name whose host is active then, within the throw's scope: one workflow family, the instance with one business key in a family, one instance, or all families. The throw freezes those recipients in one statement and returns at once; the Worker then delivers each recipient in its own transaction. A wait that starts after the throw never receives it. A workflow's [signal throw](node-reference.md#intermediatesignalthrowevent) or [signal end event](node-reference.md#signalendevent) creates the same kind of broadcast inside the throwing instance's transaction, without a request to these routes; the routes below list, read, cancel, and retry it like any other. See [BPMN semantics](bpmn-support.md#signals) and the [integration guide](developer-guide.md#broadcast-signals).
 
-- **Authorization.** A JWT user needs a role from `Signals.RequiredRole` (default `admin`) on every route. A managed API client, created on the [shared-variable client routes](#shared-variable-clients), sends `X-Client-Id` and `X-Client-Secret` and needs `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read broadcasts and deliveries; a client that throws and follows its broadcasts needs both. Sending both a bearer token and client headers returns `400`.
+- **Authorization.** A JWT user needs a role from `Signals.RequiredRole` (default `admin`) on every route. A managed API client, created on the [shared-variable client routes](#shared-variable-clients), sends `X-Client-Id` and `X-Client-Secret` and needs `signals.throw` to throw, cancel, and retry, or `signals.read` to list and read broadcasts and deliveries; a client that throws and follows its broadcasts needs both. Sending both a bearer token and client headers returns `400`. A [signal catalog](#signal-catalog) entry can narrow who may throw, cancel, and retry a broadcast of its name, as the next bullet describes; it never narrows reading.
+- **Signal catalog.** When the name has a catalog entry, a throw is checked against it inside the throw's transaction: after an `idempotencyKey` replay, so a repeated key returns its broadcast whatever happened to the catalog since, and before the open-broadcast count, so a payload that does not fit is never reported as that limit. The throw takes the shared lock of its name, reads the entry, and refuses with the first problem below; the request hash and the response do not change. Without an entry, a throw behaves as before unless `Signals.CatalogMode` is `required`.
+
+  | Problem | Status | Message |
+  | --- | --- | --- |
+  | No entry, and [`Signals.CatalogMode`](engine-settings.md#signalscatalogmode) is `required` | `400` | `Signal 'warehouse.product-recall' has no entry in the signal catalog; this deployment requires one.` |
+  | The entry is archived | `400` | `Signal 'warehouse.product-recall' is archived in the signal catalog and cannot be thrown.` |
+  | A user holds none of the entry's `throwRoles` | `403` | `Throwing signal 'warehouse.product-recall' needs one of the roles its catalog entry lists: recall-manager.` |
+  | A client, and the entry's `allowClients` is false | `403` | `Signal 'warehouse.product-recall' cannot be thrown by an API client; its catalog entry does not allow clients.` |
+  | A required field is absent or JSON null | `400` | `Signal 'warehouse.product-recall' payload is missing the required field 'reason'.` |
+  | An optional field is JSON null | `400` | `Signal 'warehouse.product-recall' payload field 'details' is null; leave out an optional field instead of sending null.` |
+  | A field has another type | `400` | `Signal 'warehouse.product-recall' payload field 'skus' must be an array of strings.` |
+  | A member is not a field | `400` | `Signal 'warehouse.product-recall' payload member 'reson' is not a field of its catalog entry. Its fields: reason (string), skus (string[]), details (json).` |
+
+  The payload is checked field by field in the entry's order, then member by member in the payload's order. A missing payload counts as an empty object. The contract is closed: an entry without fields accepts only a missing payload or `{}` (`Its fields: none.`). A field accepts exactly the values a typed mapping of its type accepts, a `json` field any value except null. No field may be JSON null, optional ones included: a receiver's mapping refuses null unless its target variable is nullable, so a null that one receiver accepts would fail another's delivery. Leave out an optional field that has no value; a null inside a `json` value is allowed. The type words are `a string`, `a number`, `true or false`, `a date (YYYY-MM-DD)`, `a date and time (ISO-8601)`, and `any JSON value`, or their array forms such as `an array of strings`. Member names are compared exactly, so `Reason` is not the field `reason`. A field list names at most 20 fields and then `, and N more`. No message contains a payload value. A `403` from these rules has the body `{"code":"signal_catalog_forbidden","error":"..."}`; a refusal by the route's authorization policy has no body.
+- **Cancel and retry under the catalog.** Retrying a broadcast of a cataloged name follows the throw rules for everyone, its thrower included, because it delivers the payload again: `400` for an archived entry, with the archived message above, and `403` with `Retrying signal ... needs one of the roles its catalog entry lists: ...` or the client message. Cancelling is how a mistake is stopped, so a broadcast's thrower may always cancel it, also after its entry archived the name or changed its roles: a user whose actor identity is its `thrownBy` with `thrownByKind` `user`, or the client whose ID it is with `thrownByKind` `client`. Anyone else needs the entry's throw rules now (`403` with `Cancelling signal ...`), and the archived status does not matter. Both checks read the entry without a lock, after the broadcast is found visible.
 - **What a client sees.** A client lists, reads, cancels, and retries only the broadcasts it threw; any other broadcast returns `404`. Its delivery rows carry `resultCode` with a null `resultDescription`, because the engine's message can quote a validation expression of the receiving workflow. When a user cancels a client's broadcast, the client sees `status: "cancelled"` and `cancelledAt`, but `cancelledBy` and `cancellationReason` are null. The subscription summary is for users only.
 - **Name.** `name` follows the [signal-name rule](node-reference.md#signal-configuration), and an uppercase letter returns `400` rather than missing its waits.
 - **Scope.** A throw states exactly one scope; any other combination returns `400` with a message that names it:
@@ -1946,7 +1969,7 @@ Throw a signal and queue its deliveries.
 **Success:** `202` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto) with `Location: /api/signal-broadcasts/{id}`; `200` with the earlier broadcast when `idempotencyKey` replays it.
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
-A broadcast that finds no waiting event is stored as `completed` with `totalDeliveryCount: 0` and queues no job.
+A broadcast that finds no waiting event is stored as `completed` with `totalDeliveryCount: 0` and queues no job. A name with a [catalog entry](#signal-catalog) is checked against it before the open-broadcast count: `400` for a payload that does not fit, an archived entry, or, in `required` mode, a name without an entry; `403` with `code` `signal_catalog_forbidden` for a caller the entry does not allow. See the [catalog checks](#signals) above.
 
 ```http
 POST /api/signal-broadcasts HTTP/1.1
@@ -2155,6 +2178,8 @@ Cancel a broadcast's pending deliveries.
 **Success:** `200` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
 
+The broadcast's thrower may always cancel it. Anyone else, when the name has a [catalog entry](#signal-catalog), needs the entry's throw rules now, or gets `403` with `code` `signal_catalog_forbidden`, for example `Cancelling signal 'warehouse.product-recall' needs one of the roles its catalog entry lists: recall-manager.`; an archived entry does not stop a cancel.
+
 Every pending delivery becomes `cancelled` with `broadcast_cancelled`, and the broadcast becomes `cancelled`. A delivery already in its own transaction finishes normally, and the waits that were not delivered stay subscribed. A broadcast that is still `delivering` can be cancelled whether or not its `expiresAt` has passed; whichever of a cancel and an expiry's settle holds the broadcast's row first decides the status. Repeating the request on a cancelled broadcast changes nothing and returns it; a broadcast that already finished, `expired` included, returns `409`.
 
 ```http
@@ -2184,6 +2209,8 @@ Return a broadcast's failed deliveries to pending and queue them again.
 
 **Success:** `200` [SignalBroadcastDetailDto](#schema-signalbroadcastdetaildto).
 **Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict; `413` Payload Too Large; `415` Unsupported Media Type. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+When the name has a [catalog entry](#signal-catalog), the caller needs its throw rules, its thrower included: an archived entry returns `400` with `Signal 'warehouse.product-recall' is archived in the signal catalog and cannot be thrown.`, and a caller the entry does not allow returns `403` with `code` `signal_catalog_forbidden`, such as `Retrying signal 'warehouse.product-recall' needs one of the roles its catalog entry lists: recall-manager.` These checks run before the broadcast's state is read.
 
 Allowed only for a `completedWithIssues` broadcast, with its current `updatedAt`, before its `expiresAt`. A missing `expectedUpdatedAt` returns `400`; any other status, `expired` included, a stale `expectedUpdatedAt`, or no failed delivery returns `409`. Once the expiry has passed, checked with the database's clock under the broadcast's row lock, the retry returns `409` with `Signal broadcast #57 expired at 2026-11-23T09:10:00Z; its failed deliveries cannot be retried. Throw the signal again to reach the waits that are still open.` and changes nothing. Otherwise the broadcast returns to `delivering` with its original `expiresAt`, so a retried delivery that runs after it ends as `broadcast_expired` and the broadcast finishes as `expired`. Each retried delivery moves to the workflow version its instance runs now, its `workflowDefinitionId` changes to match, and a new `signalBroadcastDeliver` job is queued for each of those versions. So retrying after moving the instances to a version with corrected mappings applies those mappings, and a retry does not depend on the version that was current at the throw, which may since have been deleted. A delivery whose wait has ended meanwhile is skipped.
 
@@ -2239,6 +2266,406 @@ Content-Type: application/json
     { "name": "claims.policy-changed", "workflowKey": "example-signal-catch-policy-change", "count": 3, "startCount": 0 }
   ],
   "truncated": false
+}
+```
+
+## Signal catalog
+
+The signal catalog is a deployment-wide list of signal names. An entry gives a name a description, a closed payload contract of typed fields, and the rules for who may throw it. Saving and publishing a workflow definition, reactivating an instance, and throwing, cancelling, or retrying through the [signal routes](#signals) are checked against a name's entry; running instances, deliveries, starts, and workflows' throws never read the catalog. See [using the signal catalog](developer-guide.md#use-the-signal-catalog) and the definition rules in [signal catalog checks](node-reference.md#signal-catalog-checks).
+
+- **Access.** Signal catalog readers list and read entries: a JWT user with a role from `Settings.RequiredRole`, `Signals.RequiredRole`, or `Workflow.RequiredRole`, or a managed API client with `signals.read` or `signals.throw`, which sends exactly one of each client header; a bearer token with client headers returns `400`. Only settings administrators create, change, archive, and reactivate entries and use the usage, preview, and uncataloged-name routes; clients cannot. Names, contracts, and roles are not secrets.
+- **Entry.** An entry has these members; requests use them as listed, and responses add the read-only ones:
+
+  | Member | Rule |
+  | --- | --- |
+  | `name` | Required on create; the [signal-name rule](node-reference.md#signal-configuration). It is the route key and cannot change. Unique among active and archived entries, compared exactly. |
+  | `description` | Optional; trimmed, blank means null; at most 1,000 characters. |
+  | `fields` | Optional, at most 100, in the order given: the only members a throw may send. |
+  | `fields[].name` | 1 to 100 letters, digits, `_`, or `-`, starting with a letter or `_`; unique ignoring letter case, as payload entry names are. A throw and a mapping path match it exactly. |
+  | `fields[].dataType` | `string`, `number`, `boolean`, `date`, `datetime`, or `json`. A `json` field accepts any value and leaves its inside unchecked. |
+  | `fields[].isArray`, `fields[].required` | Booleans, default false. A required field must be sent in every throw. No field may be JSON null: a throw leaves out an optional field it has no value for ([why](node-reference.md#signal-catalog-checks)). |
+  | `fields[].description` | Optional; trimmed, blank means null; at most 300 characters. |
+  | `throwRoles` | Optional; at most 100 roles, each trimmed, nonblank, and at most 300 characters, repeats in another letter case removed. They narrow who may throw, cancel, or retry the name: a user needs a role from `Signals.RequiredRole` **and**, when the list is not empty, one of these. Add each role to `Signals.RequiredRole` as well, or only users who hold both can throw. Empty narrows nothing. |
+  | `allowClients` | Default true. Whether managed API clients with `signals.throw` may throw and retry the name; a client's roles are never checked. |
+  | `allowWorkflows` | Default true. Whether a published workflow's signal throw or end event may throw the name, checked when a definition is published. Entry roles never apply to workflows. |
+  | `status`, `archivedAt` | Response only: `active` or `archived`, and when the entry was archived. |
+  | `canThrow` | Response only: whether the caller could throw the name now. For a user: the entry is active, the user holds a role from `Signals.RequiredRole`, and one of `throwRoles` when it lists any. For a client: the entry is active, the client has `signals.throw`, and `allowClients` is true. |
+  | `createdAt`, `createdBy`, `updatedAt`, `updatedBy` | Response only. `updatedAt` is the fence that changes send back as `expectedUpdatedAt`. A managed API client gets `createdBy` and `updatedBy` as null: it reads the contract, not which administrators wrote it. |
+
+- **Validation.** Request bodies are strict: an unknown member, such as `alowClients`, or a number for a boolean fails binding with its path. Content is checked before any lock, and the first problem returns `400`:
+
+  | Problem | Message |
+  | --- | --- |
+  | Name missing or invalid | The [signal-name](node-reference.md#signal-configuration) messages a throw gives. |
+  | Description too long | `description can have at most 1000 characters.` |
+  | Too many fields | `fields can have at most 100 entries.` |
+  | A field is null | `Field 2 cannot be null.` |
+  | Field name | `Field 3 name must be 1 to 100 letters, digits, '_', or '-', starting with a letter or '_'.` |
+  | Repeated field, ignoring letter case | `Field 'Reason' appears more than once.`, naming the later spelling |
+  | Field type | `Field 'reason' dataType must be string, number, boolean, date, datetime, or json.` |
+  | Field description | `Field 'reason' description can have at most 300 characters.` |
+  | Roles | `throwRoles can have at most 100 roles.`, `A throw role cannot be blank.`, or `A throw role can have at most 300 characters.` |
+  | Missing fence on a change | `expectedUpdatedAt is required.` |
+
+  A change (`PUT`) replaces everything but the name, so it must state `fields`, `throwRoles`, `allowClients`, and `allowWorkflows`, with `[]` for no fields or roles: a body that leaves one out fails binding with `Missing required properties: 'allowClients'.` and its path, instead of widening who may throw the name or emptying its contract. `description` may be left out, which removes it. On create, all four may be left out and default to none, none, true, and true.
+
+- **Live versions.** A live version is a published version, or one with a running instance. Creating, changing, or reactivating an entry checks, under the name's exclusive lock, every live version that uses the name against the candidate, at the publication rules of [signal catalog checks](node-reference.md#signal-catalog-checks), only for the signal events that use that name. Another name's problem in the same version never blocks it. The write reads the live versions in pages of 50 and stops once it has found a sixth problem, then refuses with `409`, listing the first five:
+
+  ```text
+  Signal catalog entry 'claims.policy-changed' does not fit live workflow versions: example-signal-catch-policy-change v1 (#7): Signal catch event #2 mapping to 'policyVersion' is number, but the catalog entry of 'claims.policy-changed' defines 'version' as string.
+  ```
+
+  Each problem is `<workflowKey> v<version> (#<workflowDefinitionId>): <problem>`, at most five, separated by spaces, and when there are more the message ends with `There are more problems; review the entry to see them all.` [`POST /api/signal-catalog/preview`](#post-apisignal-catalogpreview) lists them all. Change the versions first, wait until they are no longer live, or keep the entry compatible: a `json` field and an optional field accept more than a strict field. Drafts that are not live are checked when they are saved again or published. A change that touches only descriptions, roles, or `allowClients` cannot fail the check, which still runs.
+- **Archive.** An archived name cannot be thrown through the API or used by a saved definition, in either mode, and cannot be retried; a cancel is not affected. Archiving is refused with `409` while any of these exists, in this order: `Signal catalog entry 'claims.policy-changed' cannot be archived: 1 published workflow version uses it; 1 workflow version with running instances uses it; 1 signal wait is open for it; 1 workflow family starts on it; 1 broadcast of it is still delivering.` Only the reasons that apply are listed, and a count above one reads `use` and `are`, such as `3 published workflow versions use it` and `12 signal waits are open for it`. Archiving an archived entry, or reactivating an active one, returns it unchanged whatever the value of `expectedUpdatedAt`, which must still be sent (`400` without it). Nothing is deleted: an archived name stays reserved, and reactivating it checks the live versions again.
+- **Concurrency.** Changes send the exact `updatedAt` last read as `expectedUpdatedAt`. A stale value returns `409` with `Signal catalog entry 'claims.policy-changed' was changed by another request; reload and try again.` Changing an archived entry returns `409` with `Signal catalog entry 'claims.policy-changed' is archived; reactivate it before changing it.` A taken name returns `409` with `Signal catalog entry 'claims.policy-changed' already exists.` Each change logs one information line with the name and the caller.
+- **Names in routes.** `{name}` is the exact signal name. A name that breaks the name rule returns `404` from the entry routes. A signal name may end with `.`, and some reverse proxies and URL normalizers remove a trailing dot from a path segment; such names work through Kestrel and through proxies that keep the path as sent. Prefer names that end with a letter or digit.
+- **Mode.** [`Signals.CatalogMode`](engine-settings.md#signalscatalogmode) is `optional` by default: names without an entry keep working, and existing requests get the same responses. In `required` mode, publishing a definition that uses a name without an entry, and throwing such a name through the API, return `400`; drafts still save and published definitions keep running. The list and uncataloged-name routes report the mode in effect.
+- **Compatibility.** A client that throws a name which gains an entry with `allowClients` false starts to get `403` on throws and retries, and a user without the entry's roles gets `403` on throws, retries, and cancels of other throwers' broadcasts. Before narrowing a name, list its broadcasts with `GET /api/signal-broadcasts?name=...&thrownByKind=user&thrownByKind=client` to see who throws it.
+
+### GET /api/signal-catalog/entries
+
+List entries ordered by name, with the catalog mode in effect and the roles of `Signals.RequiredRole`; a managed API client gets an empty `signalRoles`, because it throws without roles.
+
+**Access:** Signal catalog reader. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | query | string | No | Keeps names that start with this text, compared exactly; trimmed. |
+| `status` | query | string | No | `active` or `archived`; without it both are listed. Another value returns `400` with `status must be active or archived.` |
+| `page` | query | integer (int32) | No | Default 1. |
+| `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
+
+**Body:** none.
+
+**Success:** `200` [SignalCatalogListDto](#schema-signalcataloglistdto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+GET /api/signal-catalog/entries?status=active&name=warehouse. HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example (object bodies may be excerpts; see the full linked schema):
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "name": "warehouse.product-recall",
+      "description": "A supplier recalled a product. Open orders for it stop.",
+      "status": "active",
+      "fields": [
+        { "name": "reason", "dataType": "string", "isArray": false, "required": true, "description": "Why the product was recalled." },
+        { "name": "skus", "dataType": "string", "isArray": true, "required": true, "description": null },
+        { "name": "details", "dataType": "json", "isArray": false, "required": false, "description": "Supplier data, passed on unchanged." }
+      ],
+      "throwRoles": ["recall-manager"],
+      "allowClients": false,
+      "allowWorkflows": true,
+      "canThrow": false,
+      "createdAt": "2026-11-24T09:00:00Z",
+      "createdBy": "alice",
+      "updatedAt": "2026-11-24T09:00:00Z",
+      "updatedBy": "alice",
+      "archivedAt": null
+    }
+  ],
+  "page": 1,
+  "pageSize": 50,
+  "totalCount": 1,
+  "mode": "optional",
+  "signalRoles": ["admin"]
+}
+```
+
+### GET /api/signal-catalog/entries/{name}
+
+Read one entry, active or archived.
+
+**Access:** Signal catalog reader. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | path | string | Yes | The exact signal name. |
+
+**Body:** none.
+
+**Success:** `200` [SignalCatalogEntryDto](#schema-signalcatalogentrydto).
+**Errors:** `401` Unauthorized; `403` Forbidden; `404` Not Found when the name has no entry. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+GET /api/signal-catalog/entries/warehouse.product-recall HTTP/1.1
+Host: localhost:5017
+X-Client-Id: recall-service
+X-Client-Secret: CLIENT_SECRET
+```
+
+The response is the entry, with `canThrow` computed for the caller.
+
+### POST /api/signal-catalog/entries
+
+Create an entry. It must fit every live version that already uses the name.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**JSON body:** [CreateSignalCatalogEntryRequest](#schema-createsignalcatalogentryrequest). At most 1 MiB.
+
+**Success:** `201` [SignalCatalogEntryDto](#schema-signalcatalogentrydto) with `Location: /api/signal-catalog/entries/{name}`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `409` Conflict for a taken name or live versions that would not fit; `413` Payload Too Large. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+POST /api/signal-catalog/entries HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "warehouse.product-recall",
+  "description": "A supplier recalled a product. Open orders for it stop.",
+  "fields": [
+    { "name": "reason", "dataType": "string", "required": true, "description": "Why the product was recalled." },
+    { "name": "skus", "dataType": "string", "isArray": true, "required": true },
+    { "name": "details", "dataType": "json", "description": "Supplier data, passed on unchanged." }
+  ],
+  "throwRoles": ["recall-manager"],
+  "allowClients": false
+}
+```
+
+The response is the created entry, as in the list example.
+
+### PUT /api/signal-catalog/entries/{name}
+
+Replace an active entry's description, fields, throw roles, and switches. The name cannot change. `fields`, `throwRoles`, `allowClients`, and `allowWorkflows` are required, with `[]` for none, so a body that leaves one out returns `400` (`Missing required properties: ...`) rather than widening who may throw the name; a left-out `description` removes it.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | path | string | Yes | The exact signal name. |
+
+**JSON body:** [UpdateSignalCatalogEntryRequest](#schema-updatesignalcatalogentryrequest). At most 1 MiB.
+
+**Success:** `200` [SignalCatalogEntryDto](#schema-signalcatalogentrydto) with a later `updatedAt`.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict for a stale `expectedUpdatedAt`, an archived entry, or live versions that would not fit; `413` Payload Too Large. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+PUT /api/signal-catalog/entries/warehouse.product-recall HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "expectedUpdatedAt": "2026-11-24T09:00:00Z",
+  "description": "A supplier recalled a product. Open orders for it stop.",
+  "fields": [
+    { "name": "reason", "dataType": "string", "required": true },
+    { "name": "skus", "dataType": "string", "isArray": true, "required": true },
+    { "name": "details", "dataType": "json" }
+  ],
+  "throwRoles": ["recall-manager", "warehouse-lead"],
+  "allowClients": false
+}
+```
+
+### POST /api/signal-catalog/entries/{name}/archive
+
+Archive an entry that nothing uses.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | path | string | Yes | The exact signal name. |
+
+**JSON body:** [SignalCatalogLifecycleRequest](#schema-signalcataloglifecyclerequest).
+
+**Success:** `200` [SignalCatalogEntryDto](#schema-signalcatalogentrydto) with `status: "archived"`; an archived entry is returned unchanged.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict for a stale `expectedUpdatedAt` or while something uses the name. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+POST /api/signal-catalog/entries/warehouse.product-recall/archive HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{ "expectedUpdatedAt": "2026-11-24T09:05:00Z" }
+```
+
+Response when a published version uses the name and one of its instances waits for it:
+
+```http
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+
+{ "error": "Signal catalog entry 'warehouse.product-recall' cannot be archived: 1 published workflow version uses it; 1 workflow version with running instances uses it; 1 signal wait is open for it." }
+```
+
+### POST /api/signal-catalog/entries/{name}/reactivate
+
+Make an archived entry active again. Every live version that uses the name must fit it, as for a change.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | path | string | Yes | The exact signal name. |
+
+**JSON body:** [SignalCatalogLifecycleRequest](#schema-signalcataloglifecyclerequest).
+
+**Success:** `200` [SignalCatalogEntryDto](#schema-signalcatalogentrydto) with `status: "active"`; an active entry is returned unchanged.
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `404` Not Found; `409` Conflict for a stale `expectedUpdatedAt` or live versions that would not fit. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+```http
+POST /api/signal-catalog/entries/warehouse.product-recall/reactivate HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{ "expectedUpdatedAt": "2026-11-24T10:00:00Z" }
+```
+
+### GET /api/signal-catalog/entries/{name}/usage
+
+Count what uses a name, which are the five things that block archiving it, and page the workflow versions that use it. Writes nothing and takes no lock.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+| Parameter | Location | Type | Required | Meaning / default |
+| --- | --- | --- | --- | --- |
+| `name` | path | string | Yes | The exact signal name. |
+| `page` | query | integer (int32) | No | Default 1; the page of `versions`. |
+| `pageSize` | query | integer (int32) | No | Default 50; clamped to 1–200. |
+
+**Body:** none.
+
+**Success:** `200` [SignalCatalogUsageDto](#schema-signalcatalogusagedto).
+**Errors:** `401` Unauthorized; `403` Forbidden; `404` Not Found when the name has no entry. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+`versions` lists every version that uses the name, drafts included, newest first, with the signal events that use it. The counts are those that block archiving: published versions, versions with a running instance, open signal waits, families whose published default starts on the name, and broadcasts of it still delivering.
+
+```http
+GET /api/signal-catalog/entries/warehouse.product-recall/usage HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "name": "warehouse.product-recall",
+  "publishedVersionCount": 1,
+  "runningVersionCount": 1,
+  "activeWaitCount": 2,
+  "startingFamilyCount": 0,
+  "deliveringBroadcastCount": 0,
+  "versions": {
+    "items": [
+      { "workflowDefinitionId": 12, "workflowKey": "example-signal-boundaries-recall", "workflowName": "Signal Example 02 - Recall and Price Updates on a Shipment", "version": 1, "isPublished": true, "nodeIds": [3] }
+    ],
+    "page": 1,
+    "pageSize": 50,
+    "totalCount": 1
+  }
+}
+```
+
+### POST /api/signal-catalog/preview
+
+Check a candidate entry against the live versions that use its name, without a lock and without writing. Use it before a create, change, or reactivation, which refuse any problem it lists.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**JSON body:** [CreateSignalCatalogEntryRequest](#schema-createsignalcatalogentryrequest): the entry as it would be, name included. At most 1 MiB. Its content is validated as a create's is.
+
+**Success:** `200` [SignalCatalogImpactDto](#schema-signalcatalogimpactdto).
+**Errors:** `400` Bad Request; `401` Unauthorized; `403` Forbidden; `413` Payload Too Large. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+The problems are in version and node order, at most 200, with `truncated` when there are more. An empty list with `truncated: false` means that the write would pass the check now; it can still be refused if a version changes in between.
+
+```http
+POST /api/signal-catalog/preview HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "name": "claims.policy-changed",
+  "fields": [
+    { "name": "version", "dataType": "string", "required": true },
+    { "name": "effectiveDate", "dataType": "date" }
+  ]
+}
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "name": "claims.policy-changed",
+  "liveVersionCount": 1,
+  "problems": [
+    {
+      "workflowDefinitionId": 7,
+      "workflowKey": "example-signal-catch-policy-change",
+      "workflowName": "Signal Example 01 - Wait for a Policy Change",
+      "version": 1,
+      "nodeId": 2,
+      "message": "Signal catch event #2 mapping to 'policyVersion' is number, but the catalog entry of 'claims.policy-changed' defines 'version' as string."
+    }
+  ],
+  "truncated": false
+}
+```
+
+### GET /api/signal-catalog/uncataloged-names
+
+List the names that live versions use without an entry, the work to do before setting `Signals.CatalogMode` to `required`.
+
+**Access:** Settings administrator. See [authentication](#http-conventions-and-authentication).
+
+**Parameters:** none.
+
+**Body:** none.
+
+**Success:** `200` [UncatalogedSignalNameListDto](#schema-uncatalogedsignalnamelistdto).
+**Errors:** `401` Unauthorized; `403` Forbidden. See [error envelopes](#errors-and-concurrency) and the family rules above.
+
+Only live versions count: published versions and versions with a running instance. Names are ordered by name, at most 200, with `truncated` when there are more, each with the number of live versions that use it. Names thrown only through the API leave no trace in definitions; the [broadcast list](#get-apisignal-broadcasts) shows them.
+
+```http
+GET /api/signal-catalog/uncataloged-names HTTP/1.1
+Host: localhost:5017
+Authorization: Bearer TOKEN
+```
+
+Response example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "items": [
+    { "name": "orders.cancelled", "versionCount": 2 }
+  ],
+  "truncated": false,
+  "mode": "optional"
 }
 ```
 
@@ -6598,7 +7025,7 @@ Content-Type: application/json
 
 ## Shared-variable clients
 
-JWT Shared-variable administrator permission is required for every route. Client IDs are administrator-chosen, case-sensitive and immutable. Allowed scopes are `shared-variables.read`, `shared-variables.write`, `signals.throw`, and `signals.read`; they are explicit separate permissions. The two signal scopes let the same client throw signals and read its own broadcasts through the [signal routes](#signals). Creation and secret rotation return a generated secret exactly once with `Cache-Control: no-store` and `Pragma: no-cache`. Metadata reads cannot recover it. Update replaces displayName/scopes/expiresAt with `expectedRevision`; revoked clients cannot be used. An optional `expiresAt` must be in the future; it may carry any UTC offset and is stored and returned in UTC. Rotation grace is 0–168 hours, default 24. Revocation immediately invalidates all active secrets. All request bodies are limited to 64 KiB.
+JWT Shared-variable administrator permission is required for every route. Client IDs are administrator-chosen, case-sensitive and immutable. Allowed scopes are `shared-variables.read`, `shared-variables.write`, `signals.throw`, and `signals.read`; they are explicit separate permissions. The two signal scopes let the same client throw signals and read its own broadcasts through the [signal routes](#signals), and either one lets it read the [signal catalog](#signal-catalog). Creation and secret rotation return a generated secret exactly once with `Cache-Control: no-store` and `Pragma: no-cache`. Metadata reads cannot recover it. Update replaces displayName/scopes/expiresAt with `expectedRevision`; revoked clients cannot be used. An optional `expiresAt` must be in the future; it may carry any UTC offset and is stored and returned in UTC. Rotation grace is 0–168 hours, default 24. Revocation immediately invalidates all active secrets. All request bodies are limited to 64 KiB.
 
 ### GET /api/shared-variable-clients
 
@@ -8383,6 +8810,24 @@ Administrative form of delegation creation. The authenticated administrator rema
 | `description` | null or string | No | — |
 | `requestId` | null or string | No | Optional identifier up to 300 scalars, scoped by caller kind and caller ID across keys. Identical retries return the original result; reuse for a different key/operation/body returns 409. |
 | `reason` | null or string | No | Human-readable audit reason; required where non-null in version-change/reactivation requests. |
+
+</details>
+
+<a id="schema-createsignalcatalogentryrequest"></a>
+
+<details>
+<summary>CreateSignalCatalogEntryRequest</summary>
+
+Creates a [signal catalog](#signal-catalog) entry, and is the candidate of a preview. Every member but the name can change later. Unknown members and wrong JSON types fail binding.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | null or string | Yes | The signal name, under the signal-name rule; required by validation. |
+| `description` | null or string | No | What the signal means; at most 1,000 characters; blank means none. |
+| `fields` | null or array of [SignalCatalogFieldDto](#schema-signalcatalogfielddto) | No | At most 100 payload fields, in order; null or empty means a throw sends no payload. |
+| `throwRoles` | null or array of string | No | At most 100 roles that narrow who may throw, cancel, or retry the name, on top of `Signals.RequiredRole`. |
+| `allowClients` | boolean | No | Whether managed API clients may throw the name. Default: `true`. |
+| `allowWorkflows` | boolean | No | Whether workflows may throw the name. Default: `true`. |
 
 </details>
 
@@ -10582,6 +11027,23 @@ items/page/pageSize/totalCount are the core fields. nextCursor is omitted when n
 
 </details>
 
+<a id="schema-pagedresultofsignalcatalogversionusedto"></a>
+
+<details>
+<summary>PagedResultOfSignalCatalogVersionUseDto</summary>
+
+Generic wrapper representing a paged list of items.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `items` | array of [SignalCatalogVersionUseDto](#schema-signalcatalogversionusedto) | Yes | The collection of items on the current page. |
+| `page` | integer (int32) | Yes | The 1-based page index. |
+| `pageSize` | integer (int32) | Yes | The maximum number of items in the page. |
+| `totalCount` | integer (int64) | Yes | The total number of matching items across all pages. |
+| `nextCursor` | null or string | No | Not used by this numbered-page endpoint; omitted. |
+
+</details>
+
 <a id="schema-pagedresultofsignaldeliverydto"></a>
 
 <details>
@@ -11198,6 +11660,150 @@ A list row of a broadcast, without its payload, roles, recipients, or cancellati
 
 </details>
 
+<a id="schema-signalcatalogentrydto"></a>
+
+<details>
+<summary>SignalCatalogEntryDto</summary>
+
+A [signal catalog](#signal-catalog) entry: a signal name with its description, payload contract, and who may throw it.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The signal name. Fixed at creation. |
+| `description` | null or string | Yes | What the signal means. |
+| `status` | string | Yes | `active` or `archived`. An archived name cannot be thrown through the API or used by a saved definition. |
+| `fields` | array of [SignalCatalogFieldDto](#schema-signalcatalogfielddto) | Yes | The payload contract, in order. A throw may send only these members. |
+| `throwRoles` | array of string | Yes | Roles that narrow who may throw, cancel, or retry a broadcast of the name, on top of `Signals.RequiredRole`. Empty narrows nothing. |
+| `allowClients` | boolean | Yes | Whether managed API clients with `signals.throw` may throw the name. |
+| `allowWorkflows` | boolean | Yes | Whether published workflows may throw the name. |
+| `canThrow` | boolean | Yes | Whether the caller could throw the name now. |
+| `createdAt` | string (date-time) | Yes | — |
+| `createdBy` | null or string | Yes | Who created the entry; null for a managed API client. |
+| `updatedAt` | string (date-time) | Yes | Send it back as `expectedUpdatedAt`; preserve its exact precision. |
+| `updatedBy` | null or string | Yes | Who last changed the entry; null for a managed API client. |
+| `archivedAt` | null or string (date-time) | Yes | When the entry was archived; null while it is active. |
+
+</details>
+
+<a id="schema-signalcatalogfielddto"></a>
+
+<details>
+<summary>SignalCatalogFieldDto</summary>
+
+One payload field of a catalog entry. Unknown members and wrong JSON types fail binding.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | 1 to 100 letters, digits, `_`, or `-`, starting with a letter or `_`; unique in the entry ignoring letter case, matched exactly by throws and mapping paths. |
+| `dataType` | string | Yes | `string`, `number`, `boolean`, `date`, `datetime`, or `json`. |
+| `isArray` | boolean | No | Whether the value is an array of `dataType`. Default: `false`. |
+| `required` | boolean | No | Whether every throw must send the field. No field may be JSON null; a throw leaves out an optional field it has no value for. Default: `false`. |
+| `description` | null or string | No | At most 300 characters. |
+
+</details>
+
+<a id="schema-signalcatalogimpactdto"></a>
+
+<details>
+<summary>SignalCatalogImpactDto</summary>
+
+What a candidate entry would mean for the live workflow versions that use its name. Returned by the preview.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The signal name. |
+| `liveVersionCount` | integer (int32) | Yes | Published versions, and versions with a running instance, that use the name. |
+| `problems` | array of [SignalCatalogProblemDto](#schema-signalcatalogproblemdto) | Yes | Their problems against the candidate, in version and node order; at most 200. Empty when the candidate fits. |
+| `truncated` | boolean | Yes | True when more problems exist than are listed. |
+
+</details>
+
+<a id="schema-signalcataloglifecyclerequest"></a>
+
+<details>
+<summary>SignalCatalogLifecycleRequest</summary>
+
+Archives or reactivates an entry.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `expectedUpdatedAt` | string (date-time) | Yes | The entry's exact `updatedAt` as last read; a stale value returns `409`, unless the entry already has the requested status. Leaving it out returns `400` even then. |
+
+</details>
+
+<a id="schema-signalcataloglistdto"></a>
+
+<details>
+<summary>SignalCatalogListDto</summary>
+
+A page of catalog entries, ordered by name, with the catalog mode in effect.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `items` | array of [SignalCatalogEntryDto](#schema-signalcatalogentrydto) | Yes | The entries of the page. |
+| `page` | integer (int32) | Yes | The 1-based page index. |
+| `pageSize` | integer (int32) | Yes | From 1 to 200. |
+| `totalCount` | integer (int64) | Yes | The number of entries that match. |
+| `mode` | string | Yes | `Signals.CatalogMode` in effect: `optional` or `required`. |
+| `signalRoles` | array of string | Yes | The roles of `Signals.RequiredRole`, which a user needs as well as one of an entry's `throwRoles`; empty for a managed API client. |
+
+</details>
+
+<a id="schema-signalcatalogproblemdto"></a>
+
+<details>
+<summary>SignalCatalogProblemDto</summary>
+
+One problem of a workflow version against a catalog entry.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `workflowDefinitionId` | integer (int64) | Yes | The version's ID. |
+| `workflowKey` | string | Yes | — |
+| `workflowName` | string | Yes | — |
+| `version` | integer (int32) | Yes | The version number. |
+| `nodeId` | integer (int32) | Yes | The signal event the problem is about. |
+| `message` | string | Yes | The problem, as saving or publishing the version would report it; it names the node, the field, and the types, never a value. See [signal catalog checks](node-reference.md#signal-catalog-checks). |
+
+</details>
+
+<a id="schema-signalcatalogusagedto"></a>
+
+<details>
+<summary>SignalCatalogUsageDto</summary>
+
+What uses a signal name: the five things that block archiving its entry, and the versions that use it.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The signal name. |
+| `publishedVersionCount` | integer (int64) | Yes | Published workflow versions that use the name. |
+| `runningVersionCount` | integer (int64) | Yes | Workflow versions with a running instance that use the name. |
+| `activeWaitCount` | integer (int64) | Yes | Active signal waits for the name, boundaries included. |
+| `startingFamilyCount` | integer (int64) | Yes | Workflow families whose published default starts on the name. |
+| `deliveringBroadcastCount` | integer (int64) | Yes | Broadcasts of the name still delivering. |
+| `versions` | [PagedResultOfSignalCatalogVersionUseDto](#schema-pagedresultofsignalcatalogversionusedto) | Yes | A page of every version that uses the name, drafts included, newest first. |
+
+</details>
+
+<a id="schema-signalcatalogversionusedto"></a>
+
+<details>
+<summary>SignalCatalogVersionUseDto</summary>
+
+A workflow version that uses a signal name.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `workflowDefinitionId` | integer (int64) | Yes | The version's ID. |
+| `workflowKey` | string | Yes | — |
+| `workflowName` | string | Yes | — |
+| `version` | integer (int32) | Yes | The version number. |
+| `isPublished` | boolean | Yes | Whether the version is published. |
+| `nodeIds` | array of integer (int32) | Yes | The version's signal events that use the name, in ID order. |
+
+</details>
+
 <a id="schema-signaldeliverydto"></a>
 
 <details>
@@ -11516,6 +12122,33 @@ A cron schedule to preview, which need not be saved.
 
 </details>
 
+<a id="schema-uncatalogedsignalnamedto"></a>
+
+<details>
+<summary>UncatalogedSignalNameDto</summary>
+
+A name that live workflow versions use without a catalog entry.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The signal name. |
+| `versionCount` | integer (int32) | Yes | Published versions, and versions with a running instance, that use it. |
+
+</details>
+
+<a id="schema-uncatalogedsignalnamelistdto"></a>
+
+<details>
+<summary>UncatalogedSignalNameListDto</summary>
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `items` | array of [UncatalogedSignalNameDto](#schema-uncatalogedsignalnamedto) | Yes | The names, ordered by name, at most 200. |
+| `truncated` | boolean | Yes | True when more names exist than are listed. |
+| `mode` | string | Yes | `Signals.CatalogMode` in effect: `optional` or `required`. |
+
+</details>
+
 <a id="schema-updateaimodelrequest"></a>
 
 <details>
@@ -11652,6 +12285,24 @@ Result of one atomic administrative instance-variable operation.
 | `expectedRevision` | integer (int64) | Yes | Exact current revision from a preceding read. |
 | `requestId` | null or string | No | Optional mutation retry identifier; reuse only for the identical logical request. |
 | `reason` | null or string | No | Human-readable audit reason; required where non-null in version-change/reactivation requests. |
+
+</details>
+
+<a id="schema-updatesignalcatalogentryrequest"></a>
+
+<details>
+<summary>UpdateSignalCatalogEntryRequest</summary>
+
+Replaces everything about an active [signal catalog](#signal-catalog) entry but its name. The field list, the role list, and both switches must be sent, so a body that leaves one out cannot widen who may throw the name or empty its contract by accident; it fails binding with `Missing required properties: ...`. Unknown members and wrong JSON types fail binding too.
+
+| Field | JSON type / schema | Required | Meaning / default |
+| --- | --- | --- | --- |
+| `expectedUpdatedAt` | string (date-time) | Yes | The entry's exact `updatedAt` as last read; a stale value returns `409`. |
+| `description` | null or string | No | At most 1,000 characters; left out, null, or blank removes the description. |
+| `fields` | null or array of [SignalCatalogFieldDto](#schema-signalcatalogfielddto) | Yes | The complete field list, at most 100; `[]` or null removes every field. |
+| `throwRoles` | null or array of string | Yes | The complete role list, at most 100; `[]` or null narrows nothing. |
+| `allowClients` | boolean | Yes | Whether managed API clients may throw the name. |
+| `allowWorkflows` | boolean | Yes | Whether workflows may throw the name. |
 
 </details>
 

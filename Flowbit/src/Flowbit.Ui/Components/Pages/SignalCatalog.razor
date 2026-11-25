@@ -1,0 +1,1146 @@
+@page "/signal-catalog"
+@implements IDisposable
+@using System.Net
+@using Flowbit.Ui.Auth
+@using static Flowbit.Ui.Components.Shared.SignalCatalogFormatting
+@inject WorkflowApiClient Api
+@inject TokenState Token
+@inject IJSRuntime JS
+
+<PageTitle>Signal Catalog · Flowbit</PageTitle>
+
+<PageHeader Eyebrow="Manage" Title="Signal catalog"
+            Description="Signal names with their payload contracts and who may throw them. Saved workflows and throws through the API are checked against a name's entry; running instances never read it.">
+    <Actions>
+        <button class="btn btn-outline-primary" @onclick="() => OpenCreate()" disabled="@(!Token.HasToken || loading || submitting)">
+            <AppIcon Name="plus" /> Add entry
+        </button>
+        <button class="btn btn-primary" @onclick="LoadAsync" disabled="@(!Token.HasToken || loading)">
+            <AppIcon Name="refresh" /> Refresh
+        </button>
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success" role="status">@success</div>
+}
+
+@if (!Token.HasToken)
+{
+    <section class="panel">
+        <EmptyState Icon="token" Title="An administrative identity is required"
+                    Description="Set an identity carrying a configured settings administrator role.">
+            <IdentityAction Class="btn btn-primary" DevelopmentLabel="Set test identity" />
+        </EmptyState>
+    </section>
+}
+else
+{
+    @if (form is not null)
+    {
+        <section class="panel mb-3" aria-labelledby="signal-catalog-form-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="signal-catalog-form-heading">@(form.IsEditing ? $"Edit {form.EditingName}" : "Add signal catalog entry")</h2>
+                    <p>@(form.IsEditing
+                        ? "A change is refused while a published workflow version, or one with a running instance, would no longer fit it."
+                        : "Workflow versions that already use the name must fit the new entry.")</p>
+                </div>
+                <button type="button" class="btn-close" aria-label="Close signal catalog form" @onclick="CloseForm" disabled="@submitting"></button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(localProblem ?? formError))
+            {
+                <div class="alert alert-danger signal-catalog-text" role="alert">
+                    @(localProblem ?? formError)
+                    @if (editConflict)
+                    {
+                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadEditAsync" disabled="@(reviewing || submitting)">
+                            Reload latest
+                        </button>
+                    }
+                </div>
+            }
+
+            <div class="form-grid">
+                <div>
+                    <label class="form-label" for="signal-catalog-name">Signal name</label>
+                    <input id="signal-catalog-name" class="form-control" maxlength="100" autocomplete="off" spellcheck="false"
+                           placeholder="warehouse.product-recall" readonly="@form.IsEditing" @ref="nameInput"
+                           @bind="form.Name" @bind:event="oninput" @bind:after="OnFormEdited"
+                           aria-describedby="signal-catalog-name-help" />
+                    <div id="signal-catalog-name-help" class="form-text">Lowercase letters, digits, <span class="mono-id">.</span>, <span class="mono-id">_</span>, and <span class="mono-id">-</span>. It cannot change later.</div>
+                </div>
+                <div class="full">
+                    <label class="form-label" for="signal-catalog-description">Description</label>
+                    <textarea id="signal-catalog-description" class="form-control" rows="2" maxlength="1000" @ref="descriptionInput"
+                              @bind="form.Description" @bind:event="oninput" @bind:after="OnFormEdited"></textarea>
+                </div>
+            </div>
+
+            <fieldset class="signal-catalog-section">
+                <legend>Payload fields</legend>
+                <p class="form-text mt-0">A throw may send only these fields. A <span class="mono-id">json</span> field accepts any value; a required field needs a value other than null.</p>
+                @if (form.Fields.Count == 0)
+                {
+                    <p class="text-muted mb-2">No fields: a throw must send an empty payload.</p>
+                }
+                @for (var row = 0; row < form.Fields.Count; row++)
+                {
+                    var field = form.Fields[row];
+                    var number = row + 1;
+                    <div class="signal-catalog-field" @key="field">
+                        <div>
+                            <label class="form-label" for="signal-catalog-field-name-@number">Field @number name</label>
+                            <input id="signal-catalog-field-name-@number" class="form-control" maxlength="100" autocomplete="off" spellcheck="false"
+                                   placeholder="reason" @ref="lastFieldNameInput"
+                                   @bind="field.Name" @bind:event="oninput" @bind:after="OnFormEdited" />
+                        </div>
+                        <div>
+                            <label class="form-label" for="signal-catalog-field-type-@number">Type</label>
+                            <select id="signal-catalog-field-type-@number" class="form-select" aria-label="Field @number type"
+                                    @bind="field.DataType" @bind:after="OnFormEdited">
+                                @foreach (var option in DataTypeOptions)
+                                {
+                                    <option value="@option.Value">@option.Label</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="signal-catalog-field-flags">
+                            <div class="form-check">
+                                <input id="signal-catalog-field-array-@number" class="form-check-input" type="checkbox" aria-label="Field @number array"
+                                       @bind="field.IsArray" @bind:after="OnFormEdited" />
+                                <label class="form-check-label" for="signal-catalog-field-array-@number">Array</label>
+                            </div>
+                            <div class="form-check">
+                                <input id="signal-catalog-field-required-@number" class="form-check-input" type="checkbox" aria-label="Field @number required"
+                                       @bind="field.Required" @bind:after="OnFormEdited" />
+                                <label class="form-check-label" for="signal-catalog-field-required-@number">Required</label>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="form-label" for="signal-catalog-field-description-@number">Description</label>
+                            <input id="signal-catalog-field-description-@number" class="form-control" maxlength="300" autocomplete="off"
+                                   aria-label="Field @number description"
+                                   @bind="field.Description" @bind:event="oninput" @bind:after="OnFormEdited" />
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-danger" aria-label="Remove field @number"
+                                @onclick="() => RemoveField(field)">Remove</button>
+                    </div>
+                }
+                <button type="button" id="signal-catalog-add-field" class="btn btn-sm btn-outline-primary" @ref="addFieldButton" @onclick="AddField">
+                    <AppIcon Name="plus" /> Add field
+                </button>
+            </fieldset>
+
+            <fieldset class="signal-catalog-section">
+                <legend>Who may throw it</legend>
+                <div class="mb-3">
+                    <label class="form-label" for="signal-catalog-roles">Throw roles</label>
+                    <input id="signal-catalog-roles" class="form-control" autocomplete="off" spellcheck="false" placeholder="recall-manager, warehouse-lead"
+                           @bind="form.RolesText" @bind:event="oninput" @bind:after="OnFormEdited"
+                           aria-describedby="signal-catalog-roles-help" />
+                    <div id="signal-catalog-roles-help" class="form-text">Separate roles with commas. A user needs a role from Signals.RequiredRole and, when you list roles here, one of these as well. Leave it empty to narrow nothing.</div>
+                </div>
+                <div class="form-check">
+                    <input id="signal-catalog-allow-clients" class="form-check-input" type="checkbox"
+                           @bind="form.AllowClients" @bind:after="OnFormEdited" />
+                    <label class="form-check-label" for="signal-catalog-allow-clients">API clients may throw it</label>
+                </div>
+                <div class="form-check">
+                    <input id="signal-catalog-allow-workflows" class="form-check-input" type="checkbox"
+                           @bind="form.AllowWorkflows" @bind:after="OnFormEdited" />
+                    <label class="form-check-label" for="signal-catalog-allow-workflows">Workflows may throw it</label>
+                </div>
+                <div class="signal-catalog-warnings" role="status" aria-live="polite">
+                    @foreach (var warning in Warnings(form.Roles, form.AllowClients, list?.SignalRoles))
+                    {
+                        <div class="alert alert-warning mb-0 mt-2 signal-catalog-warning">@warning</div>
+                    }
+                </div>
+            </fieldset>
+
+            <div class="signal-catalog-review" role="status" aria-live="polite">
+                @if (CurrentReview is { } shown)
+                {
+                    @if (shown.Impact.Problems.Count == 0 && !shown.Impact.Truncated)
+                    {
+                        <p class="text-success mb-0 signal-catalog-review-fits">@AllFitText</p>
+                    }
+                    else
+                    {
+                        <p class="mb-2"><strong>Live workflow versions that would no longer fit:</strong></p>
+                        <ul class="signal-catalog-problems">
+                            @foreach (var problem in shown.Impact.Problems)
+                            {
+                                <li><a href="@VersionHref(problem.WorkflowDefinitionId)">@VersionLabel(problem)</a>: @problem.Message</li>
+                            }
+                        </ul>
+                        @if (shown.Impact.Truncated)
+                        {
+                            <p class="form-text mb-0">More problems exist than are listed.</p>
+                        }
+                        <p class="form-text mb-0">Change those versions first, or change the entry so they fit, then review again.</p>
+                    }
+                }
+            </div>
+
+            <div class="d-flex flex-wrap justify-content-end gap-2 mt-3">
+                <button type="button" class="btn btn-outline-secondary" @onclick="CloseForm" disabled="@submitting">Cancel</button>
+                <button type="button" id="signal-catalog-review" class="btn btn-outline-primary" @onclick="ReviewAsync" disabled="@(reviewing || submitting)">
+                    @(reviewing ? "Reviewing…" : "Review changes")
+                </button>
+                @if (CanSave)
+                {
+                    <button type="button" id="signal-catalog-save" class="btn btn-primary" @onclick="SaveAsync" disabled="@submitting">
+                        @(submitting ? "Saving…" : form.IsEditing ? "Save changes" : "Add entry")
+                    </button>
+                }
+            </div>
+        </section>
+    }
+
+    @if (archiveTarget is not null)
+    {
+        <section class="panel mb-3" aria-labelledby="signal-catalog-archive-heading">
+            <div class="section-heading">
+                <div>
+                    <h2 id="signal-catalog-archive-heading">Archive @archiveTarget.Name</h2>
+                    <p>An archived name cannot be thrown or used by a saved workflow. You can reactivate it later.</p>
+                </div>
+                <button type="button" class="btn-close" aria-label="Close archive panel" @onclick="CloseArchive" disabled="@submitting"></button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(archiveError))
+            {
+                <div class="alert alert-danger signal-catalog-text" role="alert">@archiveError</div>
+            }
+            @if (archiveUsage is null)
+            {
+                @if (loadingUsage)
+                {
+                    <p class="mb-0" role="status">Loading what uses this name…</p>
+                }
+            }
+            else
+            {
+                <dl class="signal-catalog-usage">
+                    @foreach (var (label, count) in UsageCounts(archiveUsage))
+                    {
+                        <dt>@label</dt>
+                        <dd>@count.ToString("N0")</dd>
+                    }
+                </dl>
+                @if (archiveUsage.Versions.Items.Count > 0)
+                {
+                    <p class="mb-1"><strong>Versions that use it</strong></p>
+                    <ul class="signal-catalog-versions">
+                        @foreach (var version in archiveUsage.Versions.Items)
+                        {
+                            <li>
+                                <a href="@VersionHref(version.WorkflowDefinitionId)">@version.WorkflowKey v@(version.Version)</a>
+                                @(version.IsPublished ? " (published)" : null)
+                            </li>
+                        }
+                    </ul>
+                }
+                @if (CanArchive(archiveUsage))
+                {
+                    <p class="mb-2">Nothing uses this name now.</p>
+                    <button type="button" id="signal-catalog-archive" class="btn btn-danger" @onclick="ArchiveAsync" disabled="@submitting">Archive</button>
+                }
+                else
+                {
+                    <p class="mb-0">Archiving waits until every count above is zero.</p>
+                }
+            }
+        </section>
+    }
+
+    <section class="panel panel-flush mb-3" aria-labelledby="signal-catalog-results-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="signal-catalog-results-heading">Entries</h2>
+                <p>@ResultSummary @(list is null ? null : $"Catalog mode: {ModeText(list.Mode)}")</p>
+            </div>
+        </div>
+        <form class="signal-catalog-filters" @onsubmit="SearchAsync" @onsubmit:preventDefault>
+            <div>
+                <label class="form-label" for="signal-catalog-status">Status</label>
+                <select id="signal-catalog-status" class="form-select" value="@statusFilter" @onchange="OnStatusChangedAsync">
+                    <option value="@SignalCatalogStatuses.Active">Active</option>
+                    <option value="@SignalCatalogStatuses.Archived">Archived</option>
+                </select>
+            </div>
+            <div>
+                <label class="form-label" for="signal-catalog-search">Name starts with</label>
+                <input id="signal-catalog-search" class="form-control" maxlength="100" autocomplete="off" spellcheck="false"
+                       placeholder="warehouse." @bind="searchText" />
+            </div>
+            <button type="submit" class="btn btn-outline-primary" disabled="@loading">Search</button>
+        </form>
+
+        @if (loading && list is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (loadFailed || list is null)
+        {
+            <EmptyState Icon="alert" Title="Signal catalog unavailable"
+                        Description="Use Refresh to retry. Authorization and API errors are shown above." />
+        }
+        else if (list.Items.Count == 0)
+        {
+            <EmptyState Icon="signal" Title="@(statusFilter == SignalCatalogStatuses.Archived ? "No archived entries" : "No entries")"
+                        Description="Add an entry to describe a signal's payload and who may throw it." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle signal-catalog-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Fields</th>
+                            <th>Throw roles</th>
+                            <th>API clients</th>
+                            <th>Workflows</th>
+                            <th>Status</th>
+                            <th>Last change</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in list.Items)
+                        {
+                            <tr @key="item.Name">
+                                <td>
+                                    <span class="data-title mono-id">@item.Name</span>
+                                    @if (!string.IsNullOrWhiteSpace(item.Description))
+                                    {
+                                        <span class="data-subtitle signal-catalog-text">@item.Description</span>
+                                    }
+                                </td>
+                                <td>@FieldCountText(item.Fields.Count)</td>
+                                <td class="signal-catalog-text">@RolesLabel(item.ThrowRoles)</td>
+                                <td>@AllowedText(item.AllowClients)</td>
+                                <td>@AllowedText(item.AllowWorkflows)</td>
+                                <td><StatusBadge Status="@item.Status" Text="@StatusLabel(item.Status)" /></td>
+                                <td>
+                                    <LocalTime Value="@item.UpdatedAt" />
+                                    @if (!string.IsNullOrWhiteSpace(item.UpdatedBy))
+                                    {
+                                        <span class="data-subtitle">by @item.UpdatedBy</span>
+                                    }
+                                </td>
+                                <td class="text-end">
+                                    <div class="d-flex justify-content-end gap-2">
+                                        @if (item.Status == SignalCatalogStatuses.Active)
+                                        {
+                                            <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenEdit(item)" disabled="@submitting"
+                                                    aria-label="Edit @item.Name">Edit</button>
+                                            <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => OpenArchiveAsync(item)" disabled="@submitting"
+                                                    aria-label="Archive @item.Name">Archive</button>
+                                        }
+                                        else
+                                        {
+                                            <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => ReactivateAsync(item)" disabled="@submitting"
+                                                    aria-label="Reactivate @item.Name">Reactivate</button>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (TotalPages > 1)
+            {
+                <div class="pagination-bar">
+                    <span class="pagination-copy">Page @pageNumber of @TotalPages</span>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@(pageNumber <= 1 || loading)" @onclick="PreviousPageAsync">Previous</button>
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@(pageNumber >= TotalPages || loading)" @onclick="NextPageAsync">Next</button>
+                    </div>
+                </div>
+            }
+        }
+    </section>
+
+    <section class="panel panel-flush" aria-labelledby="signal-catalog-uncataloged-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="signal-catalog-uncataloged-heading">Names in use without an entry</h2>
+                <p>
+                    Names that published workflow versions, or versions with a running instance, use without a catalog entry.
+                    @if (uncataloged is not null)
+                    {
+                        <span class="signal-catalog-mode">Catalog mode: @ModeText(uncataloged.Mode)</span>
+                    }
+                </p>
+            </div>
+        </div>
+        @if (uncatalogedError is not null)
+        {
+            <div class="px-3 pb-3"><div class="alert alert-warning mb-0 signal-catalog-text" role="status">@uncatalogedError</div></div>
+        }
+        else if (uncataloged is null)
+        {
+            <div class="p-3" role="status"><div class="skeleton"></div></div>
+        }
+        else if (uncataloged.Items.Count == 0)
+        {
+            <EmptyState Icon="check" Title="Every name in use has an entry"
+                        Description="Names thrown only through the API leave no trace in workflows; the Signals page's recent broadcasts show them." />
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Live versions</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in uncataloged.Items)
+                        {
+                            <tr @key="item.Name">
+                                <td><span class="mono-id">@item.Name</span></td>
+                                <td>@VersionCountText(item.VersionCount)</td>
+                                <td class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OpenCreate(item.Name)"
+                                            disabled="@submitting" aria-label="Create entry for @item.Name">Create entry</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (uncataloged.Truncated)
+            {
+                <p class="form-text px-3 pb-3 mb-0">More names are in use than are listed.</p>
+            }
+        }
+    </section>
+}
+
+@code {
+    private const int PageSize = 50;
+
+    private SignalCatalogListDto? list;
+    private UncatalogedSignalNameListDto? uncataloged;
+    private string? uncatalogedError;
+    private string statusFilter = SignalCatalogStatuses.Active;
+    private string? searchText;
+    private string? appliedName;
+    private int pageNumber = 1;
+
+    private SignalCatalogForm? form;
+    private CatalogReview? review;
+    private string? formError;
+
+    // A problem the form found before any request; the next edit clears it, where a server's
+    // refusal stays until the next request.
+    private string? localProblem;
+    private bool editConflict;
+
+    private SignalCatalogEntryDto? archiveTarget;
+    private SignalCatalogUsageDto? archiveUsage;
+    private string? archiveError;
+    private bool loadingUsage;
+
+    private string? error;
+    private string? success;
+    private bool loading;
+    private bool loadFailed;
+    private bool reviewing;
+    private bool submitting;
+    private long requestVersion;
+    private long uncatalogedRequest;
+    private long identityVersion;
+
+    private ElementReference lastFieldNameInput;
+    private ElementReference addFieldButton;
+    private bool focusLastField;
+    private bool focusAddField;
+
+    // Opening the form moves focus into it, so keyboard users start where the form begins.
+    private enum FormStart { None, Name, Description }
+
+    private FormStart focusFormStart;
+    private ElementReference nameInput;
+    private ElementReference descriptionInput;
+
+    /// <summary>A preview of the form, made from the form whose fingerprint it keeps.</summary>
+    private sealed record CatalogReview(string Fingerprint, SignalCatalogImpactDto Impact);
+
+    /// <summary>The review, while it still describes the form.</summary>
+    private CatalogReview? CurrentReview =>
+        form is not null && review is not null && review.Fingerprint == form.Fingerprint() ? review : null;
+
+    /// <summary>Save is offered only after a clean review of the form as it is now.</summary>
+    private bool CanSave =>
+        CurrentReview is { } current && current.Impact.Problems.Count == 0 && !current.Impact.Truncated;
+
+    private int TotalPages => list is null || list.TotalCount == 0
+        ? 1
+        : (int)Math.Ceiling(list.TotalCount / (double)PageSize);
+
+    private string ResultSummary => loadFailed || list is null
+        ? loading ? "Loading the signal catalog…" : "The signal catalog could not be loaded."
+        : list.TotalCount == 1 ? "1 entry." : $"{list.TotalCount:N0} entries.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Token.Changed += OnTokenChanged;
+        if (Token.HasToken)
+        {
+            await LoadAsync();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (focusFormStart != FormStart.None)
+        {
+            var start = focusFormStart == FormStart.Name ? nameInput : descriptionInput;
+            focusFormStart = FormStart.None;
+            try
+            {
+                await start.FocusAsync();
+            }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException)
+            {
+                // The form closed before the focus call; nothing to do.
+            }
+        }
+
+        // A field added or removed by the keyboard keeps focus in the field table.
+        if (focusLastField || focusAddField)
+        {
+            var target = focusLastField ? lastFieldNameInput : addFieldButton;
+            focusLastField = focusAddField = false;
+            try
+            {
+                await target.FocusAsync();
+            }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException)
+            {
+                // The element left the page before the focus call; nothing to do.
+            }
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        await LoadListAsync();
+        await LoadUncatalogedAsync();
+    }
+
+    // Whether this request replaced the list. A failed or superseded request leaves the previous list in place.
+    private async Task<bool> LoadListAsync()
+    {
+        var currentRequest = ++requestVersion;
+        if (!Token.HasToken)
+        {
+            list = null;
+            loading = false;
+            loadFailed = false;
+            error = null;
+            return false;
+        }
+
+        try
+        {
+            loading = true;
+            loadFailed = false;
+            error = null;
+            var loaded = await Api.GetSignalCatalogEntriesAsync(
+                string.IsNullOrEmpty(appliedName) ? null : appliedName,
+                statusFilter,
+                pageNumber,
+                PageSize);
+            if (currentRequest != requestVersion)
+            {
+                return false;
+            }
+
+            list = loaded;
+            return true;
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return false;
+            }
+
+            loadFailed = true;
+            error = SettingsAdministratorMessage;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            if (currentRequest != requestVersion)
+            {
+                return false;
+            }
+
+            loadFailed = true;
+            error = ex.Message;
+            return false;
+        }
+        finally
+        {
+            if (currentRequest == requestVersion)
+            {
+                loading = false;
+            }
+        }
+    }
+
+    private async Task LoadUncatalogedAsync()
+    {
+        var currentRequest = ++uncatalogedRequest;
+        if (!Token.HasToken)
+        {
+            uncataloged = null;
+            uncatalogedError = null;
+            return;
+        }
+
+        try
+        {
+            var loaded = await Api.GetUncatalogedSignalNamesAsync();
+            if (currentRequest == uncatalogedRequest)
+            {
+                uncataloged = loaded;
+                uncatalogedError = null;
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentRequest == uncatalogedRequest)
+            {
+                uncataloged = null;
+                uncatalogedError = SettingsAdministratorMessage;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentRequest == uncatalogedRequest)
+            {
+                uncataloged = null;
+                uncatalogedError = ex.Message;
+            }
+        }
+    }
+
+    private async Task OnStatusChangedAsync(ChangeEventArgs args)
+    {
+        statusFilter = args.Value?.ToString() == SignalCatalogStatuses.Archived
+            ? SignalCatalogStatuses.Archived
+            : SignalCatalogStatuses.Active;
+        pageNumber = 1;
+        await LoadListAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        appliedName = searchText?.Trim();
+        pageNumber = 1;
+        await LoadListAsync();
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        pageNumber = Math.Max(1, pageNumber - 1);
+        await LoadListAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        pageNumber = Math.Min(TotalPages, pageNumber + 1);
+        await LoadListAsync();
+    }
+
+    private void OpenCreate(string? name = null)
+    {
+        form = SignalCatalogForm.Create(name);
+        ResetFormState();
+        success = null;
+        // A prefilled name is usually right, so the description comes next.
+        focusFormStart = string.IsNullOrEmpty(name) ? FormStart.Name : FormStart.Description;
+    }
+
+    private void OpenEdit(SignalCatalogEntryDto entry)
+    {
+        form = SignalCatalogForm.Edit(entry);
+        ResetFormState();
+        success = null;
+        focusFormStart = FormStart.Description;
+    }
+
+    private void ResetFormState()
+    {
+        review = null;
+        formError = null;
+        localProblem = null;
+        editConflict = false;
+        reviewing = false;
+    }
+
+    private void CloseForm()
+    {
+        if (submitting)
+        {
+            return;
+        }
+
+        form = null;
+        ResetFormState();
+    }
+
+    /// <summary>Any edit of the form ends its review and clears a problem the form found itself.</summary>
+    private void OnFormEdited()
+    {
+        review = null;
+        localProblem = null;
+    }
+
+    private void AddField()
+    {
+        if (form is null)
+        {
+            return;
+        }
+
+        form.AddField();
+        focusLastField = true;
+        OnFormEdited();
+    }
+
+    private void RemoveField(SignalCatalogFieldRow field)
+    {
+        if (form is null)
+        {
+            return;
+        }
+
+        form.Fields.Remove(field);
+        focusAddField = true;
+        OnFormEdited();
+    }
+
+    private async Task ReviewAsync()
+    {
+        if (form is null)
+        {
+            return;
+        }
+
+        review = null;
+        if (form.Problem() is { } problem)
+        {
+            localProblem = problem;
+            return;
+        }
+
+        localProblem = null;
+        var currentIdentity = identityVersion;
+        var reviewed = form;
+        var fingerprint = reviewed.Fingerprint();
+        try
+        {
+            reviewing = true;
+            formError = null;
+            var impact = await Api.PreviewSignalCatalogEntryAsync(reviewed.ToCandidate());
+            // An identity change or an edit while the preview ran ends this review.
+            if (currentIdentity != identityVersion || !ReferenceEquals(form, reviewed) || reviewed.Fingerprint() != fingerprint)
+            {
+                return;
+            }
+
+            review = new CatalogReview(fingerprint, impact);
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion && ReferenceEquals(form, reviewed))
+            {
+                formError = SettingsAdministratorMessage;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity == identityVersion && ReferenceEquals(form, reviewed))
+            {
+                formError = ex.Message;
+            }
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                reviewing = false;
+            }
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (form is null)
+        {
+            return;
+        }
+
+        if (form.Problem() is { } problem)
+        {
+            localProblem = problem;
+            return;
+        }
+
+        if (!CanSave)
+        {
+            localProblem = "Review the changes before saving.";
+            return;
+        }
+
+        localProblem = null;
+
+        var currentIdentity = identityVersion;
+        var saving = form;
+        var name = saving.EntryName;
+        try
+        {
+            submitting = true;
+            formError = null;
+            editConflict = false;
+            error = success = null;
+
+            if (saving.IsEditing)
+            {
+                await Api.UpdateSignalCatalogEntryAsync(name, saving.ToUpdate());
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"Signal catalog entry {name} updated.";
+            }
+            else
+            {
+                await Api.CreateSignalCatalogEntryAsync(saving.ToCandidate());
+                if (currentIdentity != identityVersion)
+                {
+                    return;
+                }
+
+                success = $"Signal catalog entry {name} added.";
+            }
+
+            if (ReferenceEquals(form, saving))
+            {
+                form = null;
+                ResetFormState();
+            }
+
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            // A newer version, a taken name, or live versions that would not fit: the form stays,
+            // and the review ends because what it described may have changed.
+            review = null;
+            editConflict = saving.IsEditing;
+            formError = $"{ex.Message} Your form is preserved.";
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                formError = "This signal catalog entry no longer exists. Close the form and refresh the list.";
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                formError = SettingsAdministratorMessage;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                formError = ex.Message;
+            }
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private async Task ReloadEditAsync()
+    {
+        if (form?.EditingName is not { } name)
+        {
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        var draft = form;
+        try
+        {
+            var latest = await Api.GetSignalCatalogEntryAsync(name);
+            if (currentIdentity != identityVersion || !ReferenceEquals(form, draft))
+            {
+                return;
+            }
+
+            if (latest is null)
+            {
+                formError = "This signal catalog entry no longer exists. Close the form and refresh the list.";
+                editConflict = false;
+                return;
+            }
+
+            OpenEdit(latest);
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion && ReferenceEquals(form, draft))
+            {
+                formError = SettingsAdministratorMessage;
+            }
+        }
+        catch (Exception)
+        {
+            // Only an entry that loaded can replace the draft; otherwise the draft and the conflict stay.
+            if (currentIdentity == identityVersion && ReferenceEquals(form, draft))
+            {
+                formError = "The latest version could not be loaded, so your changes are kept. Try Reload latest again.";
+                editConflict = true;
+            }
+        }
+    }
+
+    private async Task OpenArchiveAsync(SignalCatalogEntryDto entry)
+    {
+        archiveTarget = entry;
+        archiveUsage = null;
+        archiveError = null;
+        success = null;
+        await LoadUsageAsync(entry);
+    }
+
+    private async Task LoadUsageAsync(SignalCatalogEntryDto entry)
+    {
+        var currentIdentity = identityVersion;
+        try
+        {
+            loadingUsage = true;
+            var usage = await Api.GetSignalCatalogUsageAsync(entry.Name);
+            if (currentIdentity == identityVersion && ReferenceEquals(archiveTarget, entry))
+            {
+                archiveUsage = usage;
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion && ReferenceEquals(archiveTarget, entry))
+            {
+                archiveError = SettingsAdministratorMessage;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity == identityVersion && ReferenceEquals(archiveTarget, entry))
+            {
+                archiveError = ex.Message;
+            }
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                loadingUsage = false;
+            }
+        }
+    }
+
+    private void CloseArchive()
+    {
+        if (submitting)
+        {
+            return;
+        }
+
+        archiveTarget = null;
+        archiveUsage = null;
+        archiveError = null;
+    }
+
+    private async Task ArchiveAsync()
+    {
+        if (archiveTarget is not { } entry || archiveUsage is null || !CanArchive(archiveUsage))
+        {
+            return;
+        }
+
+        var currentIdentity = identityVersion;
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Archive signal catalog entry '{entry.Name}'? The name can no longer be thrown or used by a saved workflow until it is reactivated.");
+        if (!confirmed || currentIdentity != identityVersion || !ReferenceEquals(archiveTarget, entry))
+        {
+            return;
+        }
+
+        try
+        {
+            submitting = true;
+            archiveError = null;
+            error = success = null;
+            await Api.ArchiveSignalCatalogEntryAsync(entry.Name, entry.UpdatedAt);
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            archiveTarget = null;
+            archiveUsage = null;
+            if (form?.EditingName == entry.Name)
+            {
+                form = null;
+                ResetFormState();
+            }
+
+            success = $"Signal catalog entry {entry.Name} archived.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                // The API names what still uses the name, or reports a newer version.
+                archiveError = ex.Message;
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                archiveError = "This signal catalog entry no longer exists. Refresh the list.";
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                archiveError = SettingsAdministratorMessage;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                archiveError = ex.Message;
+            }
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private async Task ReactivateAsync(SignalCatalogEntryDto entry)
+    {
+        var currentIdentity = identityVersion;
+        try
+        {
+            submitting = true;
+            error = success = null;
+            await Api.ReactivateSignalCatalogEntryAsync(entry.Name, entry.UpdatedAt);
+            if (currentIdentity != identityVersion)
+            {
+                return;
+            }
+
+            success = $"Signal catalog entry {entry.Name} reactivated.";
+            await LoadAsync();
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                error = SettingsAdministratorMessage;
+            }
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                error = "This signal catalog entry no longer exists. Refresh the list.";
+            }
+        }
+        catch (Exception ex)
+        {
+            if (currentIdentity == identityVersion)
+            {
+                // A 409 names a newer version or the live versions that would not fit.
+                error = ex.Message;
+            }
+        }
+        finally
+        {
+            if (currentIdentity == identityVersion)
+            {
+                submitting = false;
+            }
+        }
+    }
+
+    private void OnTokenChanged() => _ = InvokeAsync(async () =>
+    {
+        identityVersion++;
+        requestVersion++;
+        uncatalogedRequest++;
+        list = null;
+        uncataloged = null;
+        uncatalogedError = null;
+        error = success = null;
+        loading = loadFailed = submitting = reviewing = loadingUsage = false;
+        form = null;
+        ResetFormState();
+        archiveTarget = null;
+        archiveUsage = null;
+        archiveError = null;
+        statusFilter = SignalCatalogStatuses.Active;
+        searchText = appliedName = null;
+        pageNumber = 1;
+        StateHasChanged();
+        await LoadAsync();
+        StateHasChanged();
+    });
+
+    public void Dispose() => Token.Changed -= OnTokenChanged;
+}

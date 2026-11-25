@@ -6,11 +6,13 @@ using System.Net.Http.Json;
 using System.Reflection;
 using System.Text.Json;
 using Flowbit.Shared.Dtos;
+using Flowbit.Shared.Models;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.Web.HtmlRendering;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using SignalFormatting = FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalFormatting;
 using SignalScopeChoice = FlowbitUi::Flowbit.Ui.Components.Shared.Signals.SignalScopeChoice;
 using SignalsPage = FlowbitUi::Flowbit.Ui.Components.Pages.Signals;
 using TokenState = FlowbitUi::Flowbit.Ui.Auth.TokenState;
@@ -589,6 +591,370 @@ public sealed class SignalsPageTests
         Assert.Equal("Minutes", (await harness.ValueAsync<object>("expiryUnit")).ToString());
     }
 
+    private const string CatalogRefusalMessage =
+        "Throwing signal 'claims.policy-changed' needs one of the roles its catalog entry lists: recall-manager.";
+
+    [Fact]
+    public async Task CatalogPanel_ShowsTheEntrysFieldsAndWhetherTheUserMayThrowIt()
+    {
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(entries: [CatalogEntry(), CatalogEntry("claims.other", description: null)]);
+        var component = await harness.RenderAsync();
+
+        // The catalog is read once with the page: active entries, one page of 200.
+        var read = Assert.Single(harness.Paths, path => path.StartsWith("/api/signal-catalog/entries?", StringComparison.Ordinal));
+        Assert.Contains("status=active", read, StringComparison.Ordinal);
+        Assert.Contains("pageSize=200", read, StringComparison.Ordinal);
+
+        // The summary's name comes first and gains the entry's description; the other entry follows.
+        var html = await harness.HtmlAsync(component);
+        var options = System.Text.RegularExpressions.Regex.Matches(html, "<option value=\"([^\"]+)\"( label=\"([^\"]*)\")?[^>]*>")
+            .Where(match => match.Groups[1].Value.StartsWith("claims.", StringComparison.Ordinal))
+            .Select(match => (match.Groups[1].Value, match.Groups[3].Value))
+            .ToList();
+        Assert.Equal([("claims.policy-changed", "A policy changed; open claims re-check it."), ("claims.other", "")], options);
+        Assert.DoesNotContain("signal-catalog-panel", html, StringComparison.Ordinal);
+
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.policy-changed" });
+        html = WebUtility.HtmlDecode(await harness.HtmlAsync(component));
+        Assert.Contains("signal-catalog-panel", html, StringComparison.Ordinal);
+        Assert.Contains("A policy changed; open claims re-check it.", html, StringComparison.Ordinal);
+        Assert.Contains("version</code>: a number, required", html, StringComparison.Ordinal);
+        Assert.Contains("skus</code>: an array of strings, required", html, StringComparison.Ordinal);
+        Assert.Contains("note</code>: a string, optional", html, StringComparison.Ordinal);
+        Assert.Contains("Why it changed.", html, StringComparison.Ordinal);
+        Assert.Contains(SignalFormatting.CatalogCanThrowText, html, StringComparison.Ordinal);
+        Assert.Contains("Insert payload template", html, StringComparison.Ordinal);
+        // An entry among the active ones needs no read of its own.
+        Assert.DoesNotContain(harness.Paths, path => path.StartsWith("/api/signal-catalog/entries/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CatalogPanel_SaysWhyTheUserCannotThrowTheSignal()
+    {
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(entries: [CatalogEntry(canThrow: false, throwRoles: ["recall-manager", "claims-lead"])]);
+        var component = await harness.RenderAsync();
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.policy-changed" });
+
+        var html = WebUtility.HtmlDecode(await harness.HtmlAsync(component));
+        Assert.Contains(
+            "You cannot throw this signal: it needs one of the roles its catalog entry lists: recall-manager, claims-lead.",
+            html, StringComparison.Ordinal);
+        Assert.DoesNotContain(SignalFormatting.CatalogCanThrowText, html, StringComparison.Ordinal);
+        Assert.Equal(
+            "You cannot throw this signal: it needs a role from Signals.RequiredRole.",
+            SignalFormatting.CatalogThrowText(CatalogEntry(canThrow: false)));
+    }
+
+    [Theory]
+    [InlineData(SignalCatalogModes.Optional, "Not in the signal catalog.")]
+    [InlineData(SignalCatalogModes.Required, "Not in the signal catalog. This deployment requires an entry before a throw.")]
+    public async Task CatalogPanel_NotesANameWithoutAnEntryWithTheMode(string mode, string note)
+    {
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(mode, [CatalogEntry()]);
+        var component = await harness.RenderAsync();
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.unknown" });
+
+        // A name not among the active entries is read by itself, to tell an archived entry from none.
+        Assert.Contains("/api/signal-catalog/entries/claims.unknown", harness.Paths);
+        var html = WebUtility.HtmlDecode(await harness.HtmlAsync(component));
+        Assert.Matches($"signal-catalog-note\"[^>]*>{System.Text.RegularExpressions.Regex.Escape(note)}</p>", html);
+        Assert.DoesNotContain("Insert payload template", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CatalogPanel_NotesAnArchivedEntry()
+    {
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(entries: [CatalogEntry()]);
+        harness.CatalogEntries["claims.retired"] = CatalogEntry("claims.retired", status: SignalCatalogStatuses.Archived);
+        var component = await harness.RenderAsync();
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.retired" });
+
+        var html = WebUtility.HtmlDecode(await harness.HtmlAsync(component));
+        Assert.Contains(SignalFormatting.CatalogArchivedNote, html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Insert payload template", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("You can throw", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PayloadTemplate_FillsOnlyAnEmptyBoxWithRequiredFieldsFirst()
+    {
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(entries: [CatalogEntry()]);
+        var component = await harness.RenderAsync();
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.policy-changed" });
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("ReviewAsync");
+        Assert.NotNull(await harness.ValueAsync<object?>("review"));
+
+        await harness.CallAsync("InsertPayloadTemplate");
+        var text = await harness.ValueAsync<string?>("payloadText");
+        using (var template = JsonDocument.Parse(text!))
+        {
+            var members = template.RootElement.EnumerateObject().ToList();
+            Assert.Equal(["version", "skus", "note", "effective", "changedAt", "urgent", "details"], members.Select(member => member.Name));
+            Assert.Equal(0, members[0].Value.GetInt32());
+            Assert.Equal(JsonValueKind.Array, members[1].Value.ValueKind);
+            Assert.Equal(0, members[1].Value.GetArrayLength());
+            Assert.Equal(string.Empty, members[2].Value.GetString());
+            Assert.Equal("2026-01-01", members[3].Value.GetString());
+            Assert.Equal(DateTimeOffset.Parse("2026-01-01T09:00:00Z"), members[4].Value.GetDateTimeOffset());
+            Assert.False(members[5].Value.GetBoolean());
+            // A json field gets an empty object, never null, which the catalog refuses.
+            Assert.Equal(JsonValueKind.Object, members[6].Value.ValueKind);
+            Assert.Empty(members[6].Value.EnumerateObject());
+        }
+
+        // The whole template, as inserted, fits the entry it was made from.
+        var entry = CatalogEntry();
+        Assert.Null(Flowbit.Service.Services.SignalCatalogContract.PayloadProblem(
+            new Flowbit.Service.Models.SignalCatalogEntryRecord(
+                1, entry.Name, entry.Description, entry.Status, entry.Fields, entry.ThrowRoles, entry.AllowClients,
+                entry.AllowWorkflows, entry.CreatedAt, entry.CreatedBy, entry.UpdatedAt, entry.UpdatedBy, entry.ArchivedAt),
+            JsonDocument.Parse(text!).RootElement.Clone()));
+
+        // Inserting is a payload edit: it ends the review.
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        var button = System.Text.RegularExpressions.Regex.Match(
+            await harness.HtmlAsync(component), "<button type=\"button\" id=\"signal-insert-template\"[^>]*>").Value;
+        Assert.Contains("disabled", button, StringComparison.Ordinal);
+
+        // A typed payload is never replaced.
+        await harness.SetAsync("payloadText", "{ \"version\": 9 }");
+        await harness.CallAsync("InsertPayloadTemplate");
+        Assert.Equal("{ \"version\": 9 }", await harness.ValueAsync<string?>("payloadText"));
+    }
+
+    [Fact]
+    public async Task Review_ShowsTheCatalogEntryOrNoEntry()
+    {
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(entries: [CatalogEntry()]);
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.policy-changed" });
+        await harness.CallAsync("ReviewAsync");
+        Assert.Matches("signal-review-catalog\"[^>]*>claims.policy-changed</dd>", await harness.HtmlAsync(component));
+
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.unknown" });
+        Assert.Null(await harness.ValueAsync<object?>("review"));
+        await harness.CallAsync("ReviewAsync");
+        Assert.Matches("signal-review-catalog\"[^>]*>No entry</dd>", await harness.HtmlAsync(component));
+
+        Assert.Equal("claims.retired (archived)", SignalFormatting.CatalogReviewText(
+            CatalogEntry("claims.retired", status: SignalCatalogStatuses.Archived)));
+    }
+
+    [Fact]
+    public async Task CatalogRead403_HidesTheCatalogAndKeepsThePage()
+    {
+        await using var harness = new Harness();
+        harness.CatalogFailure = HttpStatusCode.Forbidden;
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.policy-changed" });
+        await harness.CallAsync("ReviewAsync");
+
+        Assert.False(await harness.ValueAsync<bool>("authorizationDenied"));
+        Assert.Null(await harness.ValueAsync<SignalCatalogListDto?>("catalog"));
+        Assert.Equal("claims.policy-changed", await harness.ValueAsync<string>("signalName"));
+        Assert.NotNull(await harness.ValueAsync<PagedResult<SignalBroadcastSummaryDto>?>("history"));
+        Assert.NotNull(await harness.ValueAsync<object?>("review"));
+        var html = await harness.HtmlAsync(component);
+        Assert.DoesNotContain("signal-catalog-panel", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("signal-review-catalog", html, StringComparison.Ordinal);
+        Assert.Contains("Throw signal", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CancelPendingDeliveries_StaysOfferedToTheThrowerWhateverTheEntrySays()
+    {
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(entries: [CatalogEntry(canThrow: false, throwRoles: ["recall-manager"])]);
+        var component = await harness.RenderAsync();
+        harness.DetailStatus = SignalBroadcastStatuses.Delivering;
+        await harness.CallAsync("OpenBroadcastAsync", 41L);
+        Assert.Contains("Cancel pending deliveries", await harness.HtmlAsync(component), StringComparison.Ordinal);
+
+        await harness.CallAsync("CancelAsync");
+        Assert.Contains(harness.Posts, post => post.Path == "/api/signal-broadcasts/41/cancel");
+        Assert.Contains("Broadcast #41 was cancelled", await harness.HtmlAsync(component), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CatalogRefusalOfAThrow_IsShownAndThePageKeepsItsData()
+    {
+        await using var harness = new Harness();
+        harness.RefusePost = path => path == "/api/signal-broadcasts" ? CatalogRefusal(CatalogRefusalMessage) : null;
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.SetAsync("payloadText", "{ \"version\": 7 }");
+        await harness.CallAsync("ReviewAsync");
+        var historyReads = harness.Paths.Count(IsHistoryRead);
+
+        await harness.CallAsync("ThrowAsync");
+
+        Assert.Single(harness.Posts);
+        Assert.False(await harness.ValueAsync<bool>("authorizationDenied"));
+        Assert.Equal(CatalogRefusalMessage, await harness.ValueAsync<string?>("error"));
+        Assert.Equal("claims.policy-changed", await harness.ValueAsync<string>("signalName"));
+        Assert.Equal("{ \"version\": 7 }", await harness.ValueAsync<string?>("payloadText"));
+        Assert.NotNull(await harness.ValueAsync<PagedResult<SignalBroadcastSummaryDto>?>("history"));
+        // The broadcast list is read once more, to tell the refusal from a lost permission.
+        Assert.Equal(historyReads + 1, harness.Paths.Count(IsHistoryRead));
+        var html = WebUtility.HtmlDecode(await harness.HtmlAsync(component));
+        Assert.Contains(CatalogRefusalMessage, html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Signal permission is required", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CatalogRefusalOfCancelAndRetry_KeepsTheBroadcast()
+    {
+        const string cancelMessage =
+            "Cancelling signal 'claims.policy-changed' needs one of the roles its catalog entry lists: recall-manager.";
+        const string retryMessage =
+            "Retrying signal 'claims.policy-changed' needs one of the roles its catalog entry lists: recall-manager.";
+        await using var harness = new Harness();
+        harness.RefusePost = path => path switch
+        {
+            "/api/signal-broadcasts/41/cancel" => CatalogRefusal(cancelMessage),
+            "/api/signal-broadcasts/41/retry-failed" => CatalogRefusal(retryMessage),
+            _ => null
+        };
+        var component = await harness.RenderAsync();
+        harness.DetailStatus = SignalBroadcastStatuses.Delivering;
+        await harness.CallAsync("OpenBroadcastAsync", 41L);
+
+        await harness.CallAsync("CancelAsync");
+        Assert.Equal(cancelMessage, await harness.ValueAsync<string?>("error"));
+        Assert.Equal(41L, (await harness.ValueAsync<SignalBroadcastDetailDto?>("currentBroadcast"))!.Id);
+        Assert.False(await harness.ValueAsync<bool>("authorizationDenied"));
+
+        harness.DetailStatus = SignalBroadcastStatuses.CompletedWithIssues;
+        harness.DetailFailedCount = 2;
+        await harness.CallAsync("RefreshCurrentBroadcastAsync");
+        await harness.CallAsync("RetryFailedAsync");
+        Assert.Equal(retryMessage, await harness.ValueAsync<string?>("error"));
+        Assert.Equal(41L, (await harness.ValueAsync<SignalBroadcastDetailDto?>("currentBroadcast"))!.Id);
+        Assert.False(await harness.ValueAsync<bool>("authorizationDenied"));
+        Assert.Contains("Retry 2 failed", await harness.HtmlAsync(component), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CatalogRefusalFollowedByARefusedListRead_ClearsThePageAsALostIdentity()
+    {
+        await using var harness = new Harness();
+        harness.RefusePost = path => path == "/api/signal-broadcasts" ? CatalogRefusal(CatalogRefusalMessage) : null;
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("ReviewAsync");
+        harness.DenyHistory = true;
+
+        await harness.CallAsync("ThrowAsync");
+
+        Assert.True(await harness.ValueAsync<bool>("authorizationDenied"));
+        Assert.Equal(string.Empty, await harness.ValueAsync<string>("signalName"));
+        Assert.Null(await harness.ValueAsync<string?>("error"));
+        var html = await harness.HtmlAsync(component);
+        Assert.Contains("Signal permission is required", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("claims.policy-changed", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PolicyRefusalWithoutABody_StillClearsThePageAtOnce()
+    {
+        await using var harness = new Harness();
+        harness.RefusePost = path => path == "/api/signal-broadcasts" ? new HttpResponseMessage(HttpStatusCode.Forbidden) : null;
+        var component = await harness.RenderAsync();
+        await harness.SetAsync("signalName", "claims.policy-changed");
+        await harness.SetAsync("scopeChoice", SignalScopeChoice.AllWorkflows);
+        await harness.CallAsync("ReviewAsync");
+        var historyReads = harness.Paths.Count(IsHistoryRead);
+
+        await harness.CallAsync("ThrowAsync");
+
+        Assert.True(await harness.ValueAsync<bool>("authorizationDenied"));
+        Assert.Equal(historyReads, harness.Paths.Count(IsHistoryRead));
+        Assert.Contains("Signal permission is required", await harness.HtmlAsync(component), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CatalogText_IsRenderedAsText()
+    {
+        const string markup = "<img src=x onerror=alert(1)>";
+        await using var harness = new Harness();
+        harness.Catalog = CatalogList(entries: [CatalogEntry(
+            description: markup,
+            throwRoles: [markup],
+            canThrow: false,
+            fields: [new SignalCatalogFieldDto("note", WorkflowVariableTypes.String, Description: markup)])]);
+        var component = await harness.RenderAsync();
+        await harness.CallAsync("OnSignalNameChangedAsync", new ChangeEventArgs { Value = "claims.policy-changed" });
+
+        var html = await harness.HtmlAsync(component);
+        Assert.DoesNotContain("<img", html, StringComparison.Ordinal);
+        Assert.Contains("&lt;img src=x onerror=alert(1)&gt;", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NameOptions_ListTheSummaryNamesFirstAndShortenLongDescriptions()
+    {
+        var longDescription = new string('a', 130);
+        var options = SignalFormatting.NameOptions(
+            ["b.wait", "a.cataloged"],
+            [
+                CatalogEntry("a.cataloged", description: "Cataloged and awaited."),
+                CatalogEntry("c.long", description: longDescription),
+                CatalogEntry("d.archived", status: SignalCatalogStatuses.Archived)
+            ]);
+
+        Assert.Equal(["b.wait", "a.cataloged", "c.long"], options.Select(option => option.Value));
+        Assert.Null(options[0].Label);
+        Assert.Equal("Cataloged and awaited.", options[1].Label);
+        Assert.Equal(SignalFormatting.MaxNameOptionLabelLength, options[2].Label!.Length);
+        Assert.EndsWith("…", options[2].Label, StringComparison.Ordinal);
+    }
+
+    private static bool IsHistoryRead(string path) =>
+        path.StartsWith("/api/signal-broadcasts?", StringComparison.Ordinal);
+
+    private static HttpResponseMessage CatalogRefusal(string message) =>
+        new(HttpStatusCode.Forbidden)
+        {
+            Content = JsonContent.Create(new { code = "signal_catalog_forbidden", error = message })
+        };
+
+    private static SignalCatalogEntryDto CatalogEntry(
+        string name = "claims.policy-changed",
+        bool canThrow = true,
+        IReadOnlyList<string>? throwRoles = null,
+        string status = SignalCatalogStatuses.Active,
+        string? description = "A policy changed; open claims re-check it.",
+        IReadOnlyList<SignalCatalogFieldDto>? fields = null) =>
+        new(name, description, status,
+            fields ??
+            [
+                new SignalCatalogFieldDto("note", WorkflowVariableTypes.String, Description: "Why it changed."),
+                new SignalCatalogFieldDto("version", WorkflowVariableTypes.Number, Required: true),
+                new SignalCatalogFieldDto("skus", WorkflowVariableTypes.String, IsArray: true, Required: true),
+                new SignalCatalogFieldDto("effective", WorkflowVariableTypes.Date),
+                new SignalCatalogFieldDto("changedAt", WorkflowVariableTypes.DateTime),
+                new SignalCatalogFieldDto("urgent", WorkflowVariableTypes.Boolean),
+                new SignalCatalogFieldDto("details", WorkflowVariableTypes.Json)
+            ],
+            throwRoles ?? [], true, true, canThrow, Now, "admin", Now, "admin",
+            status == SignalCatalogStatuses.Archived ? Now : null);
+
+    private static SignalCatalogListDto CatalogList(
+        string mode = SignalCatalogModes.Optional,
+        IReadOnlyList<SignalCatalogEntryDto>? entries = null) =>
+        new(entries ?? [], 1, 200, entries?.Count ?? 0, mode, ["admin"]);
+
     private static SignalBroadcastDetailDto Detail(long id, string status) =>
         new(id, "claims.policy-changed", "claims", false, null, null, status, 3,
             status == SignalBroadcastStatuses.Delivering ? 3 : 0,
@@ -644,6 +1010,21 @@ public sealed class SignalsPageTests
 
         /// <summary>Broadcast 41's failed deliveries.</summary>
         public int DetailFailedCount { get; set; }
+
+        /// <summary>The active catalog entries the page reads; null answers 404, as before the catalog.</summary>
+        public SignalCatalogListDto? Catalog { get; set; }
+
+        /// <summary>When set, every catalog read answers this status.</summary>
+        public HttpStatusCode? CatalogFailure { get; set; }
+
+        /// <summary>The entries a read of one name finds; any other name answers 404.</summary>
+        public ConcurrentDictionary<string, SignalCatalogEntryDto> CatalogEntries { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>When it returns a response for a POST path, the POST answers it instead of succeeding.</summary>
+        public Func<string, HttpResponseMessage?>? RefusePost { get; set; }
+
+        /// <summary>When set, the broadcast list answers 403 without a body.</summary>
+        public volatile bool DenyHistory;
 
         public Harness()
         {
@@ -729,10 +1110,33 @@ public sealed class SignalsPageTests
                     };
                 }
 
+                if (path.StartsWith("/api/signal-catalog/entries", StringComparison.Ordinal))
+                {
+                    if (harness.CatalogFailure is { } failure)
+                    {
+                        return new HttpResponseMessage(failure);
+                    }
+                    if (path.StartsWith("/api/signal-catalog/entries?", StringComparison.Ordinal))
+                    {
+                        // No catalog configured: the route answers 404, as before EVENT-04F.
+                        return harness.Catalog is { } catalog
+                            ? Json(HttpStatusCode.OK, catalog)
+                            : new HttpResponseMessage(HttpStatusCode.NotFound);
+                    }
+                    var name = Uri.UnescapeDataString(path["/api/signal-catalog/entries/".Length..]);
+                    return harness.CatalogEntries.TryGetValue(name, out var entry)
+                        ? Json(HttpStatusCode.OK, entry)
+                        : new HttpResponseMessage(HttpStatusCode.NotFound);
+                }
+
                 if (request.Method == HttpMethod.Post)
                 {
                     var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken);
                     lock (harness.Posts) harness.Posts.Add(new RecordedPost(path, body));
+                    if (harness.RefusePost?.Invoke(path) is { } refusal)
+                    {
+                        return refusal;
+                    }
                     return Json(HttpStatusCode.Accepted, Detail(41, SignalBroadcastStatuses.Delivering) with
                     {
                         ExpiresAt = harness.DetailExpiresAt
@@ -805,6 +1209,11 @@ public sealed class SignalsPageTests
 
                 if (path.StartsWith("/api/signal-broadcasts?", StringComparison.Ordinal))
                 {
+                    if (harness.DenyHistory)
+                    {
+                        // An authorization policy's refusal carries no body.
+                        return new HttpResponseMessage(HttpStatusCode.Forbidden);
+                    }
                     return Json(HttpStatusCode.OK, new PagedResult<SignalBroadcastSummaryDto>([], 1, 25, 0));
                 }
 

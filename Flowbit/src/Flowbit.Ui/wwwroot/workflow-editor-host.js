@@ -41,6 +41,10 @@ export async function create(root, dotnet, urls) {
         timerSchedules: {
             preview: request => askHost("PreviewTimerSchedule", request),
             timeZones: () => askHost("GetTimerScheduleTimeZones")
+        },
+        signalCatalog: {
+            entries: () => askHost("GetSignalCatalog"),
+            entry: name => askHost("GetSignalCatalogEntry", name)
         }
     });
     const removed = new MutationObserver(() => { if (!root.isConnected) dispose(); });

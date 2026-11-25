@@ -1006,6 +1006,17 @@ const cronPreview = {
 };
 // Server time-zone suggestions, fetched once per mount when first needed: null, a pending promise, or a list.
 let cronTimeZoneSuggestions = null;
+// Inspector-only: the hosted signal catalog (options.signalCatalog). The list of active
+// entries is asked for once per mount, when the first signal section renders, and each entry
+// once per name. Replies never enter the model, history, the saved baseline, or AI
+// snapshots, and a failed or forbidden reply leaves the inspector as it is without a catalog.
+// view is the catalog part on screen; a reply redraws it only while its node is still the
+// one selected, and every inspector redraw replaces it.
+const signalCatalogCache = {
+  list: null,          // null until asked, then "pending", "failed", or { byName, mode, truncated }
+  entries: new Map(),  // name -> "pending", "failed", { status: "missing" }, or { status: "ok", entry }
+  view: null           // { node, signal, selection, refresh }
+};
 const openInspectorHelp = new Set();
 let inspectorHelpSequence = 0;
 let notifiedViewerSelection = null;
@@ -3836,6 +3847,7 @@ function linkInspectorLabels(scope = inspector) {
 function renderInspectorContent() {
   inspectorItemDeleteButtons = [];
   automaticBodyStatusRefresh = null;
+  signalCatalogCache.view = null;
   inspector.innerHTML = "";
   // A viewer has no inspector; its host describes the selected node.
   if (viewerMode) return;
@@ -5531,6 +5543,7 @@ function signalNamesInDiagram(exceptNode) {
 }
 
 function renderSignalSection(node) {
+  requestSignalCatalogList();
   // A throw or end event sends a signal, so it gets the throw mode: a scope and a payload
   // instead of output mappings.
   if (throwsSignalType(node.type)) {
@@ -5650,27 +5663,31 @@ function signalSelfStartProblemsFor(candidate, startNode) {
 
 // The Signal name field of every signal event, with the names of the diagram's other signal
 // events as suggestions and a live status line. onChange runs after each edit, so a throw can
-// refresh the status lines that depend on the name.
+// refresh the status lines that depend on the name. A hosted editor with the signal catalog
+// also suggests cataloged names and shows the name's entry under the field.
 function renderSignalNameField(node, signal, onChange = null) {
+  let catalogPart = null;
   const nameInput = field("Signal name", "text", signal.name == null ? "" : String(signal.name), value => {
     signal.name = value;
     updateNameStatus();
+    if (catalogPart) catalogPart.refresh(false);
     if (onChange) onChange();
   });
   nameInput.setAttribute("data-signal-name", "true");
   nameInput.placeholder = "claims.policy-changed";
   nameInput.spellcheck = false;
   const knownNames = signalNamesInDiagram(node);
-  if (knownNames.length > 0) {
-    const list = document.createElement("datalist");
-    list.id = `signal-name-suggestions-${++writableTargetSuggestionId}`;
+  let suggestions = null;
+  if (knownNames.length > 0 || options.signalCatalog) {
+    suggestions = document.createElement("datalist");
+    suggestions.id = `signal-name-suggestions-${++writableTargetSuggestionId}`;
     knownNames.forEach(name => {
       const option = document.createElement("option");
       option.value = name;
-      list.appendChild(option);
+      suggestions.appendChild(option);
     });
-    nameInput.setAttribute("list", list.id);
-    nameInput.parentNode.appendChild(list);
+    nameInput.setAttribute("list", suggestions.id);
+    nameInput.parentNode.appendChild(suggestions);
   }
   const nameStatus = document.createElement("p");
   nameStatus.className = "expression-validation";
@@ -5697,10 +5714,306 @@ function renderSignalNameField(node, signal, onChange = null) {
       : problem;
   };
   updateNameStatus();
+  if (options.signalCatalog) {
+    catalogPart = renderSignalCatalogPart(node, signal, nameInput, suggestions, knownNames);
+  }
   attachInspectorHelp(nameInput, "signal-name",
     "A literal name compared exactly: 1 to 100 lowercase letters, digits, '.', '_', or '-', starting with a letter or digit. Start it with a dotted prefix, such as `claims.policy-changed`, so that unrelated workflows do not share a name by accident.",
     ["claims.policy-changed"]);
   return nameInput;
+}
+
+// Asks the host once per mount for the active catalog entries.
+function requestSignalCatalogList() {
+  if (!options.signalCatalog || signalCatalogCache.list !== null) return;
+  signalCatalogCache.list = "pending";
+  askSignalCatalog(() => options.signalCatalog.entries()).then(reply => {
+    if (disposed) return;
+    signalCatalogCache.list = signalCatalogListOutcome(reply);
+    refreshSignalCatalogView();
+  });
+}
+
+// Asks the host once per name for an entry with its fields.
+function requestSignalCatalogEntry(name) {
+  if (!options.signalCatalog || signalCatalogCache.entries.has(name)) return;
+  signalCatalogCache.entries.set(name, "pending");
+  askSignalCatalog(() => options.signalCatalog.entry(name)).then(reply => {
+    if (disposed) return;
+    signalCatalogCache.entries.set(name, signalCatalogEntryOutcome(reply, name));
+    refreshSignalCatalogView();
+  });
+}
+
+// A host call that never throws: a refused or broken call answers null, as a failure does.
+function askSignalCatalog(call) {
+  try {
+    return Promise.resolve(call()).catch(() => null);
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
+function signalCatalogListOutcome(reply) {
+  if (!reply || reply.status !== "ok" || !Array.isArray(reply.entries)) return "failed";
+  const byName = new Map();
+  for (const item of reply.entries) {
+    if (!item || typeof item.name !== "string" || !SIGNAL_NAME_PATTERN.test(item.name) || byName.has(item.name)) continue;
+    byName.set(item.name, {
+      name: item.name,
+      description: typeof item.description === "string" && item.description ? item.description : null,
+      allowWorkflows: item.allowWorkflows !== false
+    });
+  }
+  return { byName, mode: reply.mode === "required" ? "required" : "optional", truncated: reply.truncated === true };
+}
+
+function signalCatalogEntryOutcome(reply, name) {
+  if (reply && reply.status === "missing") return { status: "missing" };
+  const entry = reply && reply.status === "ok" ? reply.entry : null;
+  if (!entry || typeof entry !== "object" || entry.name !== name) return "failed";
+  const fields = (Array.isArray(entry.fields) ? entry.fields : [])
+    .filter(item => item && typeof item.name === "string" && item.name && VARIABLE_DATA_TYPES.includes(item.dataType))
+    .map(item => ({
+      name: item.name,
+      dataType: item.dataType,
+      isArray: item.isArray === true,
+      required: item.required === true,
+      description: typeof item.description === "string" && item.description ? item.description : null
+    }));
+  return {
+    status: "ok",
+    entry: {
+      name,
+      description: typeof entry.description === "string" && entry.description ? entry.description : null,
+      archived: entry.status === "archived",
+      allowWorkflows: entry.allowWorkflows !== false,
+      fields
+    }
+  };
+}
+
+// Redraws the catalog part on screen after a reply, only while its node is still selected.
+function refreshSignalCatalogView() {
+  const view = signalCatalogCache.view;
+  if (!view || view.selection !== selected || getNode(view.node.id) !== view.node ||
+      view.node.signal !== view.signal) return;
+  view.refresh(true);
+}
+
+// What the catalog says about a signal's name: null while nothing is known (no catalog, a name
+// that is empty or invalid, a reply still pending or failed), else the entry or a note.
+function signalCatalogFinding(signal) {
+  const list = signalCatalogCache.list;
+  if (!list || typeof list !== "object") return null;
+  const name = signal.name;
+  if (signalNameProblem(name, "") !== null) return null;
+  const reply = signalCatalogCache.entries.get(name);
+  if (!reply || typeof reply !== "object") return null;
+  if (reply.status === "missing") return { kind: "missing", required: list.mode === "required" };
+  return reply.entry.archived ? { kind: "archived" } : { kind: "entry", entry: reply.entry };
+}
+
+function signalCatalogTypeText(field) {
+  return field.dataType + (field.isArray ? "[]" : "");
+}
+
+// The fields of an entry that this event does not use yet: for a throw or end event the ones
+// its payload does not send, by name ignoring case as payload names are compared; for a
+// catch, boundary, or start the ones no mapping reads, by the first segment of its path.
+function signalCatalogMissingFields(node, signal, entry) {
+  if (throwsSignalType(node.type)) {
+    const payload = signal.payload;
+    if (payload !== undefined && payload !== null && !Array.isArray(payload)) return [];
+    const sent = new Set((Array.isArray(payload) ? payload : [])
+      .filter(item => isPlainSignalObject(item) && typeof item.name === "string")
+      .map(item => ordinalIgnoreCaseAttributeKey(item.name)));
+    return entry.fields.filter(field => !sent.has(ordinalIgnoreCaseAttributeKey(field.name)));
+  }
+  if (!Array.isArray(signal.outputMappings)) return [];
+  const read = new Set(signal.outputMappings
+    .filter(mapping => mapping && typeof mapping.path === "string")
+    .map(mapping => mapping.path.split(".")[0]));
+  return entry.fields.filter(field => !read.has(field.name));
+}
+
+const SIGNAL_CATALOG_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// The variable a new payload entry or mapping names for a field: the field's name when it is a
+// plain identifier that no declaration gives another type, else "" for the author to choose.
+// A declared variable keeps its own spelling. A mapping never targets a shared alias or a
+// variable another mapping of this event writes, and a start's mapping never a process variable.
+function signalCatalogVariableFor(node, signal, field, declarations) {
+  if (!SIGNAL_CATALOG_VARIABLE_NAME.test(field.name)) return "";
+  const key = field.name.toLowerCase();
+  const declared = declarations.get(key) || [];
+  if (declared.some(item => item.isShared || item.dataType !== field.dataType || !!item.isArray !== field.isArray)) {
+    return "";
+  }
+  const sameName = value => typeof value === "string" && value.trim().toLowerCase() === key;
+  if (isSignalStartEventType(node.type) && model.variables.some(variable => variable && sameName(variable.name))) {
+    return "";
+  }
+  if (!throwsSignalType(node.type) && Array.isArray(signal.outputMappings) &&
+      signal.outputMappings.some(mapping => mapping && sameName(mapping.variable))) {
+    return "";
+  }
+  return declared.length > 0 ? declared[0].name : field.name;
+}
+
+// Adds a payload entry or a mapping row for each field this event does not use yet. The
+// editor-root listeners record the click as one change; focus moves to the first new row.
+function addMissingSignalCatalogFields(node, signal) {
+  const finding = signalCatalogFinding(signal);
+  if (!finding || finding.kind !== "entry") return;
+  const missing = signalCatalogMissingFields(node, signal, finding.entry);
+  if (missing.length === 0) return;
+  const declarations = callSourceDeclarations(model);
+  if (throwsSignalType(node.type)) {
+    if (!Array.isArray(signal.payload)) signal.payload = [];
+    const first = signal.payload.length;
+    for (const field of missing) {
+      const added = { name: field.name };
+      const variable = signalCatalogVariableFor(node, signal, field, declarations);
+      if (variable) added.variable = variable;
+      if (field.required) added.required = true;
+      signal.payload.push(added);
+    }
+    renderInspector();
+    inspector.querySelector(`[data-signal-payload-name="${first}"]`)?.focus();
+    return;
+  }
+  const mappings = signal.outputMappings;
+  const first = mappings.length;
+  // Each row is checked against the rows added before it, so two fields never share a target.
+  for (const field of missing) {
+    mappings.push({
+      variable: signalCatalogVariableFor(node, signal, field, declarations),
+      path: field.name, dataType: field.dataType, isArray: field.isArray,
+      required: field.required, defaultValue: null, validation: null
+    });
+  }
+  renderInspector();
+  inspector.querySelector(`[data-signal-mapping="${first}"]`)?.focus();
+}
+
+// Fills the name suggestions: the diagram's names, then the cataloged names they lack, each
+// with its short description as its label. A throw or end event is offered only the entries
+// that let workflows throw. Catalog text is set as element properties, never as markup.
+function fillSignalNameSuggestions(datalist, node, knownNames) {
+  const list = signalCatalogCache.list && typeof signalCatalogCache.list === "object" ? signalCatalogCache.list : null;
+  const throwing = throwsSignalType(node.type);
+  const items = [];
+  const suggestion = (name, summary) => {
+    const option = document.createElement("option");
+    option.value = name;
+    if (summary && summary.description) option.label = summary.description;
+    items.push(option);
+  };
+  for (const name of knownNames) suggestion(name, list && list.byName.get(name));
+  if (list) {
+    const known = new Set(knownNames);
+    for (const summary of list.byName.values()) {
+      if (known.has(summary.name) || (throwing && !summary.allowWorkflows)) continue;
+      suggestion(summary.name, summary);
+    }
+  }
+  datalist.replaceChildren(...items);
+}
+
+// The catalog part under a signal's name: a status region with the name's entry (its
+// description and fields) or one note, and Add missing fields. It asks for the entry of a
+// listed name at once; a name the list lacks, which may be archived, is asked for when the
+// part is drawn or the name is committed, never on each keystroke. Notes are hints: the
+// server decides when the workflow is saved or published.
+function renderSignalCatalogPart(node, signal, nameInput, suggestions, knownNames) {
+  const block = document.createElement("div");
+  block.className = "signal-catalog";
+  block.id = "signal-catalog-" + String(node.id);
+  block.setAttribute("role", "status");
+  block.setAttribute("aria-live", "polite");
+  block.setAttribute("aria-label", "Signal catalog");
+  const details = document.createElement("div");
+  details.className = "signal-catalog-details";
+  details.id = block.id + "-details";
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "signal-catalog-add";
+  add.textContent = "Add missing fields";
+  add.setAttribute("data-signal-catalog-add", "true");
+  add.hidden = true;
+  add.onclick = () => addMissingSignalCatalogFields(node, signal);
+  block.appendChild(details);
+  block.appendChild(add);
+  inspector.appendChild(block);
+  const describedBy = nameInput.getAttribute("aria-describedby");
+  nameInput.setAttribute("aria-describedby", describedBy ? `${describedBy} ${details.id}` : details.id);
+
+  let filledFrom;
+  let shown = null;
+  const line = (className, text) => {
+    const paragraph = document.createElement("p");
+    paragraph.className = className;
+    paragraph.textContent = text;
+    return paragraph;
+  };
+  const refresh = askUnlisted => {
+    if (suggestions && filledFrom !== signalCatalogCache.list) {
+      filledFrom = signalCatalogCache.list;
+      fillSignalNameSuggestions(suggestions, node, knownNames);
+    }
+    const list = signalCatalogCache.list;
+    const name = signal.name;
+    if (list && typeof list === "object" && signalNameProblem(name, "") === null &&
+        (list.byName.has(name) || askUnlisted)) {
+      requestSignalCatalogEntry(name);
+    }
+    const finding = signalCatalogFinding(signal);
+    let parts = [];
+    let missing = [];
+    if (finding && finding.kind === "missing") {
+      parts = [["signal-catalog-note", "Not in the signal catalog." +
+        (finding.required ? " This deployment requires an entry before publication." : "")]];
+    } else if (finding && finding.kind === "archived") {
+      parts = [["signal-catalog-note", "Archived in the signal catalog."]];
+    } else if (finding && throwsSignalType(node.type) && !finding.entry.allowWorkflows) {
+      parts = [["signal-catalog-note", "Workflows may not throw this signal."]];
+    } else if (finding) {
+      const entry = finding.entry;
+      parts.push(["signal-catalog-title", "Signal catalog entry"]);
+      if (entry.description) parts.push(["signal-catalog-description", entry.description]);
+      if (entry.fields.length === 0) parts.push(["signal-catalog-empty", "This signal has no payload fields."]);
+      else parts.push(["fields", entry.fields]);
+      missing = signalCatalogMissingFields(node, signal, entry);
+    }
+    add.hidden = missing.length === 0;
+    block.classList.toggle("is-empty", parts.length === 0);
+    const signature = JSON.stringify(parts);
+    if (signature === shown) return;
+    shown = signature;
+    details.replaceChildren(...parts.map(([className, value]) => {
+      if (className !== "fields") return line(className, value);
+      const fieldList = document.createElement("ul");
+      fieldList.className = "signal-catalog-fields";
+      fieldList.setAttribute("aria-label", "Payload fields");
+      for (const field of value) {
+        const item = document.createElement("li");
+        const fieldName = document.createElement("span");
+        fieldName.className = "signal-catalog-field-name";
+        fieldName.textContent = field.name;
+        item.appendChild(fieldName);
+        item.appendChild(document.createTextNode(
+          " " + signalCatalogTypeText(field) + ", " + (field.required ? "required" : "optional")));
+        if (field.description) item.title = field.description;
+        fieldList.appendChild(item);
+      }
+      return fieldList;
+    }));
+  };
+  listen(nameInput, "change", () => refresh(true));
+  signalCatalogCache.view = { node, signal, selection: selected, refresh };
+  refresh(true);
+  return { refresh };
 }
 
 // The output mappings of a signal catch, boundary, or start, under their heading. A start's
@@ -17793,15 +18106,17 @@ if (!viewerMode) {
     if (historyCommitTimer !== null) commitHistory();
   }, true);
   // Runs after the field's own handler has written the model.
-  const refreshAutomaticBodyStatus = event => {
+  const refreshInspectorStatus = event => {
     if (automaticBodyStatusRefresh && inspector.contains(event.target)) automaticBodyStatusRefresh();
+    // A payload name or a mapping path decides which catalog fields are still missing.
+    if (signalCatalogCache.view && inspector.contains(event.target)) signalCatalogCache.view.refresh(false);
   };
   listen(root, "input", event => {
     if (event.target === diagramSearchInput ||
         event.target === gridSizeInput ||
         event.target === traceOpacityInput ||
         event.target.id === "js-editor-textarea") return;
-    refreshAutomaticBodyStatus(event);
+    refreshInspectorStatus(event);
     scheduleHistoryCommit();
   });
   listen(root, "change", event => {
@@ -17809,7 +18124,7 @@ if (!viewerMode) {
         event.target === snapToGridInput ||
         event.target === gridSizeInput ||
         event.target === traceOpacityInput) return;
-    refreshAutomaticBodyStatus(event);
+    refreshInspectorStatus(event);
     commitHistory();
   });
   listen(root, "pointerup", () => queueMicrotask(commitHistory));

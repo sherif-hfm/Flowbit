@@ -57,6 +57,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IInstanceVariableUpdateBatchJobProcessor, InstanceVariableUpdateBatchJobProcessor>();
         services.AddScoped<SignalBroadcastWriter>();
         services.AddScoped<ISignalBroadcastService, SignalBroadcastService>();
+        services.AddScoped<ISignalCatalogService, SignalCatalogService>();
         services.AddScoped<ISignalBroadcastJobProcessor, SignalBroadcastJobProcessor>();
         services.AddScoped<ISignalBroadcastExpirer, SignalBroadcastExpirer>();
         services.AddScoped<ISignalDeliveryExecutor>(provider =>

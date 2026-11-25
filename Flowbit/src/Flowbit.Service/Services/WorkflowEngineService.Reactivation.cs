@@ -81,6 +81,9 @@ public sealed partial class WorkflowEngineService
         await using (var transaction = await unitOfWork.BeginTransactionAsync(
                          cancellationToken))
         {
+            // Before any runtime row: the shared locks of the expected version's signal names, so
+            // no catalog write can change an entry the check below reads (EVENT-04F).
+            await LockReactivationSignalNamesAsync(request.ExpectedWorkflowId, cancellationToken);
             var instance = await runtime.GetInstanceForUpdateAsync(
                     id,
                     lockActiveUserTask: true,
@@ -325,6 +328,7 @@ public sealed partial class WorkflowEngineService
             instance.Id,
             cancellationToken);
         AddRuntimeStateBlockers(runtimeState, globalBlockers);
+        await AddSignalCatalogReactivationBlockerAsync(workflow, globalBlockers, cancellationToken);
         await AddComplexStateBlockersAsync(
             instance.Id,
             workflow,
@@ -456,6 +460,55 @@ public sealed partial class WorkflowEngineService
             blockers,
             warnings,
             globalBlockers.Count == 0 && targets.Count > 0);
+    }
+
+    // Reactivation makes a version live again, so the version must fit the signal catalog's
+    // current entries (EVENT-04F). A version without signal events runs no statement.
+    private async Task AddSignalCatalogReactivationBlockerAsync(
+        WorkflowDefinitionRecord workflow,
+        ICollection<InstanceReactivationIssueDto> blockers,
+        CancellationToken cancellationToken)
+    {
+        if (signalCatalog is null)
+        {
+            return;
+        }
+
+        var names = SignalCatalogContract.SignalNames(workflow.Definition);
+        if (names.Count == 0)
+        {
+            return;
+        }
+
+        var entries = await signalCatalog.GetManyAsync(names, cancellationToken);
+        var problems = SignalCatalogContract.FindDefinitionProblems(
+            workflow.Definition,
+            entries,
+            SignalCatalogModes.Optional,
+            SignalCatalogStage.Reactivation);
+        if (problems.Count > 0)
+        {
+            blockers.Add(new InstanceReactivationIssueDto(
+                "signal_catalog_mismatch",
+                problems[0].Message));
+        }
+    }
+
+    private async Task LockReactivationSignalNamesAsync(
+        long workflowDefinitionId,
+        CancellationToken cancellationToken)
+    {
+        if (signalCatalog is null
+            || await definitions.GetAsync(workflowDefinitionId, cancellationToken) is not { } expected)
+        {
+            return;
+        }
+
+        var names = SignalCatalogContract.SignalNames(expected.Definition);
+        if (names.Count > 0)
+        {
+            await signalCatalog.LockNamesAsync(names, exclusive: false, cancellationToken);
+        }
     }
 
     // A child's outputs may already have been delivered, so reopening it could replay them

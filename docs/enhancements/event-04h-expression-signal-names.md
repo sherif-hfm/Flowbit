@@ -56,7 +56,7 @@ Verified on 2026-11-17: not implemented.
 
 - Is the item still needed once a throw can name a business key?
 - Values such as order numbers often contain uppercase letters, which the name rule rejects. Does the expression have to lowercase them, or does an evaluated name get a wider rule?
-- How do names built from data fit a signal catalog ([EVENT-04F](event-04f-signal-catalog.md)), which lists fixed names?
+- How do names built from data fit a signal catalog ([EVENT-04F](event-04f-signal-catalog.md)), which lists fixed names? EVENT-04F checks only literal names and leaves entries for built names, such as a prefix entry, to a [later release](event-04f-signal-catalog.md#later-releases).
 
 ## Plan
 

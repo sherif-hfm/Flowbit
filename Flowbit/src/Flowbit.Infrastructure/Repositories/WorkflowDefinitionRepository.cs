@@ -17,7 +17,8 @@ public sealed class WorkflowDefinitionRepository(
     ISharedVariableRepository? sharedVariables = null,
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
     IBusinessCalendarRepository? businessCalendars = null,
-    DurableProcessingOptions? durableProcessingOptions = null) : IWorkflowDefinitionRepository
+    DurableProcessingOptions? durableProcessingOptions = null,
+    ISignalCatalogRepository? signalCatalog = null) : IWorkflowDefinitionRepository
 {
     private static readonly JsonSerializerOptions CloneOptions = new(JsonSerializerDefaults.Web);
 
@@ -37,6 +38,8 @@ public sealed class WorkflowDefinitionRepository(
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
     private readonly IBusinessCalendarRepository businessCalendarRepository =
         businessCalendars ?? new BusinessCalendarRepository(dbContext);
+    private readonly ISignalCatalogRepository signalCatalogRepository =
+        signalCatalog ?? new SignalCatalogRepository(dbContext);
     public async Task<IReadOnlyList<WorkflowDefinitionRecord>> ListLatestAsync(CancellationToken cancellationToken)
     {
         var definitions = await dbContext.WorkflowDefinitions.AsNoTracking()
@@ -174,6 +177,10 @@ public sealed class WorkflowDefinitionRepository(
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         await LockWorkflowFamilyAsync(definition.Id, cancellationToken);
+        await EnforceSignalCatalogAsync(
+            definition,
+            isPublished ? SignalCatalogStage.Publication : SignalCatalogStage.Draft,
+            cancellationToken);
 
         var latestVersion = await dbContext.WorkflowDefinitions
             .Where(w => w.WorkflowKey == definition.Id)
@@ -243,6 +250,7 @@ public sealed class WorkflowDefinitionRepository(
         await PersistSharedVariableBindingsAsync(entity.Id, definition, cancellationToken);
         await PersistBusinessCalendarReferencesAsync(entity.Id, definition, cancellationToken);
         await PersistCallTargetsAsync(entity.Id, definition, cancellationToken);
+        await PersistSignalNamesAsync(entity.Id, definition, cancellationToken);
         if (isDefault && isPublished)
         {
             await SyncSignalStartsAsync(definition.Id, lockedStarts, entity.Id, definition, cancellationToken);
@@ -330,6 +338,68 @@ public sealed class WorkflowDefinitionRepository(
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// The authoritative catalog check of a save or publication (EVENT-04F): under the shared lock
+    /// of each signal name the definition uses, taken in ordinal order after the family lock, the
+    /// definition must fit the committed entries. A catalog write of one of those names holds the
+    /// exclusive lock, so neither commits against a state the other is changing. A definition
+    /// without signal events runs no statement.
+    /// </summary>
+    private async Task EnforceSignalCatalogAsync(
+        WorkflowModel definition,
+        SignalCatalogStage stage,
+        CancellationToken cancellationToken)
+    {
+        var names = SignalCatalogContract.SignalNames(definition);
+        if (names.Count == 0)
+        {
+            return;
+        }
+
+        await signalCatalogRepository.LockNamesAsync(names, exclusive: false, cancellationToken);
+        var entries = await signalCatalogRepository.GetManyAsync(names, cancellationToken);
+        var mode = SignalCatalogModes.Optional;
+        if (stage == SignalCatalogStage.Publication && names.Any(name => !entries.ContainsKey(name)))
+        {
+            var setting = await new EngineSettingsRepository(dbContext)
+                .GetByKeyAsync(SignalCatalogModes.SettingKey, cancellationToken);
+            mode = SignalCatalogModes.ParseMode(setting?.Value);
+        }
+
+        var problems = SignalCatalogContract.FindDefinitionProblems(definition, entries, mode, stage);
+        if (problems.Count > 0)
+        {
+            throw new WorkflowDomainException(problems[0].Message);
+        }
+    }
+
+    // One row per signal event with a valid name, recorded for every version whether or not the
+    // name has a catalog entry. A definition never changes after it is saved, so publication
+    // writes nothing.
+    private async Task PersistSignalNamesAsync(
+        long workflowDefinitionId,
+        WorkflowModel definition,
+        CancellationToken cancellationToken)
+    {
+        var rows = SignalCatalogContract.SignalEvents(definition)
+            .DistinctBy(node => node.Id)
+            .Select(node => new WorkflowDefinitionSignalNameEntity
+            {
+                WorkflowDefinitionId = workflowDefinitionId,
+                NodeId = node.Id,
+                SignalName = node.Signal!.Name,
+                Usage = SignalNameUsages.Of(node.Type)!
+            })
+            .ToArray();
+        if (rows.Length == 0)
+        {
+            return;
+        }
+
+        dbContext.WorkflowDefinitionSignalNames.AddRange(rows);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public async Task<bool> SetPublishedAsync(long id, bool isPublished, CancellationToken cancellationToken)
     {
         if (isPublished)
@@ -356,6 +426,9 @@ public sealed class WorkflowDefinitionRepository(
                 await publishTransaction.CommitAsync(cancellationToken);
                 return true;
             }
+
+            WorkflowModelMigrator.Normalize(target.Definition);
+            await EnforceSignalCatalogAsync(target.Definition, SignalCatalogStage.Publication, cancellationToken);
             // Publishing the family's default makes it listen.
             var lockedStarts = target.IsDefault
                 ? await LockSignalStartsAsync(target.WorkflowKey, cancellationToken)

@@ -255,6 +255,10 @@ try
                         || string.Equals(
                             data.Policy,
                             SignalAuthorizationPolicies.Read,
+                            StringComparison.Ordinal)
+                        || string.Equals(
+                            data.Policy,
+                            SignalCatalogAuthorizationPolicies.Read,
                             StringComparison.Ordinal)) == true;
                 if (acceptsSharedVariableClient)
                 {
@@ -443,7 +447,14 @@ try
         {
             Log.Warning(ex, "Workflow forbidden: {Message}", ex.Message);
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            await context.Response.WriteAsJsonAsync(new { error = ex.Message });
+            if (ex.Code is { } code)
+            {
+                await context.Response.WriteAsJsonAsync(new { code, error = ex.Message });
+            }
+            else
+            {
+                await context.Response.WriteAsJsonAsync(new { error = ex.Message });
+            }
         }
         catch (WorkflowUnauthorizedException ex)
         {

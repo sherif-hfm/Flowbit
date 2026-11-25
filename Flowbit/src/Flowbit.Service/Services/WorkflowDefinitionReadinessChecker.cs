@@ -11,7 +11,9 @@ public sealed class WorkflowDefinitionReadinessChecker(
     IConditionalEventDefinitionAnalyzer? conditionalEventAnalyzer = null,
     DurableProcessingOptions? durableProcessingOptions = null,
     IBusinessCalendarRepository? businessCalendars = null,
-    IWorkflowDefinitionRepository? definitions = null)
+    IWorkflowDefinitionRepository? definitions = null,
+    ISignalCatalogRepository? signalCatalog = null,
+    IEngineSettingsRepository? engineSettings = null)
 {
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
@@ -250,6 +252,52 @@ public sealed class WorkflowDefinitionReadinessChecker(
         }
 
         return problems;
+    }
+
+    /// <summary>
+    /// Refuses a definition that does not fit the signal catalog at <paramref name="stage"/>
+    /// (EVENT-04F), with the first problem. The repository repeats the check under the name
+    /// locks; this one runs without locks so a save fails before it opens a transaction.
+    /// </summary>
+    public async Task ValidateSignalCatalogAsync(
+        WorkflowModel definition,
+        SignalCatalogStage stage,
+        CancellationToken cancellationToken)
+    {
+        var problems = await FindSignalCatalogProblemsAsync(definition, stage, cancellationToken);
+        if (problems.Count > 0)
+        {
+            throw new WorkflowDomainException(problems[0].Message);
+        }
+    }
+
+    /// <summary>
+    /// Every problem of a definition against the signal catalog at <paramref name="stage"/>, read
+    /// without locks. A definition without signal events runs no statement, and the mode is read
+    /// only at publication when a name has no entry.
+    /// </summary>
+    public async Task<IReadOnlyList<SignalCatalogDefinitionProblem>> FindSignalCatalogProblemsAsync(
+        WorkflowModel definition,
+        SignalCatalogStage stage,
+        CancellationToken cancellationToken)
+    {
+        var names = SignalCatalogContract.SignalNames(definition);
+        if (names.Count == 0 || signalCatalog is null)
+        {
+            return [];
+        }
+
+        var entries = await signalCatalog.GetManyAsync(names, cancellationToken);
+        var mode = SignalCatalogModes.Optional;
+        if (stage == SignalCatalogStage.Publication
+            && engineSettings is not null
+            && names.Any(name => !entries.ContainsKey(name)))
+        {
+            var setting = await engineSettings.GetByKeyAsync(SignalCatalogModes.SettingKey, cancellationToken);
+            mode = SignalCatalogModes.ParseMode(setting?.Value);
+        }
+
+        return SignalCatalogContract.FindDefinitionProblems(definition, entries, mode, stage);
     }
 
     public async Task ValidateSharedCatalogBindingsAsync(

@@ -16,11 +16,14 @@ public sealed class WorkflowDefinitionService(
     ISharedVariableRepository? sharedVariables = null,
     ISharedVariableAccessPlanCache? sharedVariableAccessPlanCache = null,
     IBusinessCalendarRepository? businessCalendars = null,
-    ICallActivityRepository? callActivities = null)
+    ICallActivityRepository? callActivities = null,
+    ISignalCatalogRepository? signalCatalog = null,
+    IEngineSettingsRepository? engineSettings = null)
     : IWorkflowDefinitionService
 {
     private readonly WorkflowDefinitionReadinessChecker readiness =
-        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions, businessCalendars, definitions);
+        new(sharedVariables, conditionalEventAnalyzer, durableProcessingOptions, businessCalendars, definitions,
+            signalCatalog, engineSettings);
     private readonly IConditionalEventDefinitionAnalyzer conditionalAnalyzer =
         conditionalEventAnalyzer ?? new ConditionalEventDefinitionAnalyzer();
 
@@ -52,6 +55,10 @@ public sealed class WorkflowDefinitionService(
         validator.ValidateNormalized(definition);
         await readiness.ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
         await readiness.ValidateBusinessCalendarReferencesAsync(definition, cancellationToken);
+        await readiness.ValidateSignalCatalogAsync(
+            definition,
+            publish ? SignalCatalogStage.Publication : SignalCatalogStage.Draft,
+            cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition);
         readiness.ValidateSharedTransactionLockOrder(definition);
         readiness.EnsureDurablePublicationAllowed(definition, publish);
@@ -87,6 +94,10 @@ public sealed class WorkflowDefinitionService(
         validator.ValidateNormalized(definition);
         await readiness.ValidateSharedCatalogBindingsAsync(definition, cancellationToken);
         await readiness.ValidateBusinessCalendarReferencesAsync(definition, cancellationToken);
+        await readiness.ValidateSignalCatalogAsync(
+            definition,
+            publish ? SignalCatalogStage.Publication : SignalCatalogStage.Draft,
+            cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition);
         readiness.ValidateSharedTransactionLockOrder(definition);
         readiness.EnsureDurablePublicationAllowed(definition, publish);
@@ -117,6 +128,10 @@ public sealed class WorkflowDefinitionService(
             cancellationToken);
         await readiness.ValidateBusinessCalendarReferencesAsync(
             definition.Definition,
+            cancellationToken);
+        await readiness.ValidateSignalCatalogAsync(
+            definition.Definition,
+            SignalCatalogStage.Publication,
             cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition.Definition);
         readiness.ValidateSharedTransactionLockOrder(definition.Definition);
@@ -163,6 +178,10 @@ public sealed class WorkflowDefinitionService(
             cancellationToken);
         await readiness.ValidateBusinessCalendarReferencesAsync(
             definition.Definition,
+            cancellationToken);
+        await readiness.ValidateSignalCatalogAsync(
+            definition.Definition,
+            SignalCatalogStage.Publication,
             cancellationToken);
         readiness.ValidateSharedServiceTaskDurability(definition.Definition);
         readiness.ValidateSharedTransactionLockOrder(definition.Definition);

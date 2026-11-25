@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Flowbit.Service.Abstractions;
 using Flowbit.Service.Authoring;
+using Flowbit.Service.Models;
 using Flowbit.Service.Services;
 using Flowbit.Shared.Authoring;
 using Flowbit.Shared.Dtos;
@@ -101,6 +102,13 @@ public sealed partial class WorkflowAiAuthoringService(
         catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
         try { await readiness.ValidateBusinessCalendarReferencesAsync(model, cancellationToken); }
         catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
+        // The publication stage includes the save rules; problems that are wrong at any stage
+        // block saving, the rest only publication.
+        foreach (var problem in await readiness.FindSignalCatalogProblemsAsync(
+                     model, SignalCatalogStage.Publication, cancellationToken))
+        {
+            (problem.IsSaveProblem ? saveBlockers : publicationBlockers).Add(problem.Message);
+        }
         try { readiness.ValidateSharedServiceTaskDurability(model); }
         catch (WorkflowDomainException error) { saveBlockers.Add(SafeDiagnostic(error)); }
         try { readiness.ValidateSharedTransactionLockOrder(model); }

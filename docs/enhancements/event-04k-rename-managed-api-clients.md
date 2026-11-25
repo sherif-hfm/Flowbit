@@ -16,7 +16,7 @@
 
 Rename "shared-variable clients" to "API clients" in the page, the HTTP routes, and the documentation. The same clients also throw and read signals.
 
-Do this together with the next change that adds a scope or a grant for one client, such as [EVENT-04F](event-04f-signal-catalog.md). On its own it adds no capability.
+Do this together with the next change that adds a scope or a grant for one client. On its own it adds no capability. [EVENT-04F](event-04f-signal-catalog.md) shipped without one: a catalog entry's `allowClients` switch lets every client with `signals.throw` throw a name or none, and grants for one client wait for this item ([later releases](event-04f-signal-catalog.md#later-releases)).
 
 ## Why it adds value
 

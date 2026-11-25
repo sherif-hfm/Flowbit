@@ -92,6 +92,110 @@ its wait under **Waiting for signals**. A later throw without an expiry reaches 
 A catch that must not wait forever needs a timer boundary, as this example's one-hour
 timer is. See [letting a signal expire](../../docs/developer-guide.md#let-a-signal-expire).
 
+Optionally, describe the signal in the [signal catalog](../../docs/api-guide.md#signal-catalog),
+so that a throw with a payload the catch cannot read is refused before it reaches any
+wait. The steps need a settings administrator (`Settings.RequiredRole`, default `admin`)
+with the definition published as above; **Manage → Signal catalog** in Flowbit.Ui does
+the same with **Add entry**, **Review changes**, and the form's **Add entry** (or
+**Save changes** for an existing entry). The steps run once per database: entries are
+never deleted, so a second run of step 1 returns `409` because the name exists. Run
+step 3 then with the `updatedAt` that `GET /api/signal-catalog/entries/claims.policy-changed`
+returns.
+
+1. Create an entry whose fields fit the catch's mappings: `version`, a required number,
+   and `effectiveDate`, an optional date. Each catalog write checks the published
+   versions that use the name, so an entry that the example did not fit would be refused.
+
+   ```powershell
+   $api = "http://localhost:5017"
+   $headers = @{ Authorization = "Bearer $env:FLOWBIT_TOKEN" }
+   $entry = @{
+     name = "claims.policy-changed"
+     description = "A claims policy changed; waiting claims are recalculated."
+     fields = @(
+       @{ name = "version"; dataType = "number"; required = $true },
+       @{ name = "effectiveDate"; dataType = "date" }
+     )
+   } | ConvertTo-Json -Depth 5
+   $created = Invoke-RestMethod -Method Post -Uri "$api/api/signal-catalog/entries" `
+     -Headers $headers -ContentType "application/json" -Body $entry
+   $created
+   ```
+
+   ```bash
+   API=http://localhost:5017
+   created=$(curl -sS -X POST "$API/api/signal-catalog/entries" \
+     -H "Authorization: Bearer $FLOWBIT_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"claims.policy-changed","description":"A claims policy changed; waiting claims are recalculated.","fields":[{"name":"version","dataType":"number","required":true},{"name":"effectiveDate","dataType":"date"}]}')
+   echo "$created"
+   ```
+
+   The response is `201 Created` with the entry; keep it for step 3.
+2. Throw with a misspelled member. The throw returns `400` and stores no broadcast,
+   so no wait is touched:
+
+   ```powershell
+   $throw = @{
+     name = "claims.policy-changed"
+     workflowKey = "example-signal-catch-policy-change"
+     payload = @{ version = 9; efectiveDate = "2027-03-01" }
+   } | ConvertTo-Json
+   try {
+     Invoke-RestMethod -Method Post -Uri "$api/api/signal-broadcasts" `
+       -Headers $headers -ContentType "application/json" -Body $throw
+   } catch { $_.ErrorDetails.Message }
+   ```
+
+   ```bash
+   curl -sS -X POST "$API/api/signal-broadcasts" \
+     -H "Authorization: Bearer $FLOWBIT_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"claims.policy-changed","workflowKey":"example-signal-catch-policy-change","payload":{"version":9,"efectiveDate":"2027-03-01"}}'
+   ```
+
+   The body is `{"error":"Signal 'claims.policy-changed' payload member 'efectiveDate' is not a field of its catalog entry. Its fields: version (number), effectiveDate (date)."}`.
+   A payload without `version` is refused with `... payload is missing the required field 'version'.`
+3. Try to change `version` to text. A change replaces the whole entry, so it states the
+   field list, the throw roles, and both switches. The published example maps `version`
+   to the number `policyVersion`, so the change is refused with `409` and nothing changes:
+
+   ```powershell
+   $change = @{
+     expectedUpdatedAt = $created.updatedAt
+     description = $created.description
+     fields = @(
+       @{ name = "version"; dataType = "string"; required = $true },
+       @{ name = "effectiveDate"; dataType = "date" }
+     )
+     throwRoles = @()
+     allowClients = $true
+     allowWorkflows = $true
+   } | ConvertTo-Json -Depth 5
+   try {
+     Invoke-RestMethod -Method Put -Uri "$api/api/signal-catalog/entries/claims.policy-changed" `
+       -Headers $headers -ContentType "application/json" -Body $change
+   } catch { $_.ErrorDetails.Message }
+   ```
+
+   ```bash
+   updated_at=$(echo "$created" | jq -r .updatedAt)
+   curl -sS -X PUT "$API/api/signal-catalog/entries/claims.policy-changed" \
+     -H "Authorization: Bearer $FLOWBIT_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d "{\"expectedUpdatedAt\":\"$updated_at\",\"description\":\"A claims policy changed; waiting claims are recalculated.\",\"fields\":[{\"name\":\"version\",\"dataType\":\"string\",\"required\":true},{\"name\":\"effectiveDate\",\"dataType\":\"date\"}],\"throwRoles\":[],\"allowClients\":true,\"allowWorkflows\":true}"
+   ```
+
+   The body names the version and the problem, with the IDs of your database:
+   `Signal catalog entry 'claims.policy-changed' does not fit live workflow versions: example-signal-catch-policy-change v1 (#7): Signal catch event #2 mapping to 'policyVersion' is number, but the catalog entry of 'claims.policy-changed' defines 'version' as string.`
+   Archiving the entry is refused too while the version is published or an instance
+   waits. A throw that fits, such as the first throw of this example with a new
+   `idempotencyKey` (the same key replays the first broadcast), still reaches every wait.
+
+The entry is deployment-wide and stays after the example: it fits the example, so
+later runs work unchanged. Entries are never deleted; archive it once nothing uses
+the name.
+
 ## Example 02: boundaries on a task
 
 1. Publish the definition and start an instance with an `orderNumber`. Instance detail

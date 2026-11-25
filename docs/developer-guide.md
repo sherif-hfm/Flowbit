@@ -584,6 +584,67 @@ A [`signalStartEvent`](node-reference.md#signalstartevent) starts its workflow e
 
 A workflow that starts its own family by signal is refused when it is saved. Families that start each other stop at the [loop guard](#guard-against-signal-loops), because each start continues the broadcast's chain count. A loop that widens, where several families start on one name and throw another onward, is stopped only by `Signals.MaxOpenWorkflowBroadcasts`; set a default without the start on one of them to end it at once.
 
+### Use the signal catalog
+
+A signal name couples throwers and receivers that different teams write and deploy at different times. A [signal catalog](api-guide.md#signal-catalog) entry writes that agreement down: what the name means, which payload fields a throw sends and their types, and who may throw it. Settings administrators manage entries on **Signal catalog** in Flowbit.Ui ([UI guide](ui-guide.md#signal-catalog)) or at `/api/signal-catalog`. Users with a role from `Settings.RequiredRole`, `Signals.RequiredRole`, or `Workflow.RequiredRole`, and managed clients with `signals.read` or `signals.throw`, can read the entries to learn a contract.
+
+- **What an entry declares.** A description, up to 100 typed fields (`name`, `dataType`, `isArray`, `required`, `description`), `throwRoles`, `allowClients`, and `allowWorkflows`. The contract is closed: a throw may send only the declared fields, so a mistyped member is refused rather than silently ignored. A `json` field accepts any value and leaves its inside unchecked, the escape hatch for free-form data.
+- **How a throw is checked.** A throw through the API of a cataloged name is checked against the entry in the throw's transaction: a required field that is missing, a field that is null or of another type, or a member that is not a field returns `400` naming the field and its type, never a value, and no broadcast is stored. A workflow's signal throw or end event is checked when its definition is saved and published instead, and never when it runs. See the [messages](api-guide.md#signals).
+- **What fits a field.** A receiver's mapping may read more widely than the field: a `json` mapping reads any field (a `json` array mapping only an array field), and a `string` mapping reads a `date` or `datetime` field with the same array flag. A throw's variable may be narrower: a `date` or `datetime` variable fills a `string` field, and any variable fills a `json` field. Everything else must match in type and array flag. A mapping path names a field by its first part; only a `json` field or an array element has deeper parts. See the [type and path rules](node-reference.md#signal-catalog-checks).
+- **Who may throw.** `throwRoles` narrow `Signals.RequiredRole`: a user needs a role from that setting **and** one of the entry's roles. Add each entry role to `Signals.RequiredRole` too, or only users who hold both can throw. `allowClients: false` refuses managed clients with `signals.throw`, whose roles are never checked. `allowWorkflows: false` refuses to publish a definition that throws the name; entry roles do not apply to workflows, because publishing a workflow (`Workflow.RequiredRole`) is the authority behind its throws. A retry follows the throw rules for everyone. The thrower of a broadcast may always cancel it, so a mistaken throw can be stopped after the entry changes; anyone else needs the throw rules. A refusal by these rules is `403` with `{"code":"signal_catalog_forbidden","error":"..."}`, while a missing `Signals.RequiredRole` or scope is `403` without a body.
+- **Which checks wait for publication.** Saving a draft refuses only what is wrong at any stage: an archived name, a payload member or mapping path that is not a field, and a type that does not fit. Publishing also refuses an incomplete fit: a required field that no required payload entry sends, a payload entry that is not required but reads a variable that can be null, a receiver that requires an optional field without a `defaultValue`, and a throw of a name whose entry does not allow workflows. So an author can save a half-finished throw, or a draft for a signal the administrator has not cataloged yet.
+- **Required mode.** With the engine setting [`Signals.CatalogMode`](engine-settings.md#signalscatalogmode) set to `required`, publishing a definition that uses a name without an entry, and throwing such a name through the API, return `400`. Drafts still save, and published definitions keep running and throwing. Before switching, create entries for the names the catalog page lists as in use without an entry; names that only API callers throw appear in the recent broadcasts.
+- **No field holds null.** A receiver's mapping refuses null unless its target is nullable, so a null that suits one receiver would fail another. An API throw leaves out an optional field it has no value for; sending null returns `400`. A workflow's payload entry for an optional field that reads a nullable process variable, or an optional scalar `json` input or mapping output, must set `required`, so a null stops the throw instead of its deliveries.
+- **What the contract does not cover.** The elements of an array field and the inside of a `json` field are not declared. A required mapping that reads `skus.0` or `details.lot` still fails its delivery when the throw sends an empty array or an object without `lot`; give such a mapping a `defaultValue`.
+
+Running instances never read the catalog: deliveries, signal starts, and workflows' throws behave as described above, and a catalog that cannot be read never stops an instance. This holds because every live version fits its entries, as the [next section](#signals-and-version-changes) explains.
+
+With the [signal example](../examples/signals/README.md) published, a settings administrator creates an entry that fits its catch, and a throw that misspells a member is then refused. PowerShell:
+
+```powershell
+$api = "http://localhost:5017"
+$headers = @{ Authorization = "Bearer $env:FLOWBIT_TOKEN" }
+$entry = @{
+  name = "claims.policy-changed"
+  description = "A claims policy changed; waiting claims are recalculated."
+  fields = @(
+    @{ name = "version"; dataType = "number"; required = $true; description = "The new policy version." },
+    @{ name = "effectiveDate"; dataType = "date" }
+  )
+} | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Method Post -Uri "$api/api/signal-catalog/entries" -Headers $headers -ContentType "application/json" -Body $entry
+$throw = @{
+  name = "claims.policy-changed"
+  workflowKey = "example-signal-catch-policy-change"
+  payload = @{ version = 8; efectiveDate = "2027-02-01" }
+} | ConvertTo-Json
+try {
+  Invoke-RestMethod -Method Post -Uri "$api/api/signal-broadcasts" -Headers $headers -ContentType "application/json" -Body $throw
+} catch {
+  $_.ErrorDetails.Message   # the 400 body
+}
+```
+
+Bash:
+
+```bash
+API=http://localhost:5017
+curl -sS -X POST "$API/api/signal-catalog/entries" \
+  -H "Authorization: Bearer $FLOWBIT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"claims.policy-changed","description":"A claims policy changed; waiting claims are recalculated.","fields":[{"name":"version","dataType":"number","required":true,"description":"The new policy version."},{"name":"effectiveDate","dataType":"date"}]}'
+curl -sS -X POST "$API/api/signal-broadcasts" \
+  -H "Authorization: Bearer $FLOWBIT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"claims.policy-changed","workflowKey":"example-signal-catch-policy-change","payload":{"version":8,"efectiveDate":"2027-02-01"}}'
+```
+
+The first request returns `201` with the entry. The throw returns `400` and stores no broadcast:
+
+```json
+{"error":"Signal 'claims.policy-changed' payload member 'efectiveDate' is not a field of its catalog entry. Its fields: version (number), effectiveDate (date)."}
+```
+
+The [signal examples](../examples/signals/README.md#example-01-throw-a-policy-change) continue with a change of the entry that the published example no longer fits. They create the same entry in their step 1, so after the commands above skip that step, which would return `409`, and run their step 3 with the entry's current `updatedAt`. A change (`PUT`) states the whole entry: `fields`, `throwRoles`, `allowClients`, and `allowWorkflows` are required.
+
 ### Signals and version changes
 
 Version-change preview checks every open signal wait of the instance, including armed signal boundaries, and the signal boundaries of every node where the instance has an active token:
@@ -596,6 +657,8 @@ Version-change preview checks every open signal wait of the instance, including 
 | `signal_mapping_contract_changed` | Warning | Only `signal.outputMappings` differ; the target's mappings apply to later deliveries. |
 
 Changing only a boundary's mappings is allowed, unless its host has an open job: that job's contract includes the host's boundaries, so the change blocks with `open_job_contract_changed`. A successful change moves the open wait to the target version, and a pending delivery needs no change, because it reads the signal event from the instance's current definition. Batch version changes apply the same rules. A child instance started by a call activity waits like any other instance, and cancelling the call cancels its waits. A terminal instance with an active signal wait cannot be reactivated (`unresolved_durable_work`); normally it has none.
+
+A [signal catalog](#use-the-signal-catalog) entry and the live versions that use its name, the published versions and those with a running instance, always fit each other. Creating, changing, or reactivating an entry is refused with `409`, naming the versions and their problems, while a live version would no longer fit; `POST /api/signal-catalog/preview` lists them all first. A contract change that live versions rely on therefore waits for them: publish versions that fit the new contract, move or finish the running instances, and unpublish the old versions, or keep the change compatible, for example with an optional or `json` field. Reactivating an instance on a version that no longer fits is refused with the blocker `signal_catalog_mismatch`. A broadcast thrown before a change keeps its payload, and a version change does not consult the catalog.
 
 ## Separate retries from business identity
 

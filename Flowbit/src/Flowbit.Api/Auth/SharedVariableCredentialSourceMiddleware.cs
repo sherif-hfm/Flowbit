@@ -39,5 +39,8 @@ public sealed class SharedVariableCredentialSourceMiddleware(RequestDelegate nex
             StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments(
             "/api/signal-subscriptions",
+            StringComparison.OrdinalIgnoreCase)
+        || path.StartsWithSegments(
+            "/api/signal-catalog",
             StringComparison.OrdinalIgnoreCase);
 }

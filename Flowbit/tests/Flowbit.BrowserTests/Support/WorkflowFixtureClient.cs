@@ -189,6 +189,52 @@ public sealed class WorkflowFixtureClient : IAsyncDisposable
     public Task DeleteWorkflowAsync(long id) =>
         SendAsync(HttpMethod.Delete, $"/api/workflows/{id}");
 
+    /// <summary>Creates a signal catalog entry (EVENT-04F), as a settings administrator does on the Signal catalog page.</summary>
+    public Task<SignalCatalogEntryDto> CreateSignalCatalogEntryAsync(CreateSignalCatalogEntryRequest request) =>
+        SendAsync<SignalCatalogEntryDto>(HttpMethod.Post, "/api/signal-catalog/entries", request);
+
+    /// <summary>A signal catalog entry, or null when the catalog has none for the name.</summary>
+    public async Task<SignalCatalogEntryDto?> GetSignalCatalogEntryAsync(string name)
+    {
+        using var response = await http.GetAsync(SignalCatalogEntryPath(name), ScenarioCancellation.Token);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        await AssertSuccessAsync(response, nameof(GetSignalCatalogEntryAsync));
+        return await response.Content.ReadFromJsonAsync<SignalCatalogEntryDto>(JsonOptions, ScenarioCancellation.Token);
+    }
+
+    public Task<SignalCatalogEntryDto> ArchiveSignalCatalogEntryAsync(string name, DateTimeOffset expectedUpdatedAt) =>
+        SendAsync<SignalCatalogEntryDto>(HttpMethod.Post, SignalCatalogEntryPath(name) + "/archive",
+            new SignalCatalogLifecycleRequest(expectedUpdatedAt));
+
+    public Task<SignalCatalogUsageDto> GetSignalCatalogUsageAsync(string name) =>
+        SendAsync<SignalCatalogUsageDto>(HttpMethod.Get, SignalCatalogEntryPath(name) + "/usage");
+
+    /// <summary>
+    /// Archives an active entry that nothing uses, which is all a scenario can clean up: an entry cannot be deleted,
+    /// and one that a published version or an open wait uses cannot be archived. Returns whether it archived.
+    /// </summary>
+    public async Task<bool> ArchiveSignalCatalogEntryIfUnusedAsync(string name)
+    {
+        var entry = await GetSignalCatalogEntryAsync(name);
+        if (entry is null || entry.Status != SignalCatalogStatuses.Active)
+        {
+            return false;
+        }
+        var usage = await GetSignalCatalogUsageAsync(name);
+        if (usage.PublishedVersionCount + usage.RunningVersionCount + usage.ActiveWaitCount
+            + usage.StartingFamilyCount + usage.DeliveringBroadcastCount > 0)
+        {
+            return false;
+        }
+        await ArchiveSignalCatalogEntryAsync(name, entry.UpdatedAt);
+        return true;
+    }
+
+    private static string SignalCatalogEntryPath(string name) => $"/api/signal-catalog/entries/{Uri.EscapeDataString(name)}";
+
     public Task<IReadOnlyList<UserDelegationDto>> CreateDelegationAsync(CreateUserDelegationRequest request) =>
         SendAsync<IReadOnlyList<UserDelegationDto>>(HttpMethod.Post, "/api/user-delegations", request);
 

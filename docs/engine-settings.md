@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [Deployment and operations](deployment.md#configuration) · [Settings API](api-guide.md#settings) · [Settings UI](ui-guide.md#engine-and-workflow-settings)
 
-This is the complete reference for the **24 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
+This is the complete reference for the **25 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
 
 A **runtime default** is what a consumer uses without a usable setting. A **seed value** is a row inserted by a migration when the setting is missing. Deleting a seeded row does not rerun an already-applied migration; consumers still apply their documented fallback. The AI catalog, `AiAuthoring.Models`, is reserved and has its own management API. `Webhooks.CaptureEnabled` is a protected Boolean setting that can be edited but cannot be deleted.
 
@@ -14,7 +14,7 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [WorkflowInstances.RequiredRole](#workflowinstancesrequiredrole) | Global instance list/search visibility. | `admin` |
 | [NodeExecution.RequiredRole](#nodeexecutionrequiredrole) | Global node-execution activity visibility. | `admin` |
 | [WorkflowJobs.RequiredRole](#workflowjobsrequiredrole) | Durable job and incident operations. | `admin` |
-| [Settings.RequiredRole](#settingsrequiredrole) | Settings, AI models, business calendars, and retention administration. | `admin` |
+| [Settings.RequiredRole](#settingsrequiredrole) | Settings, AI models, business calendars, the signal catalog, and retention administration. | `admin` |
 | [Users.RequiredRole](#usersrequiredrole) | Local user and user-attribute administration. | `admin` |
 | [SharedVariables.RequiredRole](#sharedvariablesrequiredrole) | JWT access to shared variables and client administration. | `admin` |
 | [Delegation.AdminRoles](#delegationadminroles) | Delegation and acceptance-policy administration. | `admin` |
@@ -30,6 +30,7 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [Signals.MaxSubscriptionsPerBroadcast](#signalsmaxsubscriptionsperbroadcast) | Waiting signal events one broadcast may reach. | `10000` |
 | [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) | Signal broadcasts thrown through the API that may be delivering at once. | `20` |
 | [Signals.MaxOpenWorkflowBroadcasts](#signalsmaxopenworkflowbroadcasts) | Signal broadcasts thrown by workflows that may be delivering at once. | `10000` |
+| [Signals.CatalogMode](#signalscatalogmode) | Whether publishing and API throws need a signal catalog entry for every signal name. | `optional` |
 | [UserTasks.DueSoonThreshold](#usertasksduesoonthreshold) | How long before its due time an open user task counts as due soon. | `P1D` |
 | [Authentication.UserIdentityClaim](#authenticationuseridentityclaim) | Authoritative JWT claim identifying the actor. | Unset: identity selection chain |
 | [AiAuthoring.Models](#aiauthoringmodels) | Assistant model catalog, including provider keys. | Empty catalog |
@@ -123,7 +124,7 @@ These settings are read at their authorization checks without restarting replica
 
 Controls workflow-definition management under `/api/workflows`, including AI authoring, and workflow-administrator operations such as instance reactivation, version changes, administrative task/instance actions, variable updates, and their batch surfaces. Administrative execution also requires a nonblank actor. Every authorized workflow author can use the configured AI models; this setting does not grant permission to configure those models.
 
-Changing it can make queued administrative work ineligible at its next check. Completed items remain committed. It does not grant global instance-list access, node-activity access, job operations, or ordinary task authority.
+Changing it can make queued administrative work ineligible at its next check. Completed items remain committed. It does not grant global instance-list access, node-activity access, job operations, or ordinary task authority. Its roles may also read the [signal catalog](api-guide.md#signal-catalog), so that the hosted editor can show entries to workflow authors; changing the catalog needs `Settings.RequiredRole`. Publishing a workflow is the authority behind its signal throws: entry roles never apply to them, and only an entry's `allowWorkflows` switch can refuse them.
 
 See [administrator contracts](api-guide.md#instance-administrative-actions) and [identity and permissions](developer-guide.md#authenticate-the-actual-actor). Implementation: [shared policy](../Flowbit/src/Flowbit.Service/Services/WorkflowAdministratorPolicy.cs), [HTTP authorization](../Flowbit/src/Flowbit.Api/Auth/WorkflowAdministratorAuthorization.cs), and [definition authorization](../Flowbit/src/Flowbit.Api/Endpoints/WorkflowDefinitionEndpoints.cs).
 
@@ -167,9 +168,9 @@ See [jobs and incidents](api-guide.md#jobs-and-incidents) and [operations UI](ui
 - **Seed:** `admin` in `AddSettingDescriptionsAndManagementRole`, not `SeedDefaultSettings`.
 - **Takes effect:** the next settings-authorized request; no restart. This can remove the editing identity's access immediately after a successful update.
 
-Controls engine-setting and workflow-setting CRUD, AI-model administration, business-calendar administration and preview, and retention policy, preview, and cleanup-run operations. AI-model administrators choose provider destinations and credentials. This setting does not grant local-user administration, shared-variable administration, or ordinary workflow permissions. Provision an identity with a replacement role before removing your own role from this list.
+Controls engine-setting and workflow-setting CRUD, AI-model administration, business-calendar administration and preview, signal catalog administration (creating, changing, archiving, and reactivating entries, and the usage, preview, and uncataloged-name routes), and retention policy, preview, and cleanup-run operations. Its roles may also read the signal catalog. AI-model administrators choose provider destinations and credentials, and signal catalog administrators decide who may throw a cataloged name. This setting does not grant local-user administration, shared-variable administration, signal throwing, or ordinary workflow permissions. Provision an identity with a replacement role before removing your own role from this list.
 
-See [settings](api-guide.md#settings), [AI models](api-guide.md#ai-models), [business calendars](api-guide.md#business-calendars), and [retention](api-guide.md#retention). Implementation: [settings authorization filter](../Flowbit/src/Flowbit.Api/Endpoints/SettingsEndpoints.cs), reused by [AI-model endpoints](../Flowbit/src/Flowbit.Api/Endpoints/AiModelEndpoints.cs), [business-calendar endpoints](../Flowbit/src/Flowbit.Api/Endpoints/BusinessCalendarEndpoints.cs), and [retention endpoints](../Flowbit/src/Flowbit.Api/Endpoints/RetentionEndpoints.cs).
+See [settings](api-guide.md#settings), [AI models](api-guide.md#ai-models), [business calendars](api-guide.md#business-calendars), the [signal catalog](api-guide.md#signal-catalog), and [retention](api-guide.md#retention). Implementation: [settings authorization filter](../Flowbit/src/Flowbit.Api/Endpoints/SettingsEndpoints.cs), reused by [AI-model endpoints](../Flowbit/src/Flowbit.Api/Endpoints/AiModelEndpoints.cs), [business-calendar endpoints](../Flowbit/src/Flowbit.Api/Endpoints/BusinessCalendarEndpoints.cs), [signal catalog endpoints](../Flowbit/src/Flowbit.Api/Endpoints/SignalCatalogEndpoints.cs), and [retention endpoints](../Flowbit/src/Flowbit.Api/Endpoints/RetentionEndpoints.cs).
 
 ### Users.RequiredRole
 
@@ -215,11 +216,13 @@ See [delegation contracts](api-guide.md#delegation). Implementation: [delegation
 - **Seed:** `admin` in `AddSignalEvents`; existing overrides are preserved.
 - **Takes effect:** the next signal-route authorization check; no restart. It does not change broadcasts already thrown or deliveries in progress.
 
-Controls JWT-user access to every signal route: throwing a signal, listing and reading broadcasts and their deliveries, cancelling a broadcast, retrying its failed deliveries, and the subscription summary. Users see every broadcast and the engine's delivery descriptions. It also gates the **Signals** page in Flowbit.Ui, which calls those routes.
+Controls JWT-user access to every signal route: throwing a signal, listing and reading broadcasts and their deliveries, cancelling a broadcast, retrying its failed deliveries, and the subscription summary. Users see every broadcast and the engine's delivery descriptions. It also gates the **Signals** page in Flowbit.Ui, which calls those routes. Its roles may also read the [signal catalog](api-guide.md#signal-catalog).
 
-Managed API clients use their persisted `signals.throw` and `signals.read` scopes instead, see only the broadcasts they threw, and cannot read the subscription summary. This setting does not grant shared-variable access, client administration, or any workflow permission.
+A [signal catalog](api-guide.md#signal-catalog) entry can narrow this setting for its name: when the entry lists `throwRoles`, a user needs a role from this setting **and** one of the entry's roles to throw, retry, or cancel another thrower's broadcast of the name. Add every entry role to this setting as well; otherwise only users who hold both can throw the signal, which the catalog page warns about. Reading broadcasts is never narrowed.
 
-See [signal routes](api-guide.md#signals). Implementation: [authorization policies and handler](../Flowbit/src/Flowbit.Api/Auth/SharedVariableAuthorization.cs) and [setting constants](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs).
+Managed API clients use their persisted `signals.throw` and `signals.read` scopes instead, see only the broadcasts they threw, and cannot read the subscription summary. An entry's `allowClients` switch decides whether clients may throw its name at all. This setting does not grant shared-variable access, client administration, signal catalog changes, or any workflow permission.
+
+See [signal routes](api-guide.md#signals). Implementation: [authorization policies and handler](../Flowbit/src/Flowbit.Api/Auth/SharedVariableAuthorization.cs), [catalog read policy](../Flowbit/src/Flowbit.Api/Auth/SignalCatalogAuthorization.cs), [catalog throw rules](../Flowbit/src/Flowbit.Service/Services/SignalCatalogAccess.cs), and [setting constants](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs).
 
 ## Execution limits
 
@@ -346,7 +349,7 @@ See [administrative variable updates](api-guide.md#variable-update-batches) and 
 
 ## Signal settings
 
-Three limits bound signal broadcasts; the [Signals.RequiredRole](#signalsrequiredrole) permission setting controls who throws them through the API, and a workflow's signal throw or end event needs no role. All three accept a positive signed 32-bit integer as a string, with surrounding whitespace and a leading `+` allowed. A parseable value above the hard cap is capped; missing, blank, malformed, overflowing, zero, or negative values use the default. No value disables a limit. All are read for each throw, so a change applies to the next throw without a restart and never changes a broadcast already thrown. See [signals](bpmn-support.md#signals) and [signal operations](deployment.md#signal-events).
+Three limits bound signal broadcasts, and [Signals.CatalogMode](#signalscatalogmode) decides whether every signal name needs a catalog entry; the [Signals.RequiredRole](#signalsrequiredrole) permission setting controls who throws them through the API, and a workflow's signal throw or end event needs no role. The three limits accept a positive signed 32-bit integer as a string, with surrounding whitespace and a leading `+` allowed. A parseable value above the hard cap is capped; missing, blank, malformed, overflowing, zero, or negative values use the default. No value disables a limit. The limits are read for each throw, so a change applies to the next throw without a restart and never changes a broadcast already thrown. See [signals](bpmn-support.md#signals) and [signal operations](deployment.md#signal-events).
 
 ### Signals.MaxSubscriptionsPerBroadcast
 
@@ -376,6 +379,17 @@ How many broadcasts thrown through the API, by users and managed clients, may be
 How many broadcasts thrown by workflows' [signal throw and end events](node-reference.md#intermediatesignalthrowevent) may be delivering at once. When this many or more are `delivering`, a further throw from a workflow is refused with `... was not thrown: 10000 signal broadcasts thrown by workflows are still delivering; see Signals.MaxOpenWorkflowBroadcasts.`, and its step fails: a request returns `400` and changes nothing, a Worker job retries and then opens an incident, and a signal delivery fails with `signal_delivery_rejected`. The count is read without a lock, so concurrent throws can pass the limit by a few, and a broadcast without recipients is `completed` at once and never counts. A broadcast past its expiry would not count either; broadcasts that workflows throw have no expiry in this release. Broadcasts thrown through the API count toward [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) instead, so the two kinds of thrower never use up each other's budget.
 
 The budget is large because each instance that throws keeps one broadcast open until the Worker has delivered it, which takes seconds while a Worker runs. While no Worker runs, these broadcasts accumulate, and a workflow whose user action leads to a throw can then fail that action at the limit; an automatic task with `asyncBefore: true` in front of the event moves the throw, and such a failure, into a Worker job. Raise the limit for a deployment whose workflows throw many narrow signals at once. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [engine throw](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.SignalThrows.cs).
+
+### Signals.CatalogMode
+
+- **Namespace / key:** `Signals` / `CatalogMode`.
+- **Value / fallback:** `optional` or `required`, trimmed and compared ignoring case. A missing, blank, or any other value means `optional`, so a typo never makes every publication fail; the [Signal catalog](ui-guide.md#signal-catalog) page and the catalog routes report the mode in effect.
+- **Seed:** `optional`, with a description, in `AddSignalCatalog` when missing; an existing row is left as it is.
+- **Takes effect:** the next publication of a definition with signal events and the next API throw of a name without an entry; no restart. It is never latched.
+
+Decides whether every signal name needs an entry in the [signal catalog](api-guide.md#signal-catalog). With `optional`, names without an entry keep working as before. With `required`, publishing a version, creating or updating one with `publish: true`, and setting a default return `400` for a signal event whose name has no entry (`Signal catch event #4 uses signal 'claims.policy-changed', which has no entry in the signal catalog; this deployment requires one before publication.`), and an API throw of such a name returns `400` (`Signal 'claims.policy-changed' has no entry in the signal catalog; this deployment requires one.`). Drafts still save, published definitions keep running, a workflow's own throws are not checked when they run, and a reactivation does not apply the mode. Publications and throws read the setting only when a name has no entry.
+
+Before switching to `required`, create entries for the names that **Names in use without an entry** on the catalog page, or `GET /api/signal-catalog/uncataloged-names`, lists. Names that only API callers throw appear in no definition; find them in the recent broadcasts. Implementation: [mode rules](../Flowbit/src/Flowbit.Shared/Models/SignalCatalogEntryRules.cs) and [definition checks](../Flowbit/src/Flowbit.Service/Services/SignalCatalogContract.cs).
 
 ## Task settings
 
@@ -466,6 +480,7 @@ Migration names below link to their actual seed implementation. Seeds are applie
 | [AddAutomaticMultiInstanceCore](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261111144523_AddAutomaticMultiInstanceCore.cs) | `Workflow.MultiInstance.DefaultConcurrency` = `4` and `Workflow.MultiInstance.MaxConcurrency` = `1000`, with descriptions. |
 | [AddSignalEvents](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261116135625_AddSignalEvents.cs) | `Signals.RequiredRole` = `admin`, `Signals.MaxSubscriptionsPerBroadcast` = `10000`, and `Signals.MaxOpenBroadcasts` = `20`, with descriptions. Down removes the three rows. |
 | [AddSignalThrowEvents](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261121134938_AddSignalThrowEvents.cs) | `Signals.MaxOpenWorkflowBroadcasts` = `10000`, with a description. Down removes the row, after refusing while a broadcast thrown by an instance remains. |
+| [AddSignalCatalog](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261124193857_AddSignalCatalog.cs) | `Signals.CatalogMode` = `optional`, with a description, unless a row with that key exists. Down refuses while any signal catalog entry exists, then removes the row only when its value is still `optional`. |
 
 Capture consolidation requires a coordinated upgrade of API/UI/Worker versions; stop API and Worker writers before migration. It removes the old capture table without a compatibility view and refuses any existing canonical or equivalent capture key rather than overwrite it. The imported setting uses the old `ChangedAt` for both initial timestamps (its original creation time is unknown), copies `ChangedBy` to `UpdatedBy`, and leaves `CreatedBy` null. Other existing rows retain null actors. Down restores the current capture state and original functions but removes the new actor columns. See [rollout](deployment.md#rollout).
 

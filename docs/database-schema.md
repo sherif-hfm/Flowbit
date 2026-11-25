@@ -34,7 +34,7 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 
 ## Conventions
 
-- **Schema.** All 72 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
+- **Schema.** All 74 tables, the EF `__EFMigrationsHistory` table, sequences, triggers, and functions live in `flowbit`. The `citext` extension, used for case-insensitive keys and user names, is installed in `public`.
 - **Identifiers.** Most tables use a `bigint` identity `Id`. Natural or composite primary keys are called out per table.
 - **Authored IDs are not foreign keys.** `NodeId`, `FlowId`, `SequenceFlowId`, `SourceNodeId`, `GatewayNodeId`, and similar integer columns refer to elements inside `workflow_definitions.Definition` JSON. Read them together with the row's `WorkflowDefinitionId`.
 - **Snapshots.** Runtime rows copy what they need from the definition (node names, types, external IDs, roles, conditions) when they are created, so open work keeps the rules it started with. Only an audited version change updates them.
@@ -84,6 +84,8 @@ Table names below omit the `flowbit.` qualifier. The page reflects the current m
 | [`signal_broadcasts`](#signal_broadcasts) | [Signals](#signals) | One thrown signal with its payload, thrower, and outcome counters. |
 | [`signal_deliveries`](#signal_deliveries) | [Signals](#signals) | One frozen recipient of a broadcast, a wait or the start of a family, and its outcome. |
 | [`signal_broadcast_jobs`](#signal_broadcast_jobs) | [Signals](#signals) | Links a broadcast to its per-definition delivery jobs, for the throw and each retry. |
+| [`signal_catalog_entries`](#signal_catalog_entries) | [Signals](#signals) | One signal catalog entry: a name's description, payload contract, and throw permissions. |
+| [`workflow_definition_signal_names`](#workflow_definition_signal_names) | [Signals](#signals) | Which signal name each signal event of a definition version uses, cataloged or not. |
 | [`administrative_action_batches`](#administrative_action_batches) | [Administrative operations](#administrative-operations) | An administrative action applied to a frozen population of execution positions. |
 | [`administrative_action_batch_items`](#administrative_action_batch_items) | [Administrative operations](#administrative-operations) | One frozen execution position in an administrative action batch. |
 | [`workflow_instance_version_changes`](#workflow_instance_version_changes) | [Administrative operations](#administrative-operations) | Immutable audit of each committed instance version change. |
@@ -152,6 +154,7 @@ Some ID columns intentionally have **no foreign key**, either because the refere
 | `signal_deliveries.SubscriptionId`, `InstanceId`, `TokenId`, `WorkflowDefinitionId` | Signal subscription and runtime rows, kept as plain IDs so a throw never waits on a recipient's instance or token lock; a start delivery's `InstanceId` is the instance it created |
 | `signal_broadcast_jobs.WorkflowDefinitionId`, `OriginalJobId`; `signal_broadcasts.WorkflowKey` | `workflow_definitions.Id`, `workflow_jobs.Id` kept after the job is pruned, and `workflow_definitions.WorkflowKey` |
 | `signal_broadcasts.InstanceId`, `ThrowerInstanceId` | `workflow_instances.Id`: the instance a scope names and the instance that threw, kept as plain IDs so a throw never waits on that instance's row lock and a broadcast outlives its thrower |
+| `workflow_definition_signal_names.SignalName`; `SignalName` in `signal_subscriptions`, `signal_start_subscriptions`, and `signal_broadcasts` | `signal_catalog_entries.Name`: names are recorded whether or not they have an entry, so an entry created later finds its users |
 
 ## Workflow definitions
 
@@ -198,7 +201,7 @@ Each row is one immutable version of a workflow. `POST /api/workflows` creates v
 
 - **Primary key:** `Id`
 - **References:** none
-- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`WorkflowDefinitionId`, [`administrative_action_batch_items`](#administrative_action_batch_items).`WorkflowDefinitionId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`instance_history`](#instance_history).`WorkflowDefinitionId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`CapturedWorkflowDefinitionId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`WorkflowDefinitionId`, [`instance_variable_updates`](#instance_variable_updates).`WorkflowDefinitionId`, [`node_executions`](#node_executions).`WorkflowDefinitionId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`WorkflowDefinitionId`, [`shared_variable_revisions`](#shared_variable_revisions).`WorkflowDefinitionId`, [`timer_subscriptions`](#timer_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`user_task_role_policies`](#user_task_role_policies).`WorkflowDefinitionId`, [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings).`WorkflowDefinitionId`, [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions).`WorkflowDefinitionId`, [`workflow_incidents`](#workflow_incidents) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instances`](#workflow_instances) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`SourceWorkflowDefinitionId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`TargetWorkflowDefinitionId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`CapturedSourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`SourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`TargetWorkflowDefinitionId`, [`workflow_jobs`](#workflow_jobs) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_definition_call_targets`](#workflow_definition_call_targets).`WorkflowDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ParentDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ChildDefinitionId`, [`signal_subscriptions`](#signal_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`)
+- **Referenced by:** [`administrative_action_batches`](#administrative_action_batches).`WorkflowDefinitionId`, [`administrative_action_batch_items`](#administrative_action_batch_items).`WorkflowDefinitionId`, [`conditional_boundary_subscriptions`](#conditional_boundary_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`instance_history`](#instance_history).`WorkflowDefinitionId`, [`instance_variable_update_batch_items`](#instance_variable_update_batch_items).`CapturedWorkflowDefinitionId`, [`instance_variable_update_batch_jobs`](#instance_variable_update_batch_jobs).`WorkflowDefinitionId`, [`instance_variable_updates`](#instance_variable_updates).`WorkflowDefinitionId`, [`node_executions`](#node_executions).`WorkflowDefinitionId`, [`sequence_flow_occurrences`](#sequence_flow_occurrences).`WorkflowDefinitionId`, [`shared_variable_revisions`](#shared_variable_revisions).`WorkflowDefinitionId`, [`timer_subscriptions`](#timer_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`user_task_role_policies`](#user_task_role_policies).`WorkflowDefinitionId`, [`workflow_definition_shared_variable_bindings`](#workflow_definition_shared_variable_bindings).`WorkflowDefinitionId`, [`workflow_definition_user_task_conditions`](#workflow_definition_user_task_conditions).`WorkflowDefinitionId`, [`workflow_incidents`](#workflow_incidents) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instances`](#workflow_instances) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`SourceWorkflowDefinitionId`, [`workflow_instance_version_change_batches`](#workflow_instance_version_change_batches).`TargetWorkflowDefinitionId`, [`workflow_instance_version_change_batch_items`](#workflow_instance_version_change_batch_items).`CapturedSourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`SourceWorkflowDefinitionId`, [`workflow_instance_version_changes`](#workflow_instance_version_changes).`TargetWorkflowDefinitionId`, [`workflow_jobs`](#workflow_jobs) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_definition_call_targets`](#workflow_definition_call_targets).`WorkflowDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ParentDefinitionId`, [`call_activity_executions`](#call_activity_executions).`ChildDefinitionId`, [`signal_subscriptions`](#signal_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`signal_start_subscriptions`](#signal_start_subscriptions) (`WorkflowDefinitionId`, `WorkflowKey`), [`workflow_definition_signal_names`](#workflow_definition_signal_names).`WorkflowDefinitionId`
 - **Unique:** (`Id`, `WorkflowKey`) (alternate key); (`WorkflowKey`, `Version`)
 
 The alternate key `(Id, WorkflowKey)` is the target of the composite foreign keys from `workflow_instances`, `workflow_jobs`, `workflow_incidents`, `timer_subscriptions`, `conditional_boundary_subscriptions`, and `signal_subscriptions`. It guarantees that a row's denormalized `WorkflowKey` always matches its exact version.
@@ -1233,6 +1236,7 @@ Waits for signals and the broadcasts that reach them. See [signals](bpmn-support
 - **A delivery** locks the instance hierarchy, then the subscription row, then the delivery row, and commits the delivery's final status with the instance change it describes. Cancel and retry lock the broadcast row, then update delivery rows; a delivery never locks the broadcast. A delivery job recounts a broadcast's counters and status only while holding its row, so a recount never overwrites a cancel or retry. A retry moves each delivery's `WorkflowDefinitionId` to the version its instance runs now. Only a delivering broadcast has pending deliveries, so pending-delivery queries start from the open broadcasts.
 - **Starts.** `signal_start_subscriptions` is written only by the operations that change a family's published default, under the family's exclusive lock: each locks the family's rows `FOR UPDATE` before its other writes, then makes them equal the signal starts of the new default, updating a persisting name's row in place. A throw scoped to a family or to every family freezes one `start` delivery per row it reads, in a second `INSERT ... SELECT` that share-locks those rows (`FOR SHARE OF s`), so an operation that changes a default waits for a throw in flight and then sees its pending deliveries. A start delivery takes the shared family lock, then its delivery row, and creates its instance.
 - **Retention.** The `signalBroadcasts` category deletes finished broadcasts aged from `CompletedAt`, and their deliveries and job links cascade. Subscriptions stay with their instance; start subscriptions stay with their family's default.
+- **Catalog.** `signal_catalog_entries` holds the [signal catalog](api-guide.md#signal-catalog), and `workflow_definition_signal_names` records the names each definition version's signal events use. No runtime transaction reads either table: deliveries, starts, and workflows' throws never consult the catalog. A transaction advisory lock per name, `pg_advisory_xact_lock(hashtext('signal-name'), hashtext(name))`, orders catalog writes against the readers. Definition saves and publications take it shared for each name they use, in ordinal order, after the family lock; a reactivation commit takes it shared for its version's names before it locks the instance; an API throw takes it shared for its one name; and a catalog write takes it exclusively for its one name before it locks the entry row `FOR UPDATE`, then reads definitions, instances, subscriptions, and broadcasts without locks.
 
 ```mermaid
 erDiagram
@@ -1260,6 +1264,13 @@ erDiagram
         bigint BroadcastId FK
         bigint JobId FK
     }
+    signal_catalog_entries {
+        bigint Id PK
+    }
+    workflow_definition_signal_names {
+        bigint WorkflowDefinitionId PK
+        integer NodeId PK
+    }
     workflow_instances ||--o{ signal_subscriptions : "InstanceId"
     execution_tokens ||--o{ signal_subscriptions : "TokenId"
     workflow_definitions ||--o{ signal_subscriptions : "WorkflowDefinitionId, WorkflowKey"
@@ -1267,6 +1278,7 @@ erDiagram
     signal_broadcasts ||--o{ signal_deliveries : "BroadcastId"
     signal_broadcasts ||--o{ signal_broadcast_jobs : "BroadcastId"
     workflow_jobs |o--o{ signal_broadcast_jobs : "JobId"
+    workflow_definitions ||--o{ workflow_definition_signal_names : "WorkflowDefinitionId"
 ```
 
 ### `signal_subscriptions`
@@ -1380,6 +1392,46 @@ One row per delivery job of a broadcast: one per represented definition for the 
 - **Checks:** `CK_signal_broadcast_jobs_reason` (`throw` or `retry`)
 
 A final lease expiry of a delivery job fails that job's pending deliveries with `lease_exhausted` through this link, or skips them with `broadcast_expired` when the broadcast's `ExpiresAt` is at or before the database's clock, read once for the statement. The down migration of `AddSignalEvents` refuses while any signal subscription, broadcast, `signalBroadcastDeliver` job, or node visit with the reason `signalReceived` exists.
+
+### `signal_catalog_entries`
+
+One [signal catalog](api-guide.md#signal-catalog) entry. Entries are never deleted: an archived name stays reserved. Added by `AddSignalCatalog`.
+
+| Column | Meaning |
+| --- | --- |
+| `Name` | The signal name, at most 100 characters, with `C` collation; unique, and fixed at creation. |
+| `Description` | At most 1,000 characters, or null. |
+| `Fields` | `jsonb` array of the payload fields in order, each `{ name, dataType, isArray, required, description }`. |
+| `ThrowRoles` | `jsonb` array of role strings, trimmed and deduplicated ignoring case. |
+| `AllowClients`, `AllowWorkflows` | Whether managed API clients and published workflows may throw the name. |
+| `Status`, `ArchivedAt` | `active` or `archived`; `ArchivedAt` is set exactly when archived. |
+| `CreatedAt`, `CreatedBy`, `UpdatedAt`, `UpdatedBy` | Attribution, each actor at most 300 characters. `UpdatedAt` is truncated to microseconds, moves forward on every write, and is the `expectedUpdatedAt` fence. |
+
+- **Primary key:** `Id`
+- **References:** none
+- **Referenced by:** none; names elsewhere are plain text, so names without an entry are recorded too
+- **Unique:** `IX_signal_catalog_entries_Name` on `Name`
+- **Checks:** `CK_signal_catalog_entries_name` (`"Name" ~ '^[a-z0-9][a-z0-9._-]{0,99}$'`, the signal-name rule); `CK_signal_catalog_entries_shape` (`Status` is `active` with a null `ArchivedAt`, or `archived` with one, and `jsonb_typeof` of `Fields` and `ThrowRoles` is `array`)
+
+A write takes the exclusive advisory lock of its name, then this row `FOR UPDATE`, compares `expectedUpdatedAt`, checks the live versions that use the name or counts what blocks archiving, and writes. The down migration of `AddSignalCatalog` refuses while any row exists, archived ones included, because dropping the table would silently end the roles and switches that narrow who may throw a name.
+
+### `workflow_definition_signal_names`
+
+One row per signal event of a definition version whose `signal.name` passes the name rule, whether or not the name has a catalog entry. `WorkflowDefinitionRepository.AddAsync` writes the rows with the version; a version never changes, so publication writes nothing. A catalog write finds the live versions that use a name through these rows, and the catalog page lists the names in use without an entry from them. Added by `AddSignalCatalog`, which fills it from every stored definition: the nodes of the five signal event types with a numeric `id` and a name that passes the rule, keeping one row when a definition inserted without validation repeats a node ID.
+
+| Column | Meaning |
+| --- | --- |
+| `WorkflowDefinitionId` | Owning version. Deleting the version deletes its rows. |
+| `NodeId` | The authored signal event. |
+| `SignalName` | The name, at most 100 characters, with `C` collation. |
+| `Usage` | `catch`, `boundary`, `start`, `throw`, or `end`, from the event's type. |
+
+- **Primary key:** (`WorkflowDefinitionId`, `NodeId`)
+- **References:** `WorkflowDefinitionId` → [`workflow_definitions`](#workflow_definitions) (required, `CASCADE`)
+- **Referenced by:** none
+- **Indexes:** `IX_workflow_definition_signal_names_SignalName` on (`SignalName`)
+
+Definitions that tests or tools insert directly into `workflow_definitions` get no rows, so a catalog write cannot see them; create versions through the API.
 
 ## Administrative operations
 
@@ -2189,7 +2241,7 @@ SELECT c.conrelid::regclass AS child_table,
  ORDER BY 1, 2;
 ```
 
-A database migrated to the current release has 71 `flowbit` tables (plus `__EFMigrationsHistory`) and 144 foreign keys.
+A database migrated to the current release has 74 `flowbit` tables (plus `__EFMigrationsHistory`) and 146 foreign keys.
 
 ## Keeping this page current
 

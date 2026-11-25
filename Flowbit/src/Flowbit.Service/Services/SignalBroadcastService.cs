@@ -22,7 +22,8 @@ public sealed class SignalBroadcastService(
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     ILogger<SignalBroadcastService> logger,
-    SignalBroadcastWriter writer)
+    SignalBroadcastWriter writer,
+    ISignalCatalogRepository? catalog = null)
     : ISignalBroadcastService
 {
     public const string DeliverPhase = SignalBroadcastWriter.DeliverPhase;
@@ -102,6 +103,11 @@ public sealed class SignalBroadcastService(
                 return (ReplayOrConflict(winner, requestHash, caller), true);
             }
         }
+
+        // After the replay check, so a retried request gets its broadcast whatever happened to
+        // the catalog since; before the open-broadcast count, so a payload that does not fit is
+        // never reported as the limit.
+        await CheckCatalogForThrowAsync(name!, request.Payload, caller, cancellationToken);
 
         // A soft limit: counted without a lock, so no throw queues behind another
         // throw's recipient insert, and concurrent throws may pass it by a few. Only
@@ -265,6 +271,13 @@ public sealed class SignalBroadcastService(
             return null;
         }
 
+        // Its thrower may always stop a broadcast, so a mistake can be stopped after the
+        // entry's roles change; anyone else needs the throw rules of the entry now.
+        if (!IsThrower(broadcast, caller))
+        {
+            await CheckCatalogForCommandAsync(broadcast.SignalName, caller, SignalCatalogAccess.Cancelling, cancellationToken);
+        }
+
         if (broadcast.Status == SignalBroadcastStatuses.Cancelled)
         {
             await transaction.CommitAsync(cancellationToken);
@@ -306,6 +319,10 @@ public sealed class SignalBroadcastService(
         {
             return null;
         }
+
+        // A retry delivers the payload again, so it follows the throw rules for everyone, and an
+        // archived name, which nothing may throw, cannot be retried either.
+        await CheckCatalogForCommandAsync(broadcast.SignalName, caller, SignalCatalogAccess.Retrying, cancellationToken);
 
         if (broadcast.Status != SignalBroadcastStatuses.CompletedWithIssues)
         {
@@ -437,6 +454,83 @@ public sealed class SignalBroadcastService(
                 return scope;
         }
     }
+
+    /// <summary>
+    /// The catalog step of a throw (EVENT-04F), inside the throw's transaction: the shared lock of
+    /// the name, then its entry, so the throw is checked against the entry that is committed. The
+    /// mode is read only for a name without an entry.
+    /// </summary>
+    private async Task CheckCatalogForThrowAsync(
+        string name,
+        JsonElement? payload,
+        SignalCaller caller,
+        CancellationToken cancellationToken)
+    {
+        if (catalog is null)
+        {
+            return;
+        }
+
+        await catalog.LockNamesAsync([name], exclusive: false, cancellationToken);
+        var entry = await catalog.GetAsync(name, cancellationToken);
+        if (entry is null)
+        {
+            var setting = await engineSettings.GetByKeyAsync(SignalCatalogModes.SettingKey, cancellationToken);
+            if (SignalCatalogModes.ParseMode(setting?.Value) == SignalCatalogModes.Required)
+            {
+                throw new WorkflowDomainException(
+                    $"Signal '{name}' has no entry in the signal catalog; this deployment requires one.");
+            }
+
+            return;
+        }
+
+        if (!entry.IsActive)
+        {
+            throw ArchivedProblem(name);
+        }
+
+        if (SignalCatalogAccess.Refusal(entry, caller, SignalCatalogAccess.Throwing) is { } refusal)
+        {
+            throw new WorkflowForbiddenException(refusal, SignalCatalogAccess.ForbiddenCode);
+        }
+
+        if (SignalCatalogContract.PayloadProblem(entry, payload) is { } problem)
+        {
+            throw new WorkflowDomainException(problem);
+        }
+    }
+
+    /// <summary>The catalog rules of a cancel or retry, read without a lock.</summary>
+    private async Task CheckCatalogForCommandAsync(
+        string name,
+        SignalCaller caller,
+        string verb,
+        CancellationToken cancellationToken)
+    {
+        if (catalog is null || await catalog.GetAsync(name, cancellationToken) is not { } entry)
+        {
+            return;
+        }
+
+        if (verb == SignalCatalogAccess.Retrying && !entry.IsActive)
+        {
+            throw ArchivedProblem(name);
+        }
+
+        if (SignalCatalogAccess.Refusal(entry, caller, verb) is { } refusal)
+        {
+            throw new WorkflowForbiddenException(refusal, SignalCatalogAccess.ForbiddenCode);
+        }
+    }
+
+    private static WorkflowDomainException ArchivedProblem(string name) =>
+        new($"Signal '{name}' is archived in the signal catalog and cannot be thrown.");
+
+    /// <summary>Whether the caller threw the broadcast: the same thrower kind and identity.</summary>
+    private static bool IsThrower(SignalBroadcastRecord broadcast, SignalCaller caller) =>
+        string.Equals(broadcast.ThrownByKind, caller.Kind, StringComparison.Ordinal)
+        && string.Equals(broadcast.ThrownBy, caller.Id, StringComparison.Ordinal);
 
     private async Task<int> ReadLimitAsync(string key, int fallback, int cap, CancellationToken cancellationToken)
     {

@@ -1275,6 +1275,20 @@
     font-variant-numeric: tabular-nums;
   }
   .flowbit-editor .cron-preview-table th { color: var(--muted); font-weight: 600; }
+  /* The hosted signal catalog under a signal's name. The page also loads Bootstrap, which styles lists. */
+  .flowbit-editor .signal-catalog { margin: -6px 0 13px; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+  .flowbit-editor .signal-catalog.is-empty { margin: 0; }
+  .flowbit-editor .signal-catalog-details:empty { display: none; }
+  .flowbit-editor .signal-catalog-details p { margin: 0; }
+  .flowbit-editor .signal-catalog-details p + p,
+  .flowbit-editor .signal-catalog-details p + ul { margin-top: 4px; }
+  .flowbit-editor .signal-catalog-title { color: var(--text); font-weight: 650; }
+  .flowbit-editor .signal-catalog-note { color: var(--warning-text); }
+  .flowbit-editor .signal-catalog-fields { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+  .flowbit-editor .signal-catalog-fields li { margin: 0; padding: 0; }
+  .flowbit-editor .signal-catalog-field-name { color: var(--text); font-family: monospace; }
+  .flowbit-editor button.signal-catalog-add { width: 100%; margin-top: 8px; }
+  .flowbit-editor button.signal-catalog-add[hidden] { display: none; }
   .flowbit-editor .row { display: flex; gap: 8px; }
   .flowbit-editor .row > * { flex: 1; }
   /* The hosted page also loads Bootstrap, whose .badge is a centred, bold, unwrapped pill. */

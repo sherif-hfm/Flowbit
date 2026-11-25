@@ -304,6 +304,110 @@
         }
     }
 
+    private const int SignalCatalogPageSize = 200;
+    private const int MaxSignalCatalogEntries = 1000;
+    private const int SignalCatalogDescriptionLength = 120;
+
+    /// <summary>
+    /// The active signal catalog entries the editor suggests (EVENT-04F): <c>ok</c> with at most 1,000 summaries,
+    /// the catalog mode in effect, and whether more entries exist; <c>forbidden</c> when the caller lacks or lost
+    /// permission; or <c>unavailable</c>. Summaries carry no fields, so the reply stays small.
+    /// </summary>
+    public sealed record SignalCatalogReply(
+        string Status,
+        IReadOnlyList<SignalCatalogEntrySummaryDto>? Entries = null,
+        string? Mode = null,
+        bool Truncated = false);
+
+    /// <summary>
+    /// One signal catalog entry with its fields: <c>ok</c>, <c>missing</c> when the catalog has no entry for the name,
+    /// <c>forbidden</c>, or <c>unavailable</c>.
+    /// </summary>
+    public sealed record SignalCatalogEntryReply(string Status, SignalCatalogEntryDto? Entry = null);
+
+    [JSInvokable]
+    public async Task<SignalCatalogReply> GetSignalCatalog()
+    {
+        if (disposed) return new("unavailable");
+        if (!CanUseHostedOperations) return new("forbidden");
+        var identity = Token.IdentityKey;
+        try
+        {
+            var entries = new List<SignalCatalogEntrySummaryDto>();
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            string? mode = null;
+            var truncated = false;
+            for (var page = 1; ; page++)
+            {
+                var list = await Api.GetSignalCatalogEntriesAsync(
+                    status: "active", page: page, pageSize: SignalCatalogPageSize, cancellationToken: lifetime.Token);
+                if (disposed) return new("unavailable");
+                mode = list.Mode;
+                foreach (var entry in list.Items)
+                {
+                    if (entries.Count == MaxSignalCatalogEntries) { truncated = true; break; }
+                    // Offset paging can repeat an entry when another is created between two pages.
+                    if (names.Add(entry.Name)) entries.Add(SummarizeSignalCatalogEntry(entry));
+                }
+                var more = list.Items.Count == SignalCatalogPageSize && (long)page * SignalCatalogPageSize < list.TotalCount;
+                if (truncated || !more) break;
+                if (page * SignalCatalogPageSize >= MaxSignalCatalogEntries) { truncated = true; break; }
+            }
+            // A catalog read under another identity is not shown.
+            return CanUseHostedOperations && identity == Token.IdentityKey
+                ? new("ok", entries, mode, truncated)
+                : new("forbidden");
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return new("forbidden");
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or WorkflowApiException
+                                       or JsonException or InvalidOperationException)
+        {
+            return new("unavailable");
+        }
+    }
+
+    [JSInvokable]
+    public async Task<SignalCatalogEntryReply> GetSignalCatalogEntry(string name)
+    {
+        if (disposed) return new("unavailable");
+        if (!CanUseHostedOperations) return new("forbidden");
+        // The catalog holds only valid names, so no other name is sent.
+        if (!SignalEventRules.IsValidName(name)) return new("missing");
+        var identity = Token.IdentityKey;
+        try
+        {
+            var entry = await Api.GetSignalCatalogEntryAsync(name, lifetime.Token);
+            if (disposed) return new("unavailable");
+            if (!CanUseHostedOperations || identity != Token.IdentityKey) return new("forbidden");
+            return entry is null ? new("missing") : new("ok", entry);
+        }
+        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return new("forbidden");
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or WorkflowApiException
+                                       or JsonException or InvalidOperationException)
+        {
+            return new("unavailable");
+        }
+    }
+
+    private static SignalCatalogEntrySummaryDto SummarizeSignalCatalogEntry(SignalCatalogEntryDto entry) =>
+        new(entry.Name, ShortSignalCatalogDescription(entry.Description), entry.AllowWorkflows, entry.Fields?.Count ?? 0);
+
+    // The first 120 text elements, so a cut never splits a surrogate pair or a combining sequence.
+    private static string? ShortSignalCatalogDescription(string? description)
+    {
+        if (string.IsNullOrEmpty(description)) return null;
+        var text = new System.Globalization.StringInfo(description);
+        return text.LengthInTextElements <= SignalCatalogDescriptionLength
+            ? description
+            : text.SubstringByTextElements(0, SignalCatalogDescriptionLength);
+    }
+
     [JSInvokable]
     public Task EditorChanged(bool hasChanges, string revision)
     {

@@ -52,4 +52,6 @@ public sealed class WorkflowDefinitionEntity
 
     public List<WorkflowDefinitionCallTargetEntity> CallTargets { get; set; } = [];
 
+    public List<WorkflowDefinitionSignalNameEntity> SignalNames { get; set; } = [];
+
 }

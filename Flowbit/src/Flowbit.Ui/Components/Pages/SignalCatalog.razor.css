@@ -1,0 +1,113 @@
+.signal-catalog-section {
+    margin: 1.25rem 0 0;
+    padding: 1rem;
+    min-width: 0;
+    border: 1px solid var(--fb-border);
+    border-radius: var(--fb-radius-sm);
+}
+
+.signal-catalog-section legend {
+    float: none;
+    width: auto;
+    margin: 0 0 .25rem;
+    padding: 0 .25rem;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+/* Name, type, flags, description, and Remove on one line where there is room. */
+.signal-catalog-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(7rem, 9rem) auto minmax(0, 1.4fr) auto;
+    align-items: end;
+    gap: .75rem;
+    margin-bottom: .75rem;
+}
+
+.signal-catalog-field-flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .25rem 1rem;
+    padding-bottom: .4rem;
+}
+
+.signal-catalog-review {
+    margin-top: 1rem;
+}
+
+.signal-catalog-review:empty {
+    margin-top: 0;
+}
+
+.signal-catalog-problems {
+    margin: 0 0 .5rem;
+    padding-left: 1.25rem;
+}
+
+.signal-catalog-problems li,
+.signal-catalog-text,
+.signal-catalog-versions li {
+    overflow-wrap: anywhere;
+}
+
+.signal-catalog-usage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: .35rem 1rem;
+    max-width: 36rem;
+    margin-bottom: 1rem;
+}
+
+.signal-catalog-usage dt {
+    font-weight: 400;
+}
+
+.signal-catalog-usage dd {
+    margin: 0;
+    font-weight: 600;
+    text-align: right;
+}
+
+.signal-catalog-versions {
+    margin: 0 0 1rem;
+    padding-left: 1.25rem;
+}
+
+.signal-catalog-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: .75rem;
+    padding: 0 1rem 1rem;
+}
+
+.signal-catalog-filters > div {
+    width: 15rem;
+    max-width: 100%;
+}
+
+.signal-catalog-mode {
+    display: block;
+}
+
+.signal-catalog-table td {
+    min-width: 6rem;
+}
+
+@media (max-width: 900px) {
+    .signal-catalog-field {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 575.98px) {
+    .signal-catalog-field {
+        grid-template-columns: minmax(0, 1fr);
+        padding-bottom: .75rem;
+        border-bottom: 1px solid var(--fb-border);
+    }
+
+    .signal-catalog-section {
+        padding: .75rem;
+    }
+}

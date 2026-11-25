@@ -152,6 +152,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     public DbSet<SignalBroadcastJobEntity> SignalBroadcastJobs => Set<SignalBroadcastJobEntity>();
 
+    public DbSet<SignalCatalogEntryEntity> SignalCatalogEntries => Set<SignalCatalogEntryEntity>();
+
+    public DbSet<WorkflowDefinitionSignalNameEntity> WorkflowDefinitionSignalNames =>
+        Set<WorkflowDefinitionSignalNameEntity>();
+
     /// <summary>
     /// The shape of a delivery by kind. AddSignalStartEvents adds it NOT VALID and
     /// ValidateSignalStartConstraints validates it outside a transaction.
@@ -2443,6 +2448,49 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .WithMany()
                 .HasForeignKey(e => e.TokenId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<SignalCatalogEntryEntity>(entity =>
+        {
+            entity.ToTable("signal_catalog_entries", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_signal_catalog_entries_name",
+                    "\"Name\" ~ '^[a-z0-9][a-z0-9._-]{0,99}$'");
+                table.HasCheckConstraint(
+                    "CK_signal_catalog_entries_shape",
+                    "((\"Status\" = 'active' AND \"ArchivedAt\" IS NULL) OR (\"Status\" = 'archived' AND \"ArchivedAt\" IS NOT NULL)) "
+                    + "AND jsonb_typeof(\"Fields\") = 'array' AND jsonb_typeof(\"ThrowRoles\") = 'array'");
+            });
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name)
+                .HasMaxLength(SignalEventRules.MaxNameLength)
+                .UseCollation("C")
+                .IsRequired();
+            entity.Property(e => e.Description).HasMaxLength(SignalCatalogEntryRules.MaxDescriptionLength);
+            entity.Property(e => e.Fields).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.ThrowRoles).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.CreatedBy).HasMaxLength(300);
+            entity.Property(e => e.UpdatedBy).HasMaxLength(300);
+            entity.HasIndex(e => e.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<WorkflowDefinitionSignalNameEntity>(entity =>
+        {
+            entity.ToTable("workflow_definition_signal_names");
+            entity.HasKey(e => new { e.WorkflowDefinitionId, e.NodeId });
+            entity.Property(e => e.SignalName)
+                .HasMaxLength(SignalEventRules.MaxNameLength)
+                .UseCollation("C")
+                .IsRequired();
+            entity.Property(e => e.Usage).HasMaxLength(16).IsRequired();
+            // No foreign key to the catalog: names without an entry are recorded too.
+            entity.HasIndex(e => e.SignalName);
+            entity.HasOne(e => e.WorkflowDefinition)
+                .WithMany(e => e.SignalNames)
+                .HasForeignKey(e => e.WorkflowDefinitionId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<SignalStartSubscriptionEntity>(entity =>

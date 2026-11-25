@@ -728,6 +728,7 @@ Starts an instance of its workflow each time a signal with its `signal.name` is 
 - **Who can start it.** Whoever may throw the signal: users with a role from `Signals.RequiredRole`, managed clients with `signals.throw`, and every published workflow that throws it. No role is checked when the start is delivered, so publishing a signal start is the author's consent to these starters.
 - **Loops.** The first token continues the broadcast's chain count, so families that start each other stop at `Workflow.Async.MaxConsecutiveAutomaticActivations`; a throw through the API starts a new chain. Saving rejects a throw or end event that throws, to a scope that includes its own family, a name a signal start of the same definition starts on: `Signal end event #4 throws 'warehouse.recall-announced' to a scope that includes this workflow, which starts on it at signal start event #1; every instance would start another.`
 - **Other settings.** One definition starts once per name: `Signal start event #5 starts on 'orders.created', which signal start event #1 already starts on; a workflow starts once per signal.` It cannot be `initialEventId`, so a workflow whose only entries are signal starts leaves it null, and no request, call activity, or message start can select it. `idempotency` is rejected: `Signal start event #1 cannot define idempotency; a broadcast starts one instance per workflow, and businessKey rejects a repeated case.` Roles, `variables`, `callOnly`, `message`, async, job, and multi-instance settings are rejected too.
+- **Signal catalog.** When the name has a catalog entry, each mapping path must name one of its fields with a type that fits, and publication refuses a required mapping without a default on an optional field; an archived entry refuses every save. See [signal catalog checks](#signal-catalog-checks).
 
 See [signals](bpmn-support.md#signals), [starting a workflow with a signal](developer-guide.md#start-a-workflow-with-a-signal), and the [signal start example](../examples/signals/05-signal-start-recall-notice.json).
 
@@ -845,6 +846,7 @@ The example assumes `policyVersion` is undeclared or a declared scalar `number` 
 - **Failures.** A payload that fails a mapping fails only that delivery with `signal_payload_invalid`, writes nothing, and leaves the catch waiting and subscribed.
 - **Boundaries.** Timer, conditional, and [signal](#signalboundaryevent) boundaries may attach, for example to stop waiting after seven days; see [boundary host rules](#boundary-host-rules). A signal boundary on the catch must use another signal name than the catch. A conditional boundary that the mapped values make true can take the token before the catch continues.
 - **Other settings.** Only the [common node properties](#common-node-properties) and `signal` are accepted. Task, role, variable, timer, conditional, message, async, job, and multi-instance settings are rejected, as is `signal` on any other node type.
+- **Signal catalog.** When the name has a catalog entry, each mapping path must name one of its fields with a type that fits, and publication refuses a required mapping without a default on an optional field; an archived entry refuses every save. See [signal catalog checks](#signal-catalog-checks).
 
 See [signals](bpmn-support.md#signals), [broadcasting signals](developer-guide.md#broadcast-signals), and the [signal catch example](../examples/signals/01-signal-catch-policy-change.json).
 
@@ -882,6 +884,7 @@ The example assumes the workflow declares or produces `cancelReason`, and that o
 - **Refusals.** A throw that cannot be built, or that a limit stops, fails its step; it is never dropped. See [refused throws](#refused-signal-throws).
 - **Versions and reactivation.** No token rests on the event, so a version change that alters its name, scope, or payload adds no blocker and applies to the next token that enters it. A token that passes the event again, for example after a reactivation or in a loop, throws again.
 - **Other settings.** Only the [common node properties](#common-node-properties) and `signal` are accepted. Task, role, variable, timer, conditional, message, async, job, and multi-instance settings are rejected, and no boundary can attach to the event.
+- **Signal catalog.** When the name has a catalog entry, the payload may send only its fields, with types that fit. Publication also needs every required field sent by a required payload entry or the `instanceId` source, and an entry that lets workflows throw the name; an archived entry refuses every save. Entry roles do not apply to a workflow's throw, and the throw does not read the catalog when it runs. See [signal catalog checks](#signal-catalog-checks).
 
 See [signals](bpmn-support.md#signals), [throwing a signal from a workflow](developer-guide.md#throw-a-signal-from-a-workflow), and the [order cancellation example](../examples/signals/03-signal-throw-order-cancellation.json).
 
@@ -1116,6 +1119,7 @@ The example assumes node `2` is an eligible host and `unitPrice` is undeclared o
 - **Failures.** A payload that fails a mapping fails only that delivery with `signal_payload_invalid`, writes nothing, and leaves the host active and the boundary listening.
 - **Version changes.** While a token is at the host, a target version that adds, removes, or changes a signal boundary on it (its ID, type, name, interrupting flag, or outgoing flow) blocks the change with `attached_signal_boundary_contract_changed`. Changing only the mappings gives the `signal_mapping_contract_changed` warning, unless the host has an open job, which then blocks with `open_job_contract_changed` because a job's contract includes its host's boundaries. See [signals and version changes](developer-guide.md#signals-and-version-changes).
 - **Other settings.** Only the [common node properties](#common-node-properties), `attachedToRef`, `cancelActivity`, and `signal` are accepted. Task, role, variable, timer, conditional, message, async, job, and multi-instance settings are rejected.
+- **Signal catalog.** As for a [signal catch](#intermediatesignalcatchevent): when the name has a catalog entry, the mappings must read its fields with types that fit. See [signal catalog checks](#signal-catalog-checks).
 
 See [signals](bpmn-support.md#signals), [broadcasting signals](developer-guide.md#broadcast-signals), and the [signal boundaries example](../examples/signals/02-signal-boundaries-recall.json).
 
@@ -1216,7 +1220,7 @@ The example assumes the workflow declares `orderNumber` as a single `string` and
 
 - **When it throws.** When its token enters it, in the step that moves the token there: after the token's update and before the instance's completion is decided, so the instance is still running when its other waits are frozen. That is earlier than an intermediate throw, which takes a routing step of its own. An end event that a fork's flow leads straight into therefore throws in the fork's own step, before any other branch of that fork has reached its wait, and reaches none of them whatever the order of the flows; see [which waits receive it](#which-waits-a-thrown-signal-reaches).
 - **Records.** History records the row that moves the token onto the end event, then an additional row from the end event to itself with note `signalThrown` and the payload described for the [throw event](#intermediatesignalthrowevent), with `eventKind` `end`. The visit completes with reason `normalEnd`. An instance that ends here is completed and reported as one that ends at a plain end event; a call activity's child that ends here returns its result to the parent as usual.
-- **Refusals, versions, and other settings.** As for the [throw event](#intermediatesignalthrowevent): a refused throw fails the step that moved the token there ([refused throws](#refused-signal-throws)), a version change adds no blocker, and only the common node properties and `signal` are accepted.
+- **Refusals, versions, catalog, and other settings.** As for the [throw event](#intermediatesignalthrowevent): a refused throw fails the step that moved the token there ([refused throws](#refused-signal-throws)), a version change adds no blocker, a name with a catalog entry is checked as a throw's is ([signal catalog checks](#signal-catalog-checks)), and only the common node properties and `signal` are accepted.
 
 See [signals](bpmn-support.md#signals), [throwing a signal from a workflow](developer-guide.md#throw-a-signal-from-a-workflow), and the [recall decision example](../examples/signals/04-signal-end-recall-decision.json).
 
@@ -1414,7 +1418,7 @@ Conditions support NCalc built-ins plus the pure string helpers `Length`, `Len`,
 
 ## Signal configuration
 
-The required `signal` object belongs only to the five signal events. On `intermediateSignalCatchEvent` and `signalBoundaryEvent` it names the signal the event waits for and maps its payload; on `signalStartEvent` it names the signal that starts the workflow, and its mappings declare the start variables; on `intermediateSignalThrowEvent` and `signalEndEvent` it names the signal the event throws, its scope, and its payload.
+The required `signal` object belongs only to the five signal events. On `intermediateSignalCatchEvent` and `signalBoundaryEvent` it names the signal the event waits for and maps its payload; on `signalStartEvent` it names the signal that starts the workflow, and its mappings declare the start variables; on `intermediateSignalThrowEvent` and `signalEndEvent` it names the signal the event throws, its scope, and its payload. When the deployment's signal catalog has an entry for the name, the payload a throw sends and the paths a receiver reads must fit that entry's fields; see [signal catalog checks](#signal-catalog-checks).
 
 | Property | Type | Required / default | Meaning and constraints |
 | --- | --- | --- | --- |
@@ -1516,6 +1520,58 @@ What fails depends on where the step runs:
 | The start of a call activity's child | The attempt's changes are discarded and the call fails with `call_start_failed`. |
 | An item of an administrative action batch | The item's transaction rolls back and the item is `failed` with the message; other items are unaffected. |
 | An item of a variable-update batch | The item's transaction rolls back and the item is `skipped` with the message, as for any business failure in that batch; other items are unaffected. |
+
+### Signal catalog checks
+
+A deployment can keep a [signal catalog](api-guide.md#signal-catalog): one entry per signal name, with a description, a closed list of typed payload fields, and who may throw it. When a signal event's name has an entry, saving and publishing check the event against it. A name without an entry is not checked, unless [`Signals.CatalogMode`](engine-settings.md#signalscatalogmode) is `required`. The catalog is never read while instances run: deliveries, starts, and the throws of signal throw and end events behave as the sections above describe, because every live version already fits its entries.
+
+| Stage | When | Rules |
+| --- | --- | --- |
+| Save | Every save, drafts included | The rows marked **Save** below. |
+| Publication | Publishing, creating or updating with `publish: true`, and setting a default | The **Save** and **Publication** rows, and in `required` mode a name without an entry. |
+| Reactivation | [Reactivating](api-guide.md#get-apiinstancesidreactivation) an instance | The **Save** and **Publication** rows, but not the `required` mode, because the version was published before. A problem is the blocker `signal_catalog_mismatch`. |
+| Catalog write | Creating, changing, or reactivating an entry | The **Save** and **Publication** rows for the events that use that name, in every published version and every version with a running instance. A problem refuses the write. |
+
+The error of a save or publication is the first problem: events in node ID order, and within an event the order of this table. The AI assistant's proposal and `POST /api/workflows/validate` list all of them, save rows as save blockers and the others as publication blockers.
+
+| Event | Problem | Stage | Message |
+| --- | --- | --- | --- |
+| Any signal event | Archived entry | Save | `Signal catch event #4 uses signal 'claims.policy-changed', whose catalog entry is archived.` No other row is checked for that event. |
+| Throw or end event | A payload member is not a field | Save | `Signal throw event #7 payload sends 'reson', which is not a field of the catalog entry of 'warehouse.product-recall'. Its fields: reason (string), skus (string[]), details (json).` |
+| Throw or end event | A payload variable's type does not fit | Save | `Signal throw event #7 payload entry 'skus' reads 'skuList', declared as string, but the catalog entry of 'warehouse.product-recall' defines it as string[].` |
+| Throw or end event | A payload source's type does not fit | Save | `Signal end event #7 payload entry 'orderInstance' sends source 'businessKey', which is string, but the catalog entry of 'warehouse.product-recall' defines it as number.` |
+| Catch, boundary, or start | A mapping path is not a field | Save | `Signal catch event #4 mapping to 'policyVersion' reads 'verison', which is not a field of the catalog entry of 'claims.policy-changed'. Its fields: version (number), note (string).` For a longer path: `... reads 'detail.lot', whose first part 'detail' is not a field of the catalog entry of ...` |
+| Catch, boundary, or start | A path goes below a field that has no parts | Save | `Signal catch event #4 mapping to 'major' reads 'version.major' below field 'version', which is a number; only a json field or an array element has parts.` |
+| Catch, boundary, or start | A mapping's type does not fit | Save | `Signal catch event #4 mapping to 'policyVersion' is string, but the catalog entry of 'claims.policy-changed' defines 'version' as number.` For an array element: `Signal catch event #4 mapping to 'first' is number, but the catalog entry of 'warehouse.product-recall' defines the items of 'skus' as string.` |
+| Any signal event | No entry in `required` mode | Publication only | `Signal catch event #4 uses signal 'claims.policy-changed', which has no entry in the signal catalog; this deployment requires one before publication.` |
+| Throw or end event | `allowWorkflows` is false | Publication | `Signal throw event #7 throws 'warehouse.product-recall', which its catalog entry does not let workflows throw.` |
+| Throw or end event | A required field is not sent | Publication | `Signal throw event #7 payload does not send 'skus', which the catalog entry of 'warehouse.product-recall' requires.` |
+| Throw or end event | A required field comes from an optional payload entry | Publication | `Signal throw event #7 payload entry 'skus' must set required, because the catalog entry of 'warehouse.product-recall' requires it.` |
+| Throw or end event | An optional field comes from a variable that can be null, in an optional payload entry | Publication | `Signal throw event #7 payload entry 'note' must set required, because variable 'remark' can be null and the catalog entry of 'warehouse.product-recall' accepts no null field.` |
+| Catch, boundary, or start | A mapping is required without a default, but the field is optional | Publication | `Signal catch event #4 mapping to 'note' is required without a defaultValue, but 'note' is optional in the catalog entry of 'claims.policy-changed'.` |
+
+Within a throw or end event, every unknown member is reported first, in payload order, then every type, then the publication rows; within a receiver, each mapping in order, then the required rows. A field list names fields as `reason (string), skus (string[])`, at most 20 and then `, and N more`, or `none`.
+
+**Compatible types.** The side that reads may be wider than the field, as the runtime's value check is; the side that writes may be narrower:
+
+| Field | A receiver's mapping may be | A throw's payload variable may be |
+| --- | --- | --- |
+| Any type | The same type and array flag. A `json` mapping reads any field; a `json` array mapping reads only an array field, of any element type. | The same type and array flag. |
+| `date` or `datetime` | Also `string` with the same array flag. | Only the same type and array flag. |
+| `string` | `string` or `json`, as above. | Also a `date` or `datetime` variable with the same array flag. |
+| `json` | Only `json`; only a scalar `json` mapping for a scalar `json` field. | Any type and array flag. |
+
+A payload entry's type is its variable's declared type and array flag, and every declaration of that variable must fit. A `source` entry is a `number` for `instanceId` and a `string` for `businessKey`.
+
+**Paths of a receiver.** A blank path, a default-only mapping, is not checked. The path's first dotted part names the field, compared exactly, as the runtime reads it. A path equal to a field compares the mapping with the field. A field and a numeric index, such as `skus.0`, reads one element of an array field and compares the mapping with the element type. Any longer path needs a `json` field or an array of `json`, and its type is not checked.
+
+**Required fields.** A throw must send every required field from `source: "instanceId"`, which is always present, or from a `variable` or `source: "businessKey"` entry with `required: true`, because only those refuse a throw that has no value. A receiver may map an optional field as `required` only with a `defaultValue`; otherwise a throw that leaves the field out, which the contract allows, would fail its delivery.
+
+**No field holds null.** A receiver's mapping refuses null unless its target variable is nullable, so a null that one receiver accepts would fail another's delivery. An API throw that sends JSON null for a field is therefore refused, optional fields included; leave the member out instead. A throw or end event sends a stored null of an optional payload entry as it is, so a payload entry for an optional field that reads a variable that can hold null (a `nullable` process variable, or an optional scalar `json` input or mapping output) must set `required`: a null then stops the throw, before any delivery reads it.
+
+**What the contract does not promise.** The inside of a `json` field and the elements of an array field are not part of the contract. A required mapping that reads part of a field, such as `skus.0` or `details.lot`, fails its delivery when that part is missing, for example when a throw sends an empty array or an object without `lot`, even though the field fits. Give such a mapping a `defaultValue`, or leave it optional.
+
+Member names and paths are compared exactly, so a payload entry named `Reason` is not the field `reason`. The editor hosted in Flowbit.Ui shows a name's entry in the **Signal** section and can add its missing fields ([UI guide](ui-guide.md#signal-catalog-in-the-editor)); the standalone editor does not check the catalog, and a save through the API reports its problems.
 
 ## Boundary host rules
 

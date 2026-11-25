@@ -77,6 +77,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IConditionalBoundarySubscriptionRepository, ConditionalBoundarySubscriptionRepository>();
         services.AddScoped<ISignalSubscriptionRepository, SignalSubscriptionRepository>();
         services.AddScoped<ISignalBroadcastRepository, SignalBroadcastRepository>();
+        services.AddScoped<ISignalCatalogRepository, SignalCatalogRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<DatabaseInitializer>();
 

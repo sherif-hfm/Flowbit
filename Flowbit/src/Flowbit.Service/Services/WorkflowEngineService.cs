@@ -41,7 +41,8 @@ public sealed partial class WorkflowEngineService(
     AutomaticMultiInstanceCoordinator? automaticMultiInstanceCoordinator = null,
     ISignalSubscriptionRepository? signalSubscriptions = null,
     ISignalBroadcastRepository? signalBroadcasts = null,
-    SignalBroadcastWriter? signalBroadcastWriter = null)
+    SignalBroadcastWriter? signalBroadcastWriter = null,
+    ISignalCatalogRepository? signalCatalog = null)
     : IWorkflowEngineService, IWorkflowJobProcessor,
       IInstanceVersionChangeBatchExecutor, IConditionalEventRuntimeCoordinator,
       IAdministrativeActionExecutor

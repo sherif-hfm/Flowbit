@@ -103,7 +103,7 @@ subtask table together.
 
 ### EVENT-04 follow-up subtasks
 
-[EVENT-04](event-04-signal-events.md) is Done. Its later releases are separate items, listed here in the recommended order of implementation. EVENT-04A, EVENT-04B, EVENT-04C, EVENT-04D, and EVENT-04E are Done; none of the others is scheduled, and each needs its own plan before work starts. Update a subtask's status here, in its file, and in the parent's [later releases](event-04-signal-events.md#later-releases) together.
+[EVENT-04](event-04-signal-events.md) is Done. Its later releases are separate items, listed here in the recommended order of implementation. EVENT-04A, EVENT-04B, EVENT-04C, EVENT-04D, EVENT-04E, and EVENT-04F are Done; none of the others is scheduled, and each needs its own plan before work starts. Update a subtask's status here, in its file, and in the parent's [later releases](event-04-signal-events.md#later-releases) together.
 
 | ID | Subtask | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
@@ -112,7 +112,7 @@ subtask table together.
 | [EVENT-04C](event-04c-signal-start-events.md) | Signal start events | M–L | [EVENT-04](event-04-signal-events.md) | Done |
 | [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md) | Webhook events for signal broadcasts | M | [EVENT-04](event-04-signal-events.md), [INT-01](int-01-outbound-lifecycle-webhooks.md) | Done |
 | [EVENT-04E](event-04e-signal-broadcast-expiry.md) | Signal broadcast expiry | M | [EVENT-04](event-04-signal-events.md) | Done |
-| [EVENT-04F](event-04f-signal-catalog.md) | Signal catalog with payload contracts and permissions | M–L | [EVENT-04](event-04-signal-events.md) | Not started |
+| [EVENT-04F](event-04f-signal-catalog.md) | Signal catalog with payload contracts and permissions | M–L | [EVENT-04](event-04-signal-events.md) | Done |
 | [EVENT-04G](event-04g-parallel-signal-delivery.md) | Parallel signal delivery and a higher recipient limit | M | [EVENT-04](event-04-signal-events.md) | Not started |
 | [EVENT-04H](event-04h-expression-signal-names.md) | Expression signal names | M | [EVENT-04](event-04-signal-events.md) | Not started |
 | [EVENT-04I](event-04i-signal-boundaries-on-multi-instance-bodies.md) | Signal boundaries on multi-instance bodies | M | [EVENT-04](event-04-signal-events.md), [TASK-05](task-05-multi-instance-automatic-activities.md) | Not started |
@@ -124,7 +124,7 @@ The reasons for the order:
 - **EVENT-04A first.** It is the smallest item with everyday value, it changes no engine lifecycle, and the scope it adds is one a throw event will want to author.
 - **EVENT-04B, then EVENT-04C.** They complete the signal events. The throw comes first because it reuses the existing broadcast, while a start needs a recipient that is not an instance. Plan the start with the throw in view: a workflow that throws the signal that starts it needs a guard.
 - **EVENT-04D and EVENT-04E.** Both are small, and both matter more once workflows throw signals themselves and no caller waits for the result.
-- **EVENT-04F to EVENT-04K.** Each waits for a concrete need: the catalog for several teams sharing signal names, parallel delivery for measured delivery times, expression names for a case the business-key scope does not cover, and the last three for a first request.
+- **EVENT-04G to EVENT-04K.** Each waits for a concrete need: parallel delivery for measured delivery times, expression names for a case the business-key scope does not cover, and the last three for a first request.
 
 Signal catches behind an event-based gateway stay with [EVENT-03](event-03-event-based-gateway.md#later-releases).
 

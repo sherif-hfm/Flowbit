@@ -1,0 +1,61 @@
+@using static Flowbit.Ui.Components.Shared.Signals.SignalFormatting
+@* The catalog entry of the typed signal name, or its note. Display-only: the page owns the
+   lookup and the template insertion. Catalog text is administrators' data: Razor's encoding
+   shows it as text. *@
+<div id="signal-catalog-panel" class="signal-catalog-panel" aria-live="polite">
+    @if (Entry is null)
+    {
+        <p class="mb-0 signal-catalog-note">@CatalogMissingNote(Mode)</p>
+    }
+    else if (Entry.Status == SignalCatalogStatuses.Archived)
+    {
+        <p class="mb-0 signal-catalog-note">@CatalogArchivedNote</p>
+    }
+    else
+    {
+        <h3 class="h6 mb-1">Catalog</h3>
+        @if (!string.IsNullOrWhiteSpace(Entry.Description))
+        {
+            <p class="mb-1 signal-catalog-description">@Entry.Description</p>
+        }
+        @if (Entry.Fields.Count == 0)
+        {
+            <p class="mb-1">No payload fields: a throw sends an empty payload.</p>
+        }
+        else
+        {
+            <ul class="signal-catalog-fields">
+                @foreach (var field in Entry.Fields)
+                {
+                    <li>
+                        <code>@field.Name</code>: @CatalogFieldText(field)
+                        @if (!string.IsNullOrWhiteSpace(field.Description))
+                        {
+                            <span class="text-muted"> · @field.Description</span>
+                        }
+                    </li>
+                }
+            </ul>
+        }
+        <p class="mb-2 signal-catalog-throw">@CatalogThrowText(Entry)</p>
+        @if (Entry.Fields.Count > 0)
+        {
+            <button type="button" id="signal-insert-template" class="btn btn-sm btn-outline-primary" @onclick="OnInsertTemplate"
+                    disabled="@(!PayloadEmpty)" aria-describedby="signal-template-help">Insert payload template</button>
+            <div id="signal-template-help" class="form-text">Fills an empty payload box with the entry's fields, required ones first.</div>
+        }
+    }
+</div>
+
+@code {
+    /// <summary>The name's entry, or null when the catalog has none.</summary>
+    [Parameter] public SignalCatalogEntryDto? Entry { get; set; }
+
+    /// <summary>The catalog mode in effect, which the note for a missing entry names.</summary>
+    [Parameter] public string? Mode { get; set; }
+
+    /// <summary>Whether the payload box is empty; the template goes only into an empty box.</summary>
+    [Parameter] public bool PayloadEmpty { get; set; }
+
+    [Parameter] public EventCallback OnInsertTemplate { get; set; }
+}

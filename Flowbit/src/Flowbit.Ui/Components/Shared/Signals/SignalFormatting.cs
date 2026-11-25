@@ -378,6 +378,123 @@ internal static class SignalFormatting
     internal static string FormatJson(JsonElement? value) =>
         value is null ? "No payload" : JsonSerializer.Serialize(value.Value, JsonOptions);
 
+    /// <summary>The code of a 403 that a signal catalog entry's rule returned, as opposed to a lost permission.</summary>
+    internal const string CatalogForbiddenCode = "signal_catalog_forbidden";
+
+    internal const string CatalogArchivedNote = "Archived in the signal catalog; it cannot be thrown.";
+
+    internal const string CatalogCanThrowText = "You can throw this signal.";
+
+    /// <summary>The longest description an option of the name list shows.</summary>
+    internal const int MaxNameOptionLabelLength = 120;
+
+    /// <summary>The note for a name without a catalog entry, with what the mode in effect means for a throw.</summary>
+    internal static string CatalogMissingNote(string? mode) =>
+        SignalCatalogModes.ParseMode(mode) == SignalCatalogModes.Required
+            ? "Not in the signal catalog. This deployment requires an entry before a throw."
+            : "Not in the signal catalog.";
+
+    /// <summary>Whether the caller may throw an active entry's name, or why not, from its <c>canThrow</c>.</summary>
+    internal static string CatalogThrowText(SignalCatalogEntryDto entry) =>
+        entry.CanThrow
+            ? CatalogCanThrowText
+            : entry.ThrowRoles.Count > 0
+                ? $"You cannot throw this signal: it needs one of the roles its catalog entry lists: {string.Join(", ", entry.ThrowRoles)}."
+                : "You cannot throw this signal: it needs a role from Signals.RequiredRole.";
+
+    /// <summary>A field of an entry in words, such as "a string, required".</summary>
+    internal static string CatalogFieldText(SignalCatalogFieldDto field) =>
+        $"{SignalCatalogEntryRules.TypeWords(field.DataType, field.IsArray)}, {(field.Required ? "required" : "optional")}";
+
+    /// <summary>The review's Catalog row: the entry's name, or "No entry".</summary>
+    internal static string CatalogReviewText(SignalCatalogEntryDto? entry) =>
+        entry is null
+            ? "No entry"
+            : entry.Status == SignalCatalogStatuses.Archived ? $"{entry.Name} (archived)" : entry.Name;
+
+    /// <summary>
+    /// The options of the signal name list: the names from the subscription summary first, then
+    /// the active catalog entries not among them. A cataloged name's label is its description,
+    /// shortened to <see cref="MaxNameOptionLabelLength"/> characters.
+    /// </summary>
+    internal static IReadOnlyList<(string Value, string? Label)> NameOptions(
+        IEnumerable<string> summaryNames,
+        IReadOnlyList<SignalCatalogEntryDto>? catalogEntries)
+    {
+        var descriptions = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var entry in catalogEntries ?? [])
+        {
+            if (entry.Status == SignalCatalogStatuses.Active)
+            {
+                descriptions.TryAdd(entry.Name, ShortLabel(entry.Description));
+            }
+        }
+
+        var options = new List<(string Value, string? Label)>();
+        var listed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in summaryNames)
+        {
+            if (listed.Add(name))
+            {
+                options.Add((name, descriptions.GetValueOrDefault(name)));
+            }
+        }
+
+        foreach (var (name, description) in descriptions)
+        {
+            if (listed.Add(name))
+            {
+                options.Add((name, description));
+            }
+        }
+
+        return options;
+
+        static string? ShortLabel(string? description)
+        {
+            var text = description?.Trim();
+            if (string.IsNullOrEmpty(text))
+            {
+                return null;
+            }
+
+            var runes = text.EnumerateRunes().ToList();
+            return runes.Count <= MaxNameOptionLabelLength
+                ? text
+                : string.Concat(runes.Take(MaxNameOptionLabelLength - 1).Select(rune => rune.ToString())) + "…";
+        }
+    }
+
+    /// <summary>
+    /// A JSON object with an entry's fields, required ones first, each in contract order, with a
+    /// placeholder of the field's type: "" for a string, 0, false, a date, a date and time, {}
+    /// for json, and [] for any array. Every placeholder fits the field, because the catalog
+    /// refuses a null field.
+    /// </summary>
+    internal static string PayloadTemplate(IReadOnlyList<SignalCatalogFieldDto> fields)
+    {
+        var template = new System.Text.Json.Nodes.JsonObject();
+        foreach (var field in fields.Where(field => field.Required).Concat(fields.Where(field => !field.Required)))
+        {
+            template[field.Name] = Placeholder(field);
+        }
+
+        return template.ToJsonString(JsonOptions);
+
+        static System.Text.Json.Nodes.JsonNode Placeholder(SignalCatalogFieldDto field) =>
+            field.IsArray
+                ? new System.Text.Json.Nodes.JsonArray()
+                : field.DataType switch
+                {
+                    WorkflowVariableTypes.String => System.Text.Json.Nodes.JsonValue.Create(string.Empty),
+                    WorkflowVariableTypes.Number => System.Text.Json.Nodes.JsonValue.Create(0),
+                    WorkflowVariableTypes.Boolean => System.Text.Json.Nodes.JsonValue.Create(false),
+                    WorkflowVariableTypes.Date => System.Text.Json.Nodes.JsonValue.Create("2026-01-01"),
+                    WorkflowVariableTypes.DateTime => System.Text.Json.Nodes.JsonValue.Create("2026-01-01T09:00:00Z"),
+                    _ => new System.Text.Json.Nodes.JsonObject()
+                };
+    }
+
     /// <summary>
     /// Reads the payload text area: blank means no payload; anything else must be a JSON
     /// object. Returns the problem, or null when the text is usable.

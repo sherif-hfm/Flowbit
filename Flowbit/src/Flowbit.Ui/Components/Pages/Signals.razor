@@ -66,8 +66,13 @@ else
                 <input id="signal-name" class="form-control" list="signal-name-options" maxlength="100"
                        value="@signalName" @onchange="OnSignalNameChangedAsync" autocomplete="off" />
                 <datalist id="signal-name-options">
-                    @foreach (var name in KnownNames) { <option value="@name"></option> }
+                    @foreach (var option in NameOptions(KnownNames, catalog?.Items)) { <option value="@option.Value" label="@option.Label"></option> }
                 </datalist>
+                @if (CurrentCatalogLookup is { } lookup)
+                {
+                    <SignalCatalogPanel Entry="lookup.Entry" Mode="@catalog?.Mode" PayloadEmpty="@string.IsNullOrWhiteSpace(payloadText)"
+                                        OnInsertTemplate="InsertPayloadTemplate" />
+                }
             </div>
             <div class="col-md-6">
                 <fieldset>
@@ -173,6 +178,10 @@ else
         {
             <dl class="row">
                 <dt class="col-md-3">Signal</dt><dd class="col-md-9"><code>@review.Name</code></dd>
+                @if (review.Catalog is not null)
+                {
+                    <dt class="col-md-3">Catalog</dt><dd class="col-md-9 signal-review-catalog">@review.Catalog</dd>
+                }
                 <dt class="col-md-3">Scope</dt><dd class="col-md-9 signal-scope">@ScopeLabel(review.WorkflowKey, review.BusinessKey, review.InstanceId)</dd>
                 <dt class="col-md-3">Reaches now</dt><dd class="col-md-9 signal-review-reach">@CountsText(review.Waiting, review.Starts)@(review.Truncated ? " or more" : null)</dd>
                 <dt class="col-md-3">Expires</dt><dd class="col-md-9 signal-review-expiry">@review.ExpiresText</dd>
@@ -287,6 +296,7 @@ else
 @code {
     private const int DeliveryPageSize = 50;
     private const int HistoryPageSize = 25;
+    private const int CatalogPageSize = 200;
 
     [SupplyParameterFromQuery(Name = "broadcastId")] public long? RequestedBroadcastId { get; set; }
 
@@ -318,6 +328,20 @@ else
     private bool scopedCountFailed;
     private ThrowReview? review;
     private string? draftIdempotencyKey;
+
+    // The active catalog entries, read once per page load; null when the read failed or was
+    // refused, which hides every part of the page that shows the catalog.
+    private SignalCatalogListDto? catalog;
+    private CatalogLookup? catalogLookup;
+    private long catalogRequest;
+    private long catalogLookupRequest;
+
+    /// <summary>The catalog entry of a typed name, or a null entry when the catalog has none.</summary>
+    private sealed record CatalogLookup(string Name, SignalCatalogEntryDto? Entry);
+
+    /// <summary>The lookup of the name as typed now, while the catalog is available.</summary>
+    private CatalogLookup? CurrentCatalogLookup =>
+        catalog is not null && catalogLookup is { } lookup && lookup.Name == signalName ? lookup : null;
 
     // Each changes when a newer request replaces what an older one would show, so an
     // older response that arrives late is dropped instead of overwriting the page.
@@ -357,7 +381,8 @@ else
         JsonElement? Payload,
         string? PayloadText,
         string? ExpiresAfter,
-        string ExpiresText);
+        string ExpiresText,
+        string? Catalog);
 
     /// <summary>The draft's scope fields that a throw would send, as one comparable value.</summary>
     private sealed record DraftScope(SignalScopeChoice Scope, string? WorkflowKey, string? BusinessKey, long? InstanceId);
@@ -424,6 +449,7 @@ else
         try
         {
             summary = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync());
+            await LoadCatalogAsync();
             await LoadHistoryAsync();
             if (RequestedBroadcastId is long requested) await OpenBroadcastAsync(requested);
         }
@@ -444,6 +470,8 @@ else
         signalName = args.Value?.ToString()?.Trim() ?? string.Empty;
         ClearReview();
         var epoch = Interlocked.Read(ref identityEpoch);
+        // Never throws: a catalog that cannot be read only hides the catalog panel.
+        await LookUpCatalogEntryAsync(signalName);
         try
         {
             summary = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync());
@@ -516,6 +544,84 @@ else
         }
     }
 
+    /// <summary>Reads the active catalog entries once, and looks up the typed name again.</summary>
+    private async Task LoadCatalogAsync()
+    {
+        var request = ++catalogRequest;
+        var (read, loaded) = await ReadCatalogAsync(() => Api.GetSignalCatalogEntriesAsync(
+            status: SignalCatalogStatuses.Active, pageSize: CatalogPageSize));
+        if (request != catalogRequest) return;
+        catalog = read ? loaded : null;
+        catalogLookup = null;
+        catalogLookupRequest++;
+        if (catalog is not null && signalName.Length > 0) await LookUpCatalogEntryAsync(signalName);
+    }
+
+    /// <summary>
+    /// Finds the catalog entry of a name: in the active entries read with the page, or, for a
+    /// name not among them, by its own read, which tells an archived entry from none. A newer
+    /// lookup drops an older reply.
+    /// </summary>
+    private async Task LookUpCatalogEntryAsync(string name)
+    {
+        var request = ++catalogLookupRequest;
+        catalogLookup = null;
+        if (catalog is null || !SignalEventRules.IsValidName(name)) return;
+        var listed = catalog.Items.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.Ordinal));
+        if (listed is not null)
+        {
+            catalogLookup = new CatalogLookup(name, listed);
+            return;
+        }
+
+        var (read, entry) = await ReadCatalogAsync(() => Api.GetSignalCatalogEntryAsync(name));
+        if (read && request == catalogLookupRequest && catalog is not null && name == signalName)
+        {
+            catalogLookup = new CatalogLookup(name, entry);
+        }
+    }
+
+    /// <summary>
+    /// A catalog read. Unlike <see cref="GuardAsync{T}"/>, a failure of any kind, a 403
+    /// included, only hides the catalog: the page keeps its data. A reply that arrives after an
+    /// identity change is dropped.
+    /// </summary>
+    private async Task<(bool Read, T? Value)> ReadCatalogAsync<T>(Func<Task<T>> request)
+    {
+        var epoch = Interlocked.Read(ref identityEpoch);
+        var identity = Token.IdentityKey;
+        if (!IsCurrentIdentity(epoch)) return (false, default);
+        try
+        {
+            var result = await request();
+            return IsCurrentIdentity(epoch) && string.Equals(identity, Token.IdentityKey, StringComparison.Ordinal)
+                ? (true, result)
+                : (false, default);
+        }
+        catch (Exception)
+        {
+            return (false, default);
+        }
+    }
+
+    /// <summary>The review's Catalog row for a name, or null when the catalog is not available.</summary>
+    private async Task<string?> CatalogReviewRowAsync(string name)
+    {
+        if (catalog is null) return null;
+        if (catalogLookup?.Name != name) await LookUpCatalogEntryAsync(name);
+        return CurrentCatalogLookup is { } lookup && lookup.Name == name ? CatalogReviewText(lookup.Entry) : null;
+    }
+
+    /// <summary>Writes the entry's fields into an empty payload box; a typed payload is never replaced.</summary>
+    private void InsertPayloadTemplate()
+    {
+        if (CurrentCatalogLookup?.Entry is not { } entry
+            || entry.Status != SignalCatalogStatuses.Active
+            || !string.IsNullOrWhiteSpace(payloadText)) return;
+        payloadText = PayloadTemplate(entry.Fields);
+        OnPayloadEdited();
+    }
+
     private void OnPayloadEdited()
     {
         payloadError = null;
@@ -583,6 +689,7 @@ else
             var name = signalName;
             var counts = await GuardAsync(() => Api.GetSignalSubscriptionSummaryAsync(
                 name, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId));
+            var catalogRow = await CatalogReviewRowAsync(name);
             // The draft may have changed while the counts were loading; that edit ended the review.
             if (name != signalName || scope != CurrentScope || text != payloadText
                 || amount != expiryAmount || unit != expiryUnit) return;
@@ -591,7 +698,7 @@ else
                 name, scope.Scope, scope.WorkflowKey, scope.BusinessKey, scope.InstanceId,
                 matching.Sum(item => item.Count), matching.Sum(item => item.StartCount),
                 counts.Truncated, payload, text,
-                expiresAfter, ExpiryReviewText(expiresAfter is null ? null : amount, unit));
+                expiresAfter, ExpiryReviewText(expiresAfter is null ? null : amount, unit), catalogRow);
             // One key per reviewed draft, so a retried request after a timeout cannot throw twice.
             draftIdempotencyKey = $"ui-{Guid.NewGuid():N}";
         }
@@ -632,7 +739,7 @@ else
                 key,
                 reviewed.BusinessKey,
                 reviewed.InstanceId,
-                reviewed.ExpiresAfter)));
+                reviewed.ExpiresAfter)), catalogRefusalAllowed: true);
             success = thrown.TotalDeliveryCount == 0
                 ? $"Broadcast #{thrown.Id} found no waiting events; it completed with no deliveries."
                 : thrown.StartCount == 0
@@ -642,6 +749,10 @@ else
             ShowBroadcast(thrown);
             await LoadDeliveriesAsync();
             await LoadHistoryAsync();
+        }
+        catch (WorkflowApiException ex) when (IsCatalogRefusal(ex) && IsCurrentIdentity(epoch))
+        {
+            await ShowCatalogRefusalAsync(ex, epoch);
         }
         catch (Exception ex) { HandleError(ex, epoch); }
         finally { if (IsCurrentIdentity(epoch)) throwing = false; }
@@ -738,7 +849,7 @@ else
         try
         {
             var id = currentBroadcast.Id;
-            var cancelled = await GuardAsync(() => Api.CancelSignalBroadcastAsync(id, cancellationReason));
+            var cancelled = await GuardAsync(() => Api.CancelSignalBroadcastAsync(id, cancellationReason), catalogRefusalAllowed: true);
             success = $"Broadcast #{id} was cancelled; deliveries already running finished normally.";
             if (view == broadcastView)
             {
@@ -747,6 +858,10 @@ else
                 await LoadDeliveriesAsync();
             }
             await LoadHistoryAsync();
+        }
+        catch (WorkflowApiException ex) when (IsCatalogRefusal(ex) && IsCurrentIdentity(epoch))
+        {
+            await ShowCatalogRefusalAsync(ex, epoch);
         }
         catch (Exception ex) { HandleError(ex, epoch); }
         finally { if (IsCurrentIdentity(epoch)) broadcastOperation = false; }
@@ -763,13 +878,17 @@ else
         {
             var id = currentBroadcast.Id;
             var fence = currentBroadcast.UpdatedAt;
-            var retried = await GuardAsync(() => Api.RetrySignalDeliveriesAsync(id, fence));
+            var retried = await GuardAsync(() => Api.RetrySignalDeliveriesAsync(id, fence), catalogRefusalAllowed: true);
             success = $"The failed deliveries of broadcast #{id} are queued again.";
             if (view == broadcastView)
             {
                 currentBroadcast = retried;
                 await LoadDeliveriesAsync();
             }
+        }
+        catch (WorkflowApiException ex) when (IsCatalogRefusal(ex) && IsCurrentIdentity(epoch))
+        {
+            await ShowCatalogRefusalAsync(ex, epoch);
         }
         catch (WorkflowApiException ex) when (ex.StatusCode == HttpStatusCode.Conflict && IsCurrentIdentity(epoch))
         {
@@ -866,7 +985,13 @@ else
         if (!IsCurrentIdentity(epoch)) throw new SignalIdentityChangedException();
     }
 
-    private async Task<T> GuardAsync<T>(Func<Task<T>> request)
+    /// <summary>
+    /// Runs a request for the current identity. A 401 or 403 means the identity lost its signal
+    /// permission: the page clears its data. With <paramref name="catalogRefusalAllowed"/>, a 403
+    /// from a catalog entry's rule (<see cref="IsCatalogRefusal"/>) reaches the caller instead,
+    /// as the refusal of that one request.
+    /// </summary>
+    private async Task<T> GuardAsync<T>(Func<Task<T>> request, bool catalogRefusalAllowed = false)
     {
         var epoch = Interlocked.Read(ref identityEpoch);
         var identity = Token.IdentityKey;
@@ -878,7 +1003,8 @@ else
             if (!string.Equals(identity, Token.IdentityKey, StringComparison.Ordinal)) throw new SignalIdentityChangedException();
             return result;
         }
-        catch (WorkflowApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        catch (WorkflowApiException ex) when ((ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                                              && !(catalogRefusalAllowed && IsCatalogRefusal(ex)))
         {
             EnsureIdentity(epoch);
             Interlocked.Increment(ref identityEpoch);
@@ -898,6 +1024,27 @@ else
         if (ex is not SignalIdentityChangedException && IsCurrentIdentity(epoch)) error = ex.Message;
     }
 
+    /// <summary>
+    /// A 403 from a catalog entry's rule, which carries its code. A refusal by an authorization
+    /// policy has no body, so no code. The page branches on the code, never on the text.
+    /// </summary>
+    private static bool IsCatalogRefusal(WorkflowApiException ex) =>
+        ex.StatusCode == HttpStatusCode.Forbidden
+        && string.Equals(ex.Code, CatalogForbiddenCode, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Shows a catalog refusal as the refusal of its request; the page keeps its data. The
+    /// broadcast list is then read once: only when that read is refused too is the identity
+    /// treated as lost, and <see cref="GuardAsync{T}"/> clears the page.
+    /// </summary>
+    private async Task ShowCatalogRefusalAsync(WorkflowApiException refusal, long epoch)
+    {
+        success = null;
+        error = refusal.Message;
+        await LoadHistoryAsync();
+        if (IsCurrentIdentity(epoch)) error = refusal.Message;
+    }
+
     private void ClearSignalData()
     {
         // The draft goes too: the next identity starts from an empty form.
@@ -908,6 +1055,7 @@ else
         broadcastView++; deliveriesRequest++; historyRequest++;
         currentBroadcast = null; deliveries = null; deliveryStatus = null; deliveryKind = null; deliveryPage = 1;
         history = null; historyStatus = null; historyThrownBy = ThrownByChoices[0].Value; historyPage = 1; cancellationReason = null;
+        catalog = null; catalogLookup = null; catalogRequest++; catalogLookupRequest++;
         error = null; success = null;
         loading = false; throwing = false; refreshingBroadcast = false; broadcastOperation = false; loadingHistory = false;
     }
