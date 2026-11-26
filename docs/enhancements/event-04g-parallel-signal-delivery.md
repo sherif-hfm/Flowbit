@@ -4,7 +4,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Planned |
+| Status | Done |
 | Category | New events |
 | Effort | M |
 | Priority | Not ranked; seventh of eleven in the [EVENT-04 follow-up order](README.md#event-04-follow-up-subtasks) |
@@ -30,15 +30,15 @@ Schedule this when a deployment's measurements show that delivery time is a prob
 
 These criteria are revised by this plan on 2026-11-25. The revision names the settings, limits the Worker's cap to the jobs of split broadcasts, sets the measured gain that counts, names the new hard cap, and adds retention. The [plan review](#plan-review-of-2026-11-25) of the same day added the criterion on waiting share jobs, the processor use and the API cost to the recorded run, and the migration to the hard cap.
 
-- [ ] A broadcast with at least twice `Signals.MinDeliveriesPerJob` recipients of one definition gets several delivery jobs for that definition, up to `Signals.MaxDeliveryJobsPerDefinition`. A smaller broadcast gets one job and is delivered as today. Each delivery still ends exactly once.
-- [ ] Every delivery to one instance belongs to one job of its broadcast, so the jobs of a split broadcast do not queue behind each other on an instance. The lock order of a delivery is unchanged, and a PostgreSQL test runs the jobs at the same time without a deadlock.
-- [ ] Each Worker runs at most `FlowbitWorker:SignalShareConcurrency` jobs of split broadcasts at once, by default two fewer than its activity slots. Timers keep their control slots, and service tasks, scripts, and the jobs of small broadcasts keep the remaining activity slots.
-- [ ] Cancel, retry of failed deliveries, expiry, and the recount stay correct with several jobs per definition. A job that loses its last lease fails only its own share of the deliveries.
-- [ ] Share jobs that wait for a share slot do not pause retention and do not read as a job backlog in the Worker's queue metrics.
-- [ ] A recorded run on a named machine, with its processor use, shows at least twice the deliveries per second with four jobs than with one. A machine that one job already keeps busy counts neither for nor against. The run shows no cost for a workflow without signal events and no later start for the delivery of a small broadcast, and it records what a split broadcast costs API requests.
-- [ ] The hard cap on recipients rises from 100,000 to 250,000 only if every statement that touches a whole broadcast passes its gate in [section 8](#8-the-recipient-limit) at the new size. A migration then widens the database check that holds the limit. Otherwise the cap stays, and the figures are recorded here.
-- [ ] Retention removes a finished broadcast of the hard cap's size inside its own timeouts.
-- [ ] The engine settings and deployment guides describe the new settings and how to size them.
+- [x] A broadcast with at least twice `Signals.MinDeliveriesPerJob` recipients of one definition gets several delivery jobs for that definition, up to `Signals.MaxDeliveryJobsPerDefinition`. A smaller broadcast gets one job and is delivered as today. Each delivery still ends exactly once.
+- [x] Every delivery to one instance belongs to one job of its broadcast, so the jobs of a split broadcast do not queue behind each other on an instance. The lock order of a delivery is unchanged, and a PostgreSQL test runs the jobs at the same time without a deadlock.
+- [x] Each Worker runs at most `FlowbitWorker:SignalShareConcurrency` jobs of split broadcasts at once, by default 2 (planned as two fewer than its activity slots; [changed 2026-11-26](#decision-of-2026-11-26)). Timers keep their control slots, and service tasks, scripts, and the jobs of small broadcasts keep the remaining activity slots.
+- [x] Cancel, retry of failed deliveries, expiry, and the recount stay correct with several jobs per definition. A job that loses its last lease fails only its own share of the deliveries.
+- [x] Share jobs that wait for a share slot do not pause retention and do not read as a job backlog in the Worker's queue metrics.
+- [x] A recorded run on a named machine, with its processor use, shows at least twice the deliveries per second with four jobs than with one. A machine that one job already keeps busy counts neither for nor against. The run shows no cost for a workflow without signal events and no later start for the delivery of a small broadcast, and it records what a split broadcast costs API requests. *Met except the small broadcasts: 3.07 times, no cost for starts, API cost recorded. Four jobs delayed small deliveries by seconds, so the default became 2, at which they began 0.10 / 0.73 s after due (p50 / p95) against 0.07 / 0.24 s during one job ([evidence](#evidence-of-2026-11-26)). The user accepted that later start at the default as a documented limit on 2026-11-26 ([decision](#decision-of-2026-11-26)).*
+- [x] The hard cap on recipients rises from 100,000 to 250,000 only if every statement that touches a whole broadcast passes its gate in [section 8](#8-the-recipient-limit) at the new size. A migration then widens the database check that holds the limit. Otherwise the cap stays, and the figures are recorded here. *Every gate passed on 2026-11-26, so the cap is 250,000 and `RaiseSignalBroadcastRecipientCap` widens the check ([figures](#recipient-cap-of-2026-11-26)).*
+- [x] Retention removes a finished broadcast of the hard cap's size inside its own timeouts. *At today's cap of 100,000: 73 ms.*
+- [x] The engine settings and deployment guides describe the new settings and how to size them.
 
 ## Later releases
 
@@ -50,7 +50,90 @@ These criteria are revised by this plan on 2026-11-25. The revision names the se
 
 ## Current state
 
-Verified on 2026-11-25 at commit `033a603`: not implemented. The [plan](#plan) was written and agreed the same day.
+Done on 2026-11-26, on top of commit `eb4ac95`: every step of the [delivery sequence](#12-delivery-sequence-rollout-and-risks) is done, including the higher recipient cap, and every acceptance criterion is met, one of them with a limit the user accepted. The user set the status to Done without the run with eight jobs; see [not done](#not-done). See [implementation](#implementation-of-2026-11-26), [evidence](#evidence-of-2026-11-26), the [review](#review-of-2026-11-26), the [recipient cap](#recipient-cap-of-2026-11-26), and [not done](#not-done). The sections from [Before the change](#before-the-change) to [Plan review of 2026-11-25](#plan-review-of-2026-11-25) describe the code before the change.
+
+### Implementation of 2026-11-26
+
+- **Split.** `SignalDeliveryShares` in [SignalModels.cs](../../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) gives the job count, parses the two settings, and names the phase `deliverShare`. [SignalBroadcastWriter.cs](../../Flowbit/src/Flowbit.Service/Services/SignalBroadcastWriter.cs) `EnqueueDeliveryJobsAsync` takes each definition with its count, reads both settings in one query through the new `IEngineSettingsRepository.GetByKeysAsync` only when a definition has two or more recipients, and still inserts all jobs and all links in two statements. A definition with one job gets today's phase and payload byte for byte. `SignalBroadcastJobPayload` gained the optional `ShareIndex` and `ShareCount`, written only for share jobs.
+- **Persistence.** Migration [AddSignalDeliveryShares](../../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261126122213_AddSignalDeliveryShares.cs) adds the two columns with defaults 0 and 1, `CK_signal_broadcast_jobs_share`, and the two seeds; its down migration refuses while a share job is not finished and removes a seed only while it still has its seeded value, as `AddSignalCatalog` does.
+- **Share.** [SignalDeliveryShareSql.cs](../../Flowbit/src/Flowbit.Infrastructure/Repositories/SignalDeliveryShareSql.cs) holds the one condition. `ListPendingDeliveryIdsAsync` uses it for a share job and today's query otherwise, and `ReconcileExhaustedSignalBroadcastsAsync` uses it with the link's share. A start delivery falls in the share that instance ID 0 hashes to, which is not always share 0.
+- **Delivery job.** [SignalBroadcastJobProcessor.cs](../../Flowbit/src/Flowbit.Service/Services/SignalBroadcastJobProcessor.cs) validates the share, pages within it, and recounts after a page only every two seconds for a share job. An internal `PageSize` lets tests reach several pages with a few waits.
+- **Retry.** `RetryFailedDeliveriesAsync` returns each definition's pending count, and `RetryFailedAsync` enqueues by it and logs the jobs it created.
+- **Worker.** `FlowbitWorker:SignalShareConcurrency` with its default and validation in [WorkerOptions.cs](../../Flowbit/src/Flowbit.Worker/WorkerOptions.cs); `WorkflowJobLeaseRequest.MaxSignalShareCount`; the condition in the three acquisition queries and the cap in the selection loop of [WorkflowJobRepository.cs](../../Flowbit/src/Flowbit.Infrastructure/Repositories/WorkflowJobRepository.cs); `GetNextWakeAtAsync(includeSignalShares)`; [JobDispatcher.cs](../../Flowbit/src/Flowbit.Worker/JobDispatcher.cs) tracks share jobs and logs the share slots; [WorkerTelemetry.cs](../../Flowbit/src/Flowbit.Worker/WorkerTelemetry.cs) adds the gauge and leaves share jobs out of the lag histogram.
+- **Statistics.** `GetQueueStatisticsAsync`, which also serves `GET /api/jobs/statistics`, and retention's `IsRuntimeBusyAsync` in [RetentionRepository.cs](../../Flowbit/src/Flowbit.Infrastructure/Repositories/RetentionRepository.cs) leave share jobs out.
+- **Load test.** The [lifecycle load test](../../Flowbit/tools/LifecycleLoadTest/README.md#large-broadcast) has `--broadcast`, `--broadcast-versions`, `--broadcast-users`, and processor use per process through `--pg-container`, `--worker-pid`, and `--other-pid`, and lists share jobs on a line of their own.
+- **Tests.** `SignalDeliverySharesTests` (job count, settings, payload), `SignalDeliveryShareTests` (26 PostgreSQL cases), `SignalDeliveryShareMigrationTests`, `DurableJobRepositoryTests.SignalShares` (leasing, statistics, wake time, retention's check), and new cases in `WorkerDispatcherTests` (lease requests, wake queries, options, gauge, lag histogram). The signal, retention, durable job, Worker, lifecycle event, engine setting, and job operation suites, 1,411 cases, pass.
+
+### Evidence of 2026-11-26
+
+On one Windows machine with 4 logical processors and 32 GB, the API and one Worker as Release builds published to one disk, PostgreSQL 17 in Docker Desktop with `pg_stat_statements`, and an idle Compose stack beside them. Each broadcast reached 10,000 claims of [signal example 01](../../examples/signals/01-signal-catch-policy-change.json), whose route after the catch cancels a timer boundary and opens a user task and uses no shared variable; each delivery ran about 54 statements. The figures are in [capacity planning](../deployment.md#one-large-signal-broadcast).
+
+| Run | Result |
+| --- | --- |
+| Step 1, code before the change: 1, 2, and 4 versions | 16.4, 31.1, and 54.0 deliveries per second. The one-job run left 2.1 processors idle (PostgreSQL 0.31, Worker 0.26), so two jobs at 1.90 times one passed the gate. |
+| After the change: `Signals.MaxDeliveryJobsPerDefinition` 1 and 4 | 17.0 and 52.1 per second: **3.07 times** with four share jobs, while the run with one job left 2.3 processors idle. The criterion of twice the rate is met. Each share job ran about 190 s and began within 0.25 s of its due time. |
+| Purchase requests at 8 users, `--no-browse` | 3.95 per second alone, 3.51 during the broadcast with one job, and 2.73 with four share jobs: four jobs cost 22% of the throughput measured at one job, below the quarter that would lower the default to 2, so by this rule the default stayed 4; the next row changed that. The browsing reads were left out because 60,000 delivered claims left tasks without roles in every inbox, which made a full inbox page take 8 s. |
+| Timer and signal cases (120 and 4 users) | During four share jobs, small signal deliveries began 1.17 / 6.19 s after due (p50 / p95) and reminder scripts 2.25 / 8.31 s, against 0.05 / 0.12 s and 0.09 / 1.11 s without a broadcast and 0.07 / 0.24 s and 0.12 / 0.52 s during one job. With 2 share jobs: 0.10 / 0.73 s and 0.16 / 1.79 s. With four share jobs on a Worker with 10 activity slots: 0.26 / 1.96 s and 0.43 / 3.73 s. Timers stayed on time in every run. **The criterion of no later start for small broadcasts is not met with four jobs on this machine**, and at two jobs only the median stays close; see [decision of 2026-11-26](#decision-of-2026-11-26). |
+| Starts of a workflow without signal events, 20,000 after a warm-up, alternating builds | 69.6 and 68.2 per second before the change, 67.4 and 71.2 after: no cost. |
+| Throw | 0.16–0.18 s for 10,000 recipients with one job or four; the split adds one settings query when a definition has two or more recipients, and none for one. |
+| Retention at today's cap | Retention's own `DELETE` of one finished broadcast with 100,000 deliveries made by SQL (108 MB of `signal_deliveries` at the time), under `statement_timeout` 5 s and `lock_timeout` 500 ms: 73 ms, the deliveries removed by the cascade in the same statement. The rows were in PostgreSQL's cache; a batch holds up to `RetentionBatchSize` (250) broadcasts, so a batch of many broadcasts near the cap could still pass 5 s. The delete was not changed. |
+
+Runs that were spoiled and repeated: a one-job run during which a stopped shell script still used two processors (8.95 per second), purchase runs with the browsing reads, and a timer run during which 5,329 one-hour timer boundaries of a cancelled broadcast's claims fired.
+
+### Decision of 2026-11-26
+
+Four share jobs on a Worker with 6 activity slots delayed small broadcasts and scripts by seconds on a saturated 4-processor machine, although the plan's purchase-request rule kept 4. Asked to choose between keeping 4 with the limit documented and lowering the default, the user lowered the default of `Signals.MaxDeliveryJobsPerDefinition` to **2** the same day. The code default, the migration's seed, the tests, and the guides say 2; the guides tell deployments with processors to spare to raise it to 4 with more activity slots. `SignalShareConcurrency` first kept its default of two fewer than the activity slots, so a Worker at its defaults still ran two split definitions at once, such as two large versions of one family: four share jobs, the load that delayed small broadcasts. A review the same day found this, and the user lowered that default to **2** as well. Unset, it is now 2, or two fewer than the activity slots when that is less, and never below 1 unless the Worker has no activity slot; a Worker at its defaults runs one split definition at a time, and a second waits for a share slot, about six minutes at 10,000 recipients. The measurements above were made with explicit values and stay valid.
+
+Even at two jobs, the delivery of a small broadcast starts later while a split broadcast delivers: 0.10 / 0.73 s after its due time (p50 / p95) against 0.07 / 0.24 s during one job, and reminder scripts 0.16 / 1.79 s against 0.12 / 0.52 s. The criterion asked for no later start. After the second review the user accepted this as a documented limit the same day, rather than lowering the default to 1, which would give up the faster delivery. It is listed under [section 1](#1-scope-and-invariants) and in the [deployment guide](../deployment.md#signal-events); `Signals.MaxDeliveryJobsPerDefinition` = `1` removes it.
+
+### Review of 2026-11-26
+
+A second review of the finished change read every path a share job takes and found no correctness defect:
+
+- **Lost leases.** `OpenExhaustedLeaseIncidentsAsync` runs unfiltered in every lease round, so a Worker with no free share slot still opens the incident of an exhausted share job and fails its share.
+- **Leasing.** A round skips a share job only after it has leased one, so it never returns nothing while other work is runnable; the next round then filters share jobs out before the ranking.
+- **Links.** No runtime code reads `signal_broadcast_jobs` except the lost-lease statement, and none identifies a delivery job by its phase except the share conditions.
+- **The share query.** On a delivered broadcast of 10,000 it uses `IX_signal_deliveries_BroadcastId_WorkflowDefinitionId_Status_Id` with the share as a row filter, and the hash put 4,963 and 5,037 deliveries in two shares, and 274 to 340 in each of 32.
+
+It changed four small things. The share page query is now a static string, which removes the one build warning the change had added (`EF1002`). The down migration's message and the rollback text in the [deployment guide](../deployment.md#signal-events) say that a share job with an open incident also blocks the down migration until the incident is retried. The retention paragraph of that guide says waiting share jobs do not count as a busy queue, and AGENTS.md records that the two defaults of 2 are a user decision and stay equal.
+
+Still unexercised: the Bash commands of the load test's README, whose `ss` lookup of the Worker's process needs Linux.
+
+### Recipient cap of 2026-11-26
+
+Step 5 ran the gates of [section 8](#8-the-recipient-limit) on the reference machine, at 100,000 and twice at 250,000, against an API built with the higher cap, the database check widened by hand, and no Worker. The rows were inserted by SQL: 700,000 active subscriptions in random order, 350,000 for a family of one version and 350,000 for a family of 250 versions, pointing at no instance. The API requests were timed with `pg_stat_statements`; the recount, the lost-lease statements, the settle, and retention's delete are the code's SQL run in `psql`. The figures are in [the recipient cap](../deployment.md#the-signal-recipient-cap). The scripts that built the rows and ran the gates are not in the repository; the statements they time are the code's own.
+
+| Gate at 250,000 | Measured, two runs | Limit |
+| --- | ---: | ---: |
+| Throw to one definition, and to 250 definitions (500 share jobs) | 3.3 / 3.5 s, and 4.1 / 4.3 s | 10 s |
+| Refused throw | 3.9 / 4.0 s | 10 s |
+| Cancel | 4.9 / 4.3 s | 10 s |
+| Settle of an expired broadcast | 3.9 / 3.8 s | 10 s |
+| Retry when every delivery failed | 5.5 / 5.2 s | 10 s |
+| One recount | 81 ms, up to 226 ms just after an update of every delivery | 250 ms |
+| Lost lease of one share, 62,500 deliveries | 1.5 / 1.5 s | 2 s |
+| Lost lease of a job that owns all 250,000 | 5.4 / 4.4 s | 10 s |
+| Retention's delete of the finished broadcast | 0.30 / 0.40 s, under its own 5 s timeout | 10 s |
+| Storage | 145 MB of write-ahead log per throw; about 170 bytes of table and 190 of index per delivery | none |
+
+Every gate passed, so the cap rose. The retention delete passed without the change section 8 describes for a failure, so retention is unchanged. The closest margins are the recount right after a whole-broadcast update and the lost lease of one share; widening the database check took 9 ms on 2,151 broadcasts.
+
+- **Code.** `SignalSettings.MaxSubscriptionsPerBroadcastCap` is 250,000. [RaiseSignalBroadcastRecipientCap](../../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261126185620_RaiseSignalBroadcastRecipientCap.cs) replaces `CK_signal_broadcasts_counts`, rewrites the setting's seeded description while it is unchanged, and refuses its down migration while a broadcast has more than 100,000 deliveries.
+- **Tests.** `SignalRecipientCapSettingTests` (the parsed cap, and the model's check holding the same number) and `SignalRecipientCapMigrationTests` (250,000 accepted and 250,001 refused, down refused above 100,000, the older limit after down, and an operator's description kept). After the change `dotnet test Flowbit/Flowbit.slnx` passed 6,622 of 6,622 in 20 m 45 s, and `dotnet ef migrations has-pending-model-changes` reports none.
+- **A limit found on the way.** Retention deletes up to 250 broadcasts in one statement under a 5-second timeout. Two finished broadcasts of 250,000 took 0.7–0.8 s together, so a batch of about a dozen such broadcasts would time out, and retention retries the same batch. The cap of 100,000 had the same limit at about thirty. The deployment guide tells operators who keep many large broadcasts to lower `FlowbitWorker:RetentionBatchSize`; a batch bounded by the total of `TotalDeliveryCount` would remove the limit.
+
+### Not done
+
+The user set the status to Done on 2026-11-26 with these left as they are:
+
+- **Eight jobs.** The run with a maximum of 8, which needs a Worker with 8 share slots, was not made. No criterion needs it: the default is 2, and the recorded runs show four jobs already saturating the reference machine.
+- **One test of the test table.** No test counts the statements of a lease round. Its claim holds by construction: the change adds one parameter to the same three acquisition queries and no statement. The retention row of the table does not apply, because retention's delete did not change.
+- **Unexercised commands.** The Bash commands of the load test's README, whose `ss` lookup needs Linux.
+- **Verification.** The browser smoke suite was not run; no page changed. Done on the final tree, after both defaults became 2: `dotnet test Flowbit/Flowbit.slnx` passed 6,615 of 6,615 in 21 m 56 s, and the signal acceptance scenarios S1 to S16, with the published API, UI, and Worker, passed 22 of 22 cases in 6 m 44 s. Their broadcasts reach at most 400 waits, so they cover unsplit delivery, cancel, lease recovery, retry, and expiry on this build; split delivery with a real Worker is covered by the recorded runs and the manual check below. `dotnet ef migrations has-pending-model-changes` reports none. An earlier full run, before the default changes, passed 6,606 of 6,607, and its one failure, the engine settings reference's stated count of 25 settings, passes after it was changed to 27. The manual check on a local stack with the published API, UI, and Worker passed: 2,000 claims thrown from **Signals** were delivered by share jobs (two while the setting was 2, in 75 s); a second throw with the setting at 4 ran four `deliverShare` jobs while `flowbit_worker_jobs_signal_share_active` read 4 and the runnable depth 0, and **Cancel pending deliveries** during it left 584 delivered once and 1,416 cancelled, with all four jobs completed on their first attempt and the gauges back at 0.
+
+### Before the change
+
+Verified on 2026-11-25 at commit `033a603`, when the [plan](#plan) was written and agreed:
 
 - [SignalBroadcastJobProcessor.cs](../../Flowbit/src/Flowbit.Service/Services/SignalBroadcastJobProcessor.cs) handles one job for one broadcast and definition. It loops over pages of 100 deliveries (`DeliveryPageSize`), with a new scope and transaction for each delivery, on the `activity` queue.
 - A broadcast reaches at most `Signals.MaxSubscriptionsPerBroadcast` recipients (default 10,000, hard cap 100,000), and at most `Signals.MaxOpenBroadcasts` broadcasts (default 20) deliver at once ([engine settings](../engine-settings.md#signal-settings)).
@@ -119,7 +202,7 @@ Checked and left unchanged:
 
 ## Open questions
 
-No question remains open for the design. One is answered by a measurement that is the plan's first step and can stop the item. The user agreed on 2026-11-25 to the decisions that change what an operator sees: the two settings, the Worker option, splitting by default, and the new hard cap. The user accepted the corrections of the [plan review](#plan-review-of-2026-11-25) the same day; they keep four jobs by default and leave waiting share jobs out of the queue statistics.
+No question remains open for the design. One is answered by a measurement that is the plan's first step and can stop the item. The user agreed on 2026-11-25 to the decisions that change what an operator sees: the two settings, the Worker option, splitting by default, and the new hard cap. The user accepted the corrections of the [plan review](#plan-review-of-2026-11-25) the same day; they keep four jobs by default and leave waiting share jobs out of the queue statistics. After the evidence runs the user lowered the default to two jobs on 2026-11-26 ([decision](#decision-of-2026-11-26)); the rows and sections below that named four say so.
 
 | Question | Decision |
 | --- | --- |
@@ -128,12 +211,12 @@ No question remains open for the design. One is answered by a measurement that i
 | Is the rate limited by the cost of one delivery transaction and not by the number of jobs? | Not known. [Step 1](#12-delivery-sequence-rollout-and-risks) measures it with today's code before anything is built, and the item stops if two jobs do not deliver at least 1.5 times what one does on a machine with idle processors. |
 | What limits the parallel jobs of one broadcast, and of all broadcasts together? | One broadcast gets at most `Signals.MaxDeliveryJobsPerDefinition` jobs for each definition, decided at the throw. All split broadcasts together run at most `FlowbitWorker:SignalShareConcurrency` jobs on each Worker. |
 | Is every broadcast split? | No. A definition needs at least twice `Signals.MinDeliveriesPerJob` recipients, 1,000 by default. Workflows throw thousands of small broadcasts, and each stays one job with today's phase, payload, and paging query. |
-| Is splitting on by default? | Yes, with four jobs. A deployment that never throws a large broadcast sees no change, and one that does gets the gain without tuning. The value `1` turns splitting off. |
+| Is splitting on by default? | Yes, with two jobs since the [decision of 2026-11-26](#decision-of-2026-11-26); the plan had four. A deployment that never throws a large broadcast sees no change, and one that does gets the gain without tuning. The value `1` turns splitting off. |
 | Does the Worker's cap also bound the jobs of small broadcasts? | No. A cap on every delivery job would make small signals wait behind a large broadcast, which they do not do today. The cap counts only jobs with the phase `deliverShare`. |
 | Why is the cap a Worker option and not an engine setting? | Slots belong to a Worker process, as `ActivityConcurrency` does. A deployment can give one Worker many share slots and another none. |
 | Does a changed setting affect a broadcast that is already delivering? | No. The number of jobs is decided at the throw, and again at each retry of failed deliveries. |
 | In which order are deliveries made? | In ascending ID inside each job. A split broadcast has no order across its jobs. |
-| Can one broadcast take every share slot? | Yes, at the defaults: a split definition has four jobs and a Worker four share slots. A second split broadcast then waits for a job of the first to end. A smaller default would slow every single large broadcast to protect a case that a deployment can size for, so four stays and the limit is stated. Fair delivery among broadcasts is a [later release](#later-releases). |
+| Can one broadcast take every share slot? | With four jobs, yes: a split definition then has four jobs and a Worker four share slots, and a second split broadcast waits for a job of the first to end. At the defaults since 2026-11-26, two jobs and two share slots, one split definition fills a Worker's share slots and a second waits. Fair delivery among broadcasts is a [later release](#later-releases). |
 | Do share jobs that wait for a slot count as a backlog? | No. They are held back on purpose. Retention's overload check, the queue gauges, and the lag histogram leave them out, and the signal gauges show the pending deliveries. |
 | What is the new hard cap? | 250,000, if every gate of [section 8](#8-the-recipient-limit) passes; a migration then widens `CK_signal_broadcasts_counts`. The default stays 10,000. |
 | Does the API or the **Signals** page show the jobs? | No. Progress is the stored counters, as today. The jobs are on the **Jobs & incidents** page with their phase. |
@@ -161,14 +244,15 @@ The invariants of the [parent plan](event-04-signal-events.md#1-scope-and-invari
 
 This release does not add a queue of its own, fair delivery among broadcasts, a bound on the jobs of a broadcast that reaches many definitions, work moving between jobs, a cheaper delivery transaction, or any change to scopes, freezing, expiry rules, version changes, or reactivation.
 
-Six limits follow:
+Seven limits follow; the seventh was added on 2026-11-26 from the evidence:
 
 - **No rebalancing.** A job that waits in a retry delay or an incident leaves its share pending while the others finish. At most one share of a definition is affected by one job.
 - **Unsplit jobs are not capped.** A broadcast that reaches 50 definitions with 200 recipients each still runs one job for each definition, up to every activity slot, as today.
 - **The gain depends on the database.** Several jobs help while PostgreSQL and the Worker have processors to spare. On a machine that one job already saturates, they do not.
-- **One split definition can fill the share slots.** At the defaults its four jobs take a Worker's four share slots. A second split broadcast, or a second split definition of the same one, starts only when one of those jobs ends: after about two minutes at 10,000 recipients and the measured rate, and far later at the cap. Its expiry keeps counting meanwhile. Today it would start at once in another activity slot.
+- **One split definition can fill the share slots.** At the defaults since 2026-11-26, a split definition's two jobs take both of a Worker's two share slots; with four of each, as first planned, it took all four. A second split broadcast, or a second split definition of the same one, starts only when one of those jobs ends: after about six minutes at 10,000 recipients and the measured rate of two jobs, and far later at the cap. Its expiry keeps counting meanwhile. Today it would start at once in another activity slot.
 - **A split broadcast takes database capacity from requests.** Four delivery loops do the work of one in a quarter of the time, on the database that serves the API. The evidence measures it, and decides the default.
 - **Deliveries that take the same row still run one at a time.** A route after the catch that uses a shared variable locks that variable's row, so such deliveries queue across jobs as they do across requests today, and gain less from the split. The review did not trace this path; step 1 names the definition it measures.
+- **Other activity jobs start later while a split broadcast delivers.** The share cap leaves them their activity slots, but the share jobs load the database they also use. At the default of two jobs on the reference machine, small signal deliveries began 0.10 / 0.73 s after their due time (p50 / p95) against 0.07 / 0.24 s during one job, and reminder scripts 0.16 / 1.79 s against 0.12 / 0.52 s; timers stayed on time. Accepted by the user as a limit; `Signals.MaxDeliveryJobsPerDefinition` = `1` removes it.
 
 ### 2. How a broadcast is split
 
@@ -176,19 +260,19 @@ Two engine settings, read at a throw and at a retry of failed deliveries when a 
 
 | Setting | Default | Hard cap | Meaning |
 | --- | ---: | ---: | --- |
-| `Signals.MaxDeliveryJobsPerDefinition` | 4 | 32 | The most delivery jobs a broadcast gets for one workflow definition. `1` turns splitting off. |
+| `Signals.MaxDeliveryJobsPerDefinition` | 2 (planned as 4; [changed 2026-11-26](#decision-of-2026-11-26)) | 32 | The most delivery jobs a broadcast gets for one workflow definition. `1` turns splitting off. |
 | `Signals.MinDeliveriesPerJob` | 500 | 100,000 | The fewest recipients a job is created for when a definition's recipients are split. |
 
 For a definition with `n` recipients the number of jobs is `n / MinDeliveriesPerJob`, rounded down, and then held between 1 and `MaxDeliveryJobsPerDefinition`:
 
-| Recipients of one definition | Jobs at the defaults | Jobs with a maximum of 16 |
-| ---: | ---: | ---: |
-| 999 | 1 | 1 |
-| 1,000 | 2 | 2 |
-| 1,999 | 3 | 3 |
-| 2,000 | 4 | 4 |
-| 10,000 | 4 | 16 |
-| 250,000 | 4 | 16 |
+| Recipients of one definition | Jobs at the defaults | Jobs with a maximum of 4 | Jobs with a maximum of 16 |
+| ---: | ---: | ---: | ---: |
+| 999 | 1 | 1 | 1 |
+| 1,000 | 2 | 2 | 2 |
+| 1,999 | 2 | 3 | 3 |
+| 2,000 | 2 | 4 | 4 |
+| 10,000 | 2 | 4 | 16 |
+| 250,000 | 2 | 4 | 16 |
 
 - **Shares.** A definition with `k` jobs has the shares 0 to `k - 1`. A delivery belongs to the share
 
@@ -212,7 +296,7 @@ One migration, `AddSignalDeliveryShares`, in a transaction. Update the entity, `
 | `signal_broadcast_jobs."ShareIndex"` | New `integer`, not null, default 0. |
 | `signal_broadcast_jobs."ShareCount"` | New `integer`, not null, default 1. |
 | `CK_signal_broadcast_jobs_share` | New check: `ShareCount` is from 1 to 32, and `ShareIndex` is from 0 to `ShareCount - 1`. |
-| `engine_settings` | Seeds `Signals.MaxDeliveryJobsPerDefinition` = `4` and `Signals.MinDeliveriesPerJob` = `500` with descriptions, when missing. |
+| `engine_settings` | Seeds `Signals.MaxDeliveryJobsPerDefinition` = `2` (planned as `4`) and `Signals.MinDeliveriesPerJob` = `500` with descriptions, when missing. |
 
 - **Existing rows** read as share 0 of 1, which is the whole definition, as today.
 - **Cost.** Both columns change only the catalog, and the check scans `signal_broadcast_jobs`, which has one row for each delivery job.
@@ -249,7 +333,7 @@ Changes are in `SignalBroadcastJobProcessor` and `ListPendingDeliveryIdsAsync`.
 
 | Piece | Change |
 | --- | --- |
-| `WorkerOptions.SignalShareConcurrency` | New optional whole number: how many jobs with the phase `deliverShare` this Worker runs at once. From 0 to `ActivityConcurrency`. Unset, it is `ActivityConcurrency - 2`, and never below 1 unless `ActivityConcurrency` is 0. At the defaults that is 4 of 6 activity slots. |
+| `WorkerOptions.SignalShareConcurrency` | New optional whole number: how many jobs with the phase `deliverShare` this Worker runs at once. From 0 to `ActivityConcurrency`. Unset, it is 2, or `ActivityConcurrency - 2` when that is less, and never below 1 unless `ActivityConcurrency` is 0 (planned as `ActivityConcurrency - 2`; [changed 2026-11-26](#decision-of-2026-11-26)). At the defaults that is 2 of 6 activity slots. |
 | `WorkflowJobLeaseRequest.MaxSignalShareCount` | New last parameter, unlimited by default, so every existing caller and test leases as before. |
 | `JobDispatcher` | Remembers for each running job whether it is a share job, and passes the option minus the running share jobs. Its start line reports the share slots. |
 | `LeaseRunnableAsync` | When the request allows no share job, the three acquisition queries leave share jobs out before they rank. When it allows some, the selection loop stops taking share jobs at that number. |
@@ -270,9 +354,9 @@ AND (@signal_shares_allowed
 - **Rounds.** The share jobs of one family are leased one per round, and the dispatcher runs rounds back to back while slots remain. Four jobs start within four rounds.
 - **Several Workers.** Each has its own cap. Two Workers at the defaults run eight share jobs, so a deployment with more Workers raises `Signals.MaxDeliveryJobsPerDefinition` to use them.
 - **A Worker with no share slot** leases no share job. A deployment in which every Worker has 0 never delivers a split broadcast; the backlog gauge shows it, and the guide warns against it.
-- **Waiting share jobs are not a backlog.** A share job that is due and waits for a share slot is held back on purpose. Counted as today, two split definitions at the defaults leave four jobs due for minutes. Retention pauses once a job has been due for 30 seconds, so it would stop for the whole broadcast, and the queue gauges and the lag histogram would report a Worker that cannot keep up. Those three statistics therefore leave share jobs out. The work stays visible in `flowbit.signals.deliveries.pending`, in the age of the oldest open broadcast, and in the new gauge of running share jobs; the guide tells operators to alert on those for large broadcasts.
+- **Waiting share jobs are not a backlog.** A share job that is due and waits for a share slot is held back on purpose. Counted as today, a second split definition at the defaults leaves its two jobs due for minutes. Retention pauses once a job has been due for 30 seconds, so it would stop for the whole broadcast, and the queue gauges and the lag histogram would report a Worker that cannot keep up. Those three statistics therefore leave share jobs out. The work stays visible in `flowbit.signals.deliveries.pending`, in the age of the oldest open broadcast, and in the new gauge of running share jobs; the guide tells operators to alert on those for large broadcasts.
 - **A share job that never starts is not hidden either.** When no Worker has a share slot, the same signal gauges show it: the pending count stays, and the oldest open broadcast ages.
-- **Filling the share slots.** One split definition at the defaults takes all four share slots of a Worker, as [section 1](#1-scope-and-invariants) states. A deployment that throws large broadcasts close together gives its Workers more share slots than `Signals.MaxDeliveryJobsPerDefinition`, or lowers that setting.
+- **Filling the share slots.** One split definition at the defaults takes both of a Worker's two share slots, as [section 1](#1-scope-and-invariants) states. A deployment that throws large broadcasts close together gives its Workers more share slots than `Signals.MaxDeliveryJobsPerDefinition`, or lowers that setting.
 - **Idle polling.** A Worker whose share slots are all busy is not idle, so its polling does not change. A Worker with no share slot would see due share jobs it never leases and poll every `PollMilliseconds`; the change to `GetNextWakeAtAsync` lets it reach its idle backoff. A finished job still refills its slot at once.
 - **Connections.** Share jobs run inside `MaxConcurrency`, so the Worker's pool rule does not change.
 - **Unchanged.** Control jobs are leased first, `MaxPerInstance` applies to jobs with an instance, and the fairness key stays as it is.
@@ -383,7 +467,7 @@ PostgreSQL tests go in a new class `SignalDeliveryShareTests` in the `PostgresAp
 | Recount | A share job that finishes pages faster than every two seconds recounts at most once in two seconds and once at its end. An unsplit job recounts after every page. The broadcast finishes in the last job's final recount. |
 | Leasing | In `DurableJobRepositoryTests`: with no share allowed, a round leases an unsplit delivery job, a service-task job of the same family, and jobs of other families, and no share job. With two allowed and four due, rounds lease two. A share job whose lease expired is leased again only inside the allowance. A request that sets no allowance leases as before. The existing lease and fairness tests pass unchanged. |
 | Queue statistics | With share jobs due for longer than retention's lag limit and nothing else queued, `GetQueueStatisticsAsync` reports no runnable job and retention's overload check does not pause; an unsplit delivery job due that long still pauses it. The lag histogram records nothing for a leased share job. A Worker with no share slot gets no wake time from due share jobs, and one with a slot does. |
-| Dispatcher and options | In `WorkerDispatcherTests`: the request carries the option minus the running share jobs. `WorkerOptions.Validate` refuses −1 and a value above `ActivityConcurrency`; unset gives 4 at the defaults, 1 for `ActivityConcurrency` 1 and 2, and 0 for 0. |
+| Dispatcher and options | In `WorkerDispatcherTests`: the request carries the option minus the running share jobs. `WorkerOptions.Validate` refuses −1 and a value above `ActivityConcurrency`; unset gives 2 at the defaults and for any `ActivityConcurrency` of 4 or more, 1 for 1 to 3, and 0 for 0. |
 | Migration | Up, then down, then up. Existing links read 0 of 1. The check refuses a `ShareIndex` at or above `ShareCount`. The seeds do not overwrite existing rows. Down is refused while a share job is not finished. If the cap rises: a broadcast with 250,000 deliveries is accepted and one with 250,001 refused, and the second migration's down is refused while a broadcast has more than 100,000. |
 | Retention | If its delete changes: an old finished broadcast with many deliveries is removed, a batch stops at the delivery total, and the statement runs with both raised timeouts while the category's other statements keep theirs. |
 | No cost without signals | The existing command-count test still finds no `signal_` statement for a workflow without signals, and a lease round runs the same number of statements as before. |
@@ -435,7 +519,7 @@ Full solution runs have had order-dependent failures at the base commit, so comp
 Rollout:
 
 1. Apply `AddSignalDeliveryShares`. It changes the catalog, scans `signal_broadcast_jobs` once for the check, and seeds two settings. Nothing behaves differently yet.
-2. Upgrade every Worker and API replica to the same release. Mixed replicas are unsupported: a Worker without this release runs each share job as a job for the whole definition, so the jobs meet on the same instances and waste work, and its lost-lease statement fails the whole definition's pending deliveries. No delivery ends twice. For a rolling upgrade, create the engine setting `Signals.MaxDeliveryJobsPerDefinition` with the value `1` before step 1; the migration seeds the row only when it is missing, with `4`. Raise it when every replica runs the release.
+2. Upgrade every Worker and API replica to the same release. Mixed replicas are unsupported: a Worker without this release runs each share job as a job for the whole definition, so the jobs meet on the same instances and waste work, and its lost-lease statement fails the whole definition's pending deliveries. No delivery ends twice. For a rolling upgrade, create the engine setting `Signals.MaxDeliveryJobsPerDefinition` with the value `1` before step 1; the migration seeds the row only when it is missing, with `2`. Raise it when every replica runs the release.
 3. Check that at least one Worker has share slots, and size `SignalShareConcurrency` and `Signals.MaxDeliveryJobsPerDefinition` together.
 4. If the release raises the cap, apply `RaiseSignalBroadcastRecipientCap` before any replica that accepts the higher limit starts; a throw above 100,000 fails the old check. Raise `Signals.MaxSubscriptionsPerBroadcast` only when a broadcast needs it, and keep splitting on above 100,000.
 5. Move alerts on the queue gauges for large broadcasts to the signal gauges, because the queue gauges leave share jobs out.

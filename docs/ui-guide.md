@@ -565,6 +565,8 @@ A delegate acts under their own identity and roles. Delegation allows eligible a
 
 Open **Jobs & incidents** with `WorkflowJobs.RequiredRole` (default `admin`). Inspect **Runnable jobs**, **Queue lag**, **Active leases**, and **Open incidents**, then filter the job/incident lists. Use **Refresh** to retrieve current state; the page does not continuously poll.
 
+**Runnable jobs** and **Queue lag** leave out the share jobs of a [split signal broadcast](deployment.md#signal-events), the `signalBroadcastDeliver` jobs with the phase `deliverShare`, because a Worker holds them back on purpose while its share slots are busy. The list below can therefore show such jobs queued while **Runnable jobs** reads 0; **Active leases** counts the ones running. Follow a large broadcast's progress on **Signals**.
+
 For an open incident, inspect the error and related instance, correct the underlying configuration or business issue, then use **Retry** if appropriate. Retry queues durable work; keep a compatible Worker running and refresh until you see its outcome. **Retry** and **Cancel instance** execute directly from this page, without an additional confirmation dialog. Cancellation still needs the workflow's independent cancellation permission.
 
 An incident on a call's result or cancellation also shows **Acts on instance #N**, because the instance that sent that message may already have ended. Its button reads **Cancel instance #N** and cancels the instance named there: the parent for a result that cannot be delivered, or the child for a cancellation that cannot finish. The incident then closes on its own, because nothing is left to deliver or stop. It also closes if something else cancels that parent or ends that child.

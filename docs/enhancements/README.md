@@ -103,7 +103,7 @@ subtask table together.
 
 ### EVENT-04 follow-up subtasks
 
-[EVENT-04](event-04-signal-events.md) is Done. Its later releases are separate items, listed here in the recommended order of implementation. EVENT-04A, EVENT-04B, EVENT-04C, EVENT-04D, EVENT-04E, and EVENT-04F are Done, and EVENT-04G is Planned; none of the open items is scheduled, and each of the others needs its own plan before work starts. Update a subtask's status here, in its file, and in the parent's [later releases](event-04-signal-events.md#later-releases) together.
+[EVENT-04](event-04-signal-events.md) is Done. Its later releases are separate items, listed here in the recommended order of implementation. EVENT-04A through EVENT-04G are Done; none of the other open items is scheduled, and each of the others needs its own plan before work starts. Update a subtask's status here, in its file, and in the parent's [later releases](event-04-signal-events.md#later-releases) together.
 
 | ID | Subtask | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- |
@@ -113,7 +113,7 @@ subtask table together.
 | [EVENT-04D](event-04d-webhook-events-for-signal-broadcasts.md) | Webhook events for signal broadcasts | M | [EVENT-04](event-04-signal-events.md), [INT-01](int-01-outbound-lifecycle-webhooks.md) | Done |
 | [EVENT-04E](event-04e-signal-broadcast-expiry.md) | Signal broadcast expiry | M | [EVENT-04](event-04-signal-events.md) | Done |
 | [EVENT-04F](event-04f-signal-catalog.md) | Signal catalog with payload contracts and permissions | M–L | [EVENT-04](event-04-signal-events.md) | Done |
-| [EVENT-04G](event-04g-parallel-signal-delivery.md) | Parallel signal delivery and a higher recipient limit | M | [EVENT-04](event-04-signal-events.md) | Planned |
+| [EVENT-04G](event-04g-parallel-signal-delivery.md) | Parallel signal delivery and a higher recipient limit | M | [EVENT-04](event-04-signal-events.md) | Done |
 | [EVENT-04H](event-04h-expression-signal-names.md) | Expression signal names | M | [EVENT-04](event-04-signal-events.md) | Not started |
 | [EVENT-04I](event-04i-signal-boundaries-on-multi-instance-bodies.md) | Signal boundaries on multi-instance bodies | M | [EVENT-04](event-04-signal-events.md), [TASK-05](task-05-multi-instance-automatic-activities.md) | Not started |
 | [EVENT-04J](event-04j-shared-variables-in-signal-mappings.md) | Shared variables in signal mappings | M | [EVENT-04](event-04-signal-events.md) | Not started |

@@ -361,6 +361,115 @@ public sealed class WorkerDispatcherTests
         Assert.Empty(repository.OpenedIncidents);
     }
 
+    // EVENT-04G: the share slots of split signal broadcasts
+
+    [Fact]
+    public async Task EachLeaseRoundAllowsTheShareSlotsLeftAndTheGaugeCountsRunningShareJobs()
+    {
+        var repository = new DispatcherJobRepository([NewShareLease(1), NewShareLease(2), NewLease(3)]);
+        var processor = new BlockingProcessor();
+        await using var services = NewServices(repository, processor);
+        using var telemetry = new WorkerTelemetry();
+        var options = NewOptions(maxConcurrency: 8);
+        options.ActivityConcurrency = 6;
+        Assert.Null(options.SignalShareConcurrency);
+        using var dispatcher = NewDispatcher(services, new DelayWakeupSignal(), options, telemetry);
+
+        await dispatcher.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => processor.StartedCount == 3);
+        await WaitUntilAsync(() => repository.Requests.Count >= 4);
+
+        // Two share slots by default: the rounds allowed 2, then 1, then none while the third job
+        // ran, and still none once nothing more was leased.
+        var requests = repository.Requests.ToArray();
+        Assert.Equal([2, 1, 0, 0], requests.Take(4).Select(request => request.MaxSignalShareCount));
+        Assert.Equal(2, telemetry.ActiveSignalShares);
+        Assert.Contains("flowbit_worker_jobs_signal_share_active 2", telemetry.ExportPrometheus());
+
+        await dispatcher.StopAsync(CancellationToken.None);
+        await WaitUntilAsync(() => telemetry.ActiveSignalShares == 0);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, true)]
+    public async Task AWorkerWithoutShareSlotsLeasesNoneAndIsNotWokenByThem(int shareSlots, bool includeShares)
+    {
+        var repository = new DispatcherJobRepository([]);
+        await using var services = NewServices(repository, new ImmediateProcessor());
+        using var telemetry = new WorkerTelemetry();
+        var options = NewOptions(maxConcurrency: 2);
+        options.SignalShareConcurrency = shareSlots;
+        using var dispatcher = NewDispatcher(services, new DelayWakeupSignal(), options, telemetry);
+
+        await dispatcher.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => !repository.WakeQueries.IsEmpty);
+        await dispatcher.StopAsync(CancellationToken.None);
+
+        Assert.All(repository.WakeQueries, query => Assert.Equal(includeShares, query));
+        Assert.All(repository.Requests, request => Assert.Equal(shareSlots, request.MaxSignalShareCount));
+    }
+
+    [Theory]
+    [InlineData(32, 2)]
+    [InlineData(6, 2)]
+    [InlineData(4, 2)]
+    [InlineData(3, 1)]
+    [InlineData(2, 1)]
+    [InlineData(1, 1)]
+    [InlineData(0, 0)]
+    public void SignalShareConcurrency_DefaultsToTwoAtMostTwoFewerThanTheActivitySlotsAndNeverBelowOne(int activitySlots, int expected)
+    {
+        var options = new WorkerOptions { MaxConcurrency = 64, ActivityConcurrency = activitySlots };
+        options.Validate();
+        Assert.Equal(expected, options.EffectiveSignalShareConcurrency);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(7)]
+    public void SignalShareConcurrency_OutsideZeroToTheActivitySlotsIsRefused(int value)
+    {
+        var options = new WorkerOptions { ActivityConcurrency = 6, SignalShareConcurrency = value };
+        var refused = Assert.Throws<InvalidOperationException>(options.Validate);
+        Assert.Contains("SignalShareConcurrency", refused.Message);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(6)]
+    public void SignalShareConcurrency_FromZeroToTheActivitySlotsIsAccepted(int value)
+    {
+        var options = new WorkerOptions { ActivityConcurrency = 6, SignalShareConcurrency = value };
+        options.Validate();
+        Assert.Equal(value, options.EffectiveSignalShareConcurrency);
+    }
+
+    [Fact]
+    public void QueueLag_LeavesOutALeasedShareJob()
+    {
+        using var telemetry = new WorkerTelemetry();
+        var now = DateTimeOffset.UtcNow.AddSeconds(30);
+        telemetry.RecordAcquisition([NewShareLease(1)], TimeSpan.FromMilliseconds(1), now);
+        Assert.Contains("flowbit_worker_queue_lag_seconds_count 0", telemetry.ExportPrometheus());
+
+        telemetry.RecordAcquisition([NewLease(2)], TimeSpan.FromMilliseconds(1), now);
+        Assert.Contains("flowbit_worker_queue_lag_seconds_count 1", telemetry.ExportPrometheus());
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                Assert.Fail("The condition did not become true within five seconds.");
+            }
+            await Task.Delay(20);
+        }
+    }
+
     private static WorkerOptions NewOptions(int maxConcurrency) => new()
     {
         MaxConcurrency = maxConcurrency,
@@ -399,10 +508,16 @@ public sealed class WorkerDispatcherTests
             NullLogger<JobDispatcher>.Instance,
             schemaGate);
 
+    /// <summary>A leased share job of a split signal broadcast (EVENT-04G).</summary>
+    private static WorkflowJobLeaseRecord NewShareLease(int id) =>
+        NewLease(id, kind: WorkflowJobKinds.SignalBroadcastDeliver, phase: SignalDeliveryShares.SharePhase);
+
     private static WorkflowJobLeaseRecord NewLease(
         int id,
         string status = WorkflowJobStatuses.Running,
-        int attemptNumber = 1)
+        int attemptNumber = 1,
+        string kind = WorkflowJobKinds.AsyncBefore,
+        string phase = "before")
     {
         var now = DateTimeOffset.UtcNow;
         var token = Guid.NewGuid();
@@ -420,9 +535,9 @@ public sealed class WorkerDispatcherTests
                 id,
                 $"job-{id}",
                 "serviceTask",
-                WorkflowJobKinds.AsyncBefore,
+                kind,
                 WorkflowJobClasses.Activity,
-                "before",
+                phase,
                 status,
                 0,
                 attemptNumber,
@@ -613,10 +728,14 @@ public sealed class WorkerDispatcherTests
         public TaskCompletionSource RecoveryRecorded { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public ConcurrentQueue<WorkflowJobLeaseRequest> Requests { get; } = new();
+        public ConcurrentQueue<bool> WakeQueries { get; } = new();
+
         public Task<IReadOnlyList<WorkflowJobLeaseRecord>> LeaseRunnableAsync(
             WorkflowJobLeaseRequest request,
             CancellationToken cancellationToken)
         {
+            Requests.Enqueue(request);
             var count = Interlocked.Increment(ref _acquisitionCount);
             if (count == 1)
             {
@@ -658,6 +777,12 @@ public sealed class WorkerDispatcherTests
 
         public Task<DateTimeOffset?> GetNextWakeAtAsync(CancellationToken cancellationToken) =>
             Task.FromResult<DateTimeOffset?>(null);
+
+        public Task<DateTimeOffset?> GetNextWakeAtAsync(bool includeSignalShares, CancellationToken cancellationToken)
+        {
+            WakeQueries.Enqueue(includeSignalShares);
+            return Task.FromResult<DateTimeOffset?>(null);
+        }
 
         public Task<bool> ReleaseResultReadyLeaseAsync(
             WorkflowJobFence fence,

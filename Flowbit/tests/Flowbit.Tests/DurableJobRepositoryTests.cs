@@ -12,7 +12,7 @@ using Xunit;
 namespace Flowbit.Tests;
 
 [Collection(PostgresApiCollection.Name)]
-public sealed class DurableJobRepositoryTests(PostgresApiFixture fixture)
+public sealed partial class DurableJobRepositoryTests(PostgresApiFixture fixture)
 {
     [Fact]
     public async Task LockedReadUsesFreshLeaseAndPublicationStateInTheEnqueueContext()

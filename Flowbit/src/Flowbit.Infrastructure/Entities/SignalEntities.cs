@@ -163,6 +163,11 @@ public sealed class SignalBroadcastJobEntity
     public long? JobId { get; set; }
     public WorkflowJobEntity? Job { get; set; }
     public long OriginalJobId { get; set; }
+
+    /// <summary>The job's share of its definition's deliveries (EVENT-04G); 0 of 1 is all of them.</summary>
+    public int ShareIndex { get; set; }
+
+    public int ShareCount { get; set; } = 1;
     public string Reason { get; set; } = "throw";
     public string RequestedBy { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }

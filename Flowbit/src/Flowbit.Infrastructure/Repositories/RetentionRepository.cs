@@ -614,22 +614,25 @@ public sealed class RetentionRepository(RetentionDataSource source, TimeProvider
         // Match acquisition's indexed frontiers. A live result-ready lease is
         // in flight, while expired running/result-ready leases await recovery.
         // Each frontier is bounded: reaching the limit already requires pause;
-        // below it, every runnable row participates in the lag calculation.
+        // below it, every runnable row participates in the lag calculation. The share jobs
+        // of split signal broadcasts (EVENT-04G) are left out: Workers hold them back on
+        // purpose while their share slots are busy, so they do not mean the runtime is busy.
+        const string NotSignalShare = """("Kind"<>'signalBroadcastDeliver' OR "Phase"<>'deliverShare')""";
         var frontiers = new[] { "control", "activity" }.SelectMany(queue => new[]
         {
             $"""
             (SELECT "DueAt" AS ready_at FROM flowbit.workflow_jobs
-             WHERE "QueueClass"='{queue}' AND "Status" IN ('queued','retry') AND "DueAt"<=@now
+             WHERE "QueueClass"='{queue}' AND "Status" IN ('queued','retry') AND "DueAt"<=@now AND {NotSignalShare}
              ORDER BY "Priority","DueAt","Id" LIMIT @maximum)
             """,
             $"""
             (SELECT "LeaseExpiresAt" AS ready_at FROM flowbit.workflow_jobs
-             WHERE "QueueClass"='{queue}' AND "Status"='running' AND "LeaseExpiresAt"<=@now
+             WHERE "QueueClass"='{queue}' AND "Status"='running' AND "LeaseExpiresAt"<=@now AND {NotSignalShare}
              ORDER BY "LeaseExpiresAt","Id" LIMIT @maximum)
             """,
             $"""
             (SELECT "LeaseExpiresAt" AS ready_at FROM flowbit.workflow_jobs
-             WHERE "QueueClass"='{queue}' AND "Status"='resultReady' AND "LeaseExpiresAt"<=@now
+             WHERE "QueueClass"='{queue}' AND "Status"='resultReady' AND "LeaseExpiresAt"<=@now AND {NotSignalShare}
              ORDER BY "LeaseExpiresAt","Id" LIMIT @maximum)
             """
         });

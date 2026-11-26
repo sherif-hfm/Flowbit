@@ -297,6 +297,8 @@ No step may change who sees a task or an instance.
 5. Review the defaults of `MaxConcurrency` and `ActivityConcurrency` against the new figures, including the calls a Worker makes at once for [REST service tasks](../deployment.md#rest-service-tasks), and document how to size them.
 6. Record the runs. Tell [EVENT-04G](event-04g-parallel-signal-delivery.md) what changed, because it also divides activity slots.
 
+EVENT-04G landed first and changed the same leasing code; rebase this phase on it. `WorkflowJobLeaseRequest` has a last parameter, `MaxSignalShareCount`, which the dispatcher fills with `FlowbitWorker:SignalShareConcurrency` minus its running share jobs. Each of the three acquisition queries in `SelectAndLeaseClassAsync` has the condition `@signal_shares_allowed OR j."Kind" <> 'signalBroadcastDeliver' OR j."Phase" <> 'deliverShare'` before its fairness ranking, and returns `is_signal_share`; the selection loop counts share jobs against the bound. `GetQueueStatisticsAsync`, retention's overload check (`IsRuntimeBusyAsync`), the `flowbit.worker.queue.lag` histogram, and `GetNextWakeAtAsync(includeSignalShares)` leave share jobs out. A guaranteed activity share should count share jobs as activity jobs and keep the share cap as a separate bound inside the activity slots.
+
 ### Phase 5: fewer statements for each transition (effort L)
 
 Run the statement profile before and after each step, and land each step on its own. No step may change the lock order, an activation fence, what the commit-time triggers capture, or any API response.

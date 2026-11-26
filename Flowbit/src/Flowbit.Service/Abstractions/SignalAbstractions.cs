@@ -166,10 +166,13 @@ public interface ISignalBroadcastRepository
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
-    /// <summary>Links a broadcast to its delivery jobs, one per workflow definition, in one save.</summary>
+    /// <summary>
+    /// Links a broadcast to its delivery jobs in one save: one for each workflow definition,
+    /// or one for each share of a split definition.
+    /// </summary>
     Task AddJobLinksAsync(
         long broadcastId,
-        IReadOnlyList<(long WorkflowDefinitionId, long JobId)> links,
+        IReadOnlyList<SignalBroadcastJobLink> links,
         string reason,
         string requestedBy,
         DateTimeOffset now,
@@ -205,12 +208,19 @@ public interface ISignalBroadcastRepository
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The next pending deliveries of a broadcast and definition after a cursor, in ascending
+    /// ID. A share job (EVENT-04G) passes its share, and only deliveries whose instance falls in
+    /// that share are listed; share 0 of 1 lists every one, with today's query.
+    /// </summary>
     Task<IReadOnlyList<long>> ListPendingDeliveryIdsAsync(
         long broadcastId,
         long workflowDefinitionId,
         long afterId,
         int limit,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        int shareIndex = 0,
+        int shareCount = 1);
 
     Task<SignalDeliveryRecord?> GetDeliveryAsync(
         long deliveryId,

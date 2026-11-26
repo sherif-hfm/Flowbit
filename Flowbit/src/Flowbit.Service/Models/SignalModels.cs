@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Flowbit.Shared.Dtos;
 using Flowbit.Shared.Models;
 
@@ -210,13 +211,19 @@ public static class SignalSettings
     public const string DefaultRequiredRole = "admin";
     public const string MaxSubscriptionsPerBroadcastKey = "Signals.MaxSubscriptionsPerBroadcast";
     public const int DefaultMaxSubscriptionsPerBroadcast = 10_000;
-    public const int MaxSubscriptionsPerBroadcastCap = 100_000;
+    public const int MaxSubscriptionsPerBroadcastCap = 250_000;
     public const string MaxOpenBroadcastsKey = "Signals.MaxOpenBroadcasts";
     public const int DefaultMaxOpenBroadcasts = 20;
     public const int MaxOpenBroadcastsCap = 1_000;
     public const string MaxOpenWorkflowBroadcastsKey = "Signals.MaxOpenWorkflowBroadcasts";
     public const int DefaultMaxOpenWorkflowBroadcasts = 10_000;
     public const int MaxOpenWorkflowBroadcastsCap = 100_000;
+    public const string MaxDeliveryJobsPerDefinitionKey = "Signals.MaxDeliveryJobsPerDefinition";
+    public const int DefaultMaxDeliveryJobsPerDefinition = 2;
+    public const int MaxDeliveryJobsPerDefinitionCap = 32;
+    public const string MinDeliveriesPerJobKey = "Signals.MinDeliveriesPerJob";
+    public const int DefaultMinDeliveriesPerJob = 500;
+    public const int MinDeliveriesPerJobCap = 100_000;
 
     /// <summary>The thrower kinds whose broadcasts count toward <see cref="MaxOpenBroadcastsKey"/>.</summary>
     public static IReadOnlyList<string> ApiThrowerKinds { get; } = [SignalThrowerKinds.User, SignalThrowerKinds.Client];
@@ -370,10 +377,11 @@ public sealed record SignalFreezeResult(int Waits, int Starts)
 }
 
 /// <summary>
-/// What a retry changed: the definitions whose deliveries are pending again, and how many
-/// failed deliveries it changed in all, including starts it ended as skipped.
+/// What a retry changed: the definitions whose deliveries are pending again, each with its
+/// pending count, and how many failed deliveries it changed in all, including starts it ended
+/// as skipped.
 /// </summary>
-public sealed record SignalRetryResult(IReadOnlyList<long> DefinitionIds, int Changed);
+public sealed record SignalRetryResult(IReadOnlyList<SignalRecipientDefinitionRecord> Definitions, int Changed);
 
 /// <summary>One family that starts on a signal, through its published default's start event.</summary>
 public sealed record SignalStartSubscriptionRecord(
@@ -436,8 +444,85 @@ public sealed record SignalDeliveryQuery(
     int PageSize,
     string? Kind = null);
 
-/// <summary>The job payload of a <c>signalBroadcastDeliver</c> job.</summary>
-public sealed record SignalBroadcastJobPayload(long BroadcastId, long WorkflowDefinitionId);
+/// <summary>
+/// The job payload of a <c>signalBroadcastDeliver</c> job. A job of a split definition
+/// (EVENT-04G) adds its share; a payload without one, as every job of an unsplit definition and
+/// every job queued before the split existed has, is share 0 of 1: the whole definition.
+/// </summary>
+public sealed record SignalBroadcastJobPayload(
+    long BroadcastId,
+    long WorkflowDefinitionId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? ShareIndex = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? ShareCount = null)
+{
+    /// <summary>The job's share, from 0 to <see cref="Shares"/> - 1.</summary>
+    [JsonIgnore]
+    public int Share => ShareIndex ?? 0;
+
+    /// <summary>How many jobs share the definition's deliveries; 1 when the job has them all.</summary>
+    [JsonIgnore]
+    public int Shares => ShareCount ?? 1;
+}
+
+/// <summary>
+/// One link of a broadcast to a delivery job: the definition it delivers and the job's share,
+/// 0 of 1 when the job has the whole definition.
+/// </summary>
+public sealed record SignalBroadcastJobLink(long WorkflowDefinitionId, long JobId, int ShareIndex = 0, int ShareCount = 1);
+
+/// <summary>
+/// How a broadcast's deliveries to one workflow definition are split among delivery jobs
+/// (EVENT-04G). A definition with <c>n</c> recipients gets <c>n / minDeliveriesPerJob</c> jobs,
+/// rounded down and held between 1 and <c>maxJobs</c>. A delivery belongs to the job whose share
+/// its instance hashes to, so every delivery to one instance is in one job; the database
+/// computes the share, and no row stores it.
+/// </summary>
+public static class SignalDeliveryShares
+{
+    /// <summary>The phase of a delivery job whose definition is split; an unsplit job keeps <c>deliver</c>.</summary>
+    public const string SharePhase = "deliverShare";
+
+    /// <summary>
+    /// The fewest recipients of one definition that any setting can split: two jobs of one
+    /// recipient each. Below it the settings are not read.
+    /// </summary>
+    public const int FewestSplittable = 2;
+
+    /// <summary>The number of delivery jobs for a definition with <paramref name="recipients"/> recipients.</summary>
+    public static int JobCount(int recipients, int maxJobs, int minDeliveriesPerJob)
+    {
+        if (recipients < FewestSplittable || maxJobs <= 1)
+        {
+            return 1;
+        }
+
+        return Math.Clamp(recipients / Math.Max(1, minDeliveriesPerJob), 1, maxJobs);
+    }
+
+    /// <summary>Reads the two engine settings as <see cref="SignalSettings.ParseLimit"/> reads every signal limit.</summary>
+    public static (int MaxJobs, int MinDeliveriesPerJob) ParseSettings(string? maxJobs, string? minDeliveriesPerJob) =>
+        (SignalSettings.ParseLimit(
+                maxJobs,
+                SignalSettings.DefaultMaxDeliveryJobsPerDefinition,
+                SignalSettings.MaxDeliveryJobsPerDefinitionCap),
+            SignalSettings.ParseLimit(
+                minDeliveriesPerJob,
+                SignalSettings.DefaultMinDeliveriesPerJob,
+                SignalSettings.MinDeliveriesPerJobCap));
+
+    /// <summary>True for the share job of a split broadcast, which Workers cap with their share slots.</summary>
+    public static bool IsShareJob(string kind, string phase) =>
+        string.Equals(kind, WorkflowJobKinds.SignalBroadcastDeliver, StringComparison.Ordinal)
+        && string.Equals(phase, SharePhase, StringComparison.Ordinal);
+
+    /// <summary>True when a payload's share is one that a job can own.</summary>
+    public static bool IsValid(int shareIndex, int shareCount) =>
+        shareCount is >= 1 and <= SignalSettings.MaxDeliveryJobsPerDefinitionCap
+        && shareIndex >= 0
+        && shareIndex < shareCount;
+}
 
 /// <summary>The delivery backlog the Worker samples: pending deliveries and the oldest unfinished broadcast.</summary>
 public sealed record SignalBacklogRecord(long PendingDeliveries, DateTimeOffset? OldestOpenBroadcastAt, DateTimeOffset ObservedAt);

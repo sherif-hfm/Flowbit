@@ -1087,6 +1087,31 @@ Storage follows the hybrid design:
     statements that derive a status from the delivery rows (`expired` when any
     delivery is `skipped` with `broadcast_expired`, else `completedWithIssues` when
     any failed, else `completed`), and they change together.
+  - Parallel delivery (EVENT-04G): a definition with at least twice
+    `Signals.MinDeliveriesPerJob` recipients gets up to
+    `Signals.MaxDeliveryJobsPerDefinition` jobs with the phase `deliverShare`, decided
+    once at the throw or retry by `SignalBroadcastWriter.EnqueueDeliveryJobsAsync`
+    (`SignalDeliveryShares.JobCount`), which reads the two settings in one query and
+    only when a definition has two or more recipients. A definition with one job
+    keeps phase `deliver` and a payload without a share. A delivery's share is a hash
+    of its instance ID, computed in SQL and never stored, so every delivery to one
+    instance is in one job; `SignalDeliveryShareSql.Condition` is the one expression,
+    and the share page query and the lost-lease statement both use it. The split
+    never carries correctness: the delivery's own row lock and pending check still
+    decide. A lost lease of a share job fails only its share. Only share jobs count
+    against `WorkflowJobLeaseRequest.MaxSignalShareCount` (the Worker's
+    `SignalShareConcurrency` minus its running share jobs; unbounded by default): the
+    three acquisition queries leave them out before the fairness ranking when none is
+    allowed, and the selection loop stops at the bound. `GetQueueStatisticsAsync`,
+    retention's overload check, the `flowbit.worker.queue.lag` histogram, and
+    `GetNextWakeAtAsync(includeSignalShares: false)` leave share jobs out, because a
+    Worker holds them back on purpose. A share job recounts at most every two seconds
+    and at its end. The two defaults are a user decision from the recorded runs and
+    stay equal: `Signals.MaxDeliveryJobsPerDefinition` is 2, and an unset
+    `SignalShareConcurrency` is that same constant, lowered only for a Worker with
+    fewer than four activity slots (`WorkerOptions.EffectiveSignalShareConcurrency`),
+    so a Worker at its defaults runs one split definition at a time. Do not raise
+    either default without a request.
   - Expiry (EVENT-04E): one clock. The database computes `ExpiresAt` at the throw
     (`clock_timestamp()`, read once in `AddAsync`) and it never changes; every
     decision that ends or refuses a delivery compares it with `clock_timestamp()`,
@@ -1300,7 +1325,13 @@ Storage follows the hybrid design:
   migration refuses while a start delivery or a definition with a signal start
   remains. The catalog needs `AddSignalCatalog`, whose down migration refuses
   while any entry exists; mixed API replicas would publish, reactivate, and
-  throw without it.
+  throw without it. The recipient cap of 250,000
+  (`SignalSettings.MaxSubscriptionsPerBroadcastCap`) needs
+  `RaiseSignalBroadcastRecipientCap` first, which widens `CK_signal_broadcasts_counts`
+  to the same number (a test compares them) and whose down migration refuses while
+  a broadcast has more than 100,000 deliveries. Change the constant only with a
+  migration of the check, after measuring the whole-broadcast statements at the new
+  size as EVENT-04G did.
 - **Intermediate conditional catch events.** An
   `intermediateConditionalCatchEvent` is a persisted resting position with at
   least one incoming flow and exactly one unconditional outgoing flow. Its
@@ -2708,8 +2739,10 @@ cases per second, per-operation latency, how late timers and signals arrived, an
 with `--database`, storage growth, lock waits, and how long Worker jobs waited.
 It also covers what a small test database lacks: an in-process stub for REST calls
 and signed webhook deliveries (`--stub`, `--webhooks`), several APIs (`--api a,b`
-rotates requests), open work (`--park-at`), read probes (`--probe`), and months of
-history (`sql/copy-history.sql`, checked with `--check-copies`). Its
+rotates requests), open work (`--park-at`), read probes (`--probe`), months of
+history (`sql/copy-history.sql`, checked with `--check-copies`), and one large signal
+broadcast (`--broadcast`, with processor use per process and statements per
+delivery). Its
 [README](Flowbit/tools/LifecycleLoadTest/README.md) has the PowerShell and Bash
 steps; the recorded results and the daily-volume estimate are in
 [capacity planning](docs/deployment.md#capacity-planning). The tool finds the nodes

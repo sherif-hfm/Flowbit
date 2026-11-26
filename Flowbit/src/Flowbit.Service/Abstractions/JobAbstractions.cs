@@ -171,6 +171,11 @@ public interface IWorkflowJobRepository
         long instanceId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The queue's runnable depth and lag. The share jobs of split signal broadcasts
+    /// (EVENT-04G) are left out: Workers hold them back on purpose while their share slots are
+    /// busy, so they are not a backlog.
+    /// </summary>
     Task<WorkflowJobQueueStatisticsRecord> GetQueueStatisticsAsync(
         CancellationToken cancellationToken);
 
@@ -182,6 +187,16 @@ public interface IWorkflowJobRepository
     /// </summary>
     Task<DateTimeOffset?> GetNextWakeAtAsync(
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <see cref="GetNextWakeAtAsync(CancellationToken)"/> for a Worker that may or may not
+    /// lease the share jobs of split signal broadcasts (EVENT-04G): a Worker with no share slot
+    /// passes false, so due share jobs it never leases do not keep it polling.
+    /// </summary>
+    Task<DateTimeOffset?> GetNextWakeAtAsync(
+        bool includeSignalShares,
+        CancellationToken cancellationToken) =>
+        GetNextWakeAtAsync(cancellationToken);
 
     Task<IReadOnlyDictionary<long, WorkflowInstanceJobSummaryRecord>>
         GetInstanceJobSummariesAsync(

@@ -12,6 +12,8 @@ namespace Flowbit.Service.Services;
 /// <summary>
 /// Delivers the pending deliveries of one broadcast for one workflow definition, in pages
 /// of 100 in ascending id with a cursor, so a failing delivery cannot starve later ones.
+/// A share job of a split definition (EVENT-04G) delivers only the deliveries whose instance
+/// falls in its share, and recounts at most every two seconds instead of after every page.
 /// Every delivery runs in its own scope and transaction. Before each page, and when a
 /// delivery's own check finds the broadcast expired, it settles the whole broadcast through
 /// <see cref="ISignalBroadcastExpirer"/> instead of delivering further (EVENT-04E).
@@ -25,6 +27,16 @@ public sealed class SignalBroadcastJobProcessor(
 {
     private const int DeliveryPageSize = 100;
 
+    /// <summary>
+    /// How often a share job recounts while it delivers. Each recount counts every delivery of
+    /// the broadcast under its row lock, so several jobs recounting after every page would
+    /// recount a large broadcast several times a second; the Signals page polls every three.
+    /// </summary>
+    internal static readonly TimeSpan ShareRecountInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>The deliveries read per page; tests use a smaller page to reach several pages.</summary>
+    internal int PageSize { get; init; } = DeliveryPageSize;
+
     public async Task ProcessAsync(
         WorkflowJobLeaseRecord lease,
         CancellationToken cancellationToken)
@@ -35,7 +47,8 @@ public sealed class SignalBroadcastJobProcessor(
         }
 
         var payload = lease.Job.Payload?.Deserialize<SignalBroadcastJobPayload>();
-        if (payload is null || payload.BroadcastId <= 0 || payload.WorkflowDefinitionId <= 0)
+        if (payload is null || payload.BroadcastId <= 0 || payload.WorkflowDefinitionId <= 0
+            || !SignalDeliveryShares.IsValid(payload.Share, payload.Shares))
         {
             await jobs.OpenIncidentAsync(
                 Fence(lease),
@@ -47,6 +60,8 @@ public sealed class SignalBroadcastJobProcessor(
         }
 
         var isFinalAttempt = lease.AttemptNumber >= lease.Job.MaxAttempts;
+        var isShare = payload.Shares > 1;
+        var lastRecount = timeProvider.GetTimestamp();
         long afterId = 0;
         Exception? firstUnexpectedFailure = null;
         var settled = false;
@@ -68,8 +83,10 @@ public sealed class SignalBroadcastJobProcessor(
                         payload.BroadcastId,
                         payload.WorkflowDefinitionId,
                         afterId,
-                        DeliveryPageSize,
-                        cancellationToken);
+                        PageSize,
+                        cancellationToken,
+                        payload.Share,
+                        payload.Shares);
             }
 
             if (expired)
@@ -104,7 +121,11 @@ public sealed class SignalBroadcastJobProcessor(
             }
 
             afterId = page[^1];
-            await RefreshCountsAsync(payload.BroadcastId, cancellationToken);
+            if (!isShare || timeProvider.GetElapsedTime(lastRecount) >= ShareRecountInterval)
+            {
+                await RefreshCountsAsync(payload.BroadcastId, cancellationToken);
+                lastRecount = timeProvider.GetTimestamp();
+            }
         }
 
         await RefreshCountsAsync(payload.BroadcastId, cancellationToken);

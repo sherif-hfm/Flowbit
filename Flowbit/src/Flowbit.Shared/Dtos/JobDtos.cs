@@ -104,7 +104,9 @@ public sealed record RetryIncidentResultDto(
 
 /// <summary>
 /// Constant-size administrative snapshot of durable queue health.
-/// QueueLagSeconds is measured from the oldest currently runnable job.
+/// QueueLagSeconds is measured from the oldest currently runnable job. The runnable figures leave
+/// out the share jobs of split signal broadcasts, which Workers hold back on purpose while their
+/// share slots are busy.
 /// </summary>
 public sealed record JobQueueStatisticsDto(
     long RunnableDepth,

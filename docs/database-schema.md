@@ -1349,7 +1349,7 @@ One thrown signal, thrown through the API or by a workflow's signal throw or end
 - **Referenced by:** [`signal_deliveries`](#signal_deliveries).`BroadcastId`, [`signal_broadcast_jobs`](#signal_broadcast_jobs).`BroadcastId`
 - **Unique:** (`ThrownByKind`, `ThrownBy`, `IdempotencyKey`) where `IdempotencyKey IS NOT NULL`
 - **Indexes:** (`Status`, `UpdatedAt`, `Id`); (`SignalName`, `CreatedAt`, `Id`); (`ThrownByKind`, `ThrownBy`, `CreatedAt`, `Id`), for a client's own list; `IX_signal_broadcasts_open_expiry` on (`ExpiresAt`) where `Status = 'delivering' AND "ExpiresAt" IS NOT NULL`, added by `AddSignalBroadcastExpiry`, which the Worker's expiry sweep reads with a time read once, and which is empty unless broadcasts with an expiry are delivering; `IX_signal_broadcasts_open_thrower` on (`ThrownByKind`) where `Status = 'delivering'`, added by `AddSignalThrowEvents`, which the two open-broadcast budgets (`Signals.MaxOpenBroadcasts` for `user` and `client`, `Signals.MaxOpenWorkflowBroadcasts` for `instance`) and the Worker's backlog gauge read
-- **Checks:** `CK_signal_broadcasts_start_count` (`StartDeliveryCount` between 0 and `TotalDeliveryCount`), added by `AddSignalStartEvents`; `CK_signal_broadcasts_status`, replaced by `AddSignalBroadcastExpiry` to allow `expired`; `CK_signal_broadcasts_expiry`, added by `AddSignalBroadcastExpiry` (`ExpiredCount` between 0 and `SkippedCount`; a row without `ExpiresAt` has no expired delivery and not the status `expired`; an `expired` row has at least one expired delivery); `_counts` (non-negative counters whose sum is at most `TotalDeliveryCount`, which is at most 100,000); `_payload` (null, or a JSON object of at most 262,144 bytes as `octet_length("PayloadJson"::text)` measures it); `_thrower`, replaced by `AddSignalThrowEvents` (`ThrownByKind` is `user`, `client`, or `instance`; an `instance` row has a positive `ThrowerInstanceId`, a `ThrowerNodeId`, no `IdempotencyKey`, and an `AutomaticActivationCount` of 0 or more; a `user` or `client` row has null thrower columns and an `AutomaticActivationCount` of 0); `_terminal_time`; `_scope` (`BusinessKey` and `InstanceId` not both set, `WorkflowKey` set when either is, a nonempty `BusinessKey`, and a positive `InstanceId`), added by `AddSignalBroadcastScope`
+- **Checks:** `CK_signal_broadcasts_start_count` (`StartDeliveryCount` between 0 and `TotalDeliveryCount`), added by `AddSignalStartEvents`; `CK_signal_broadcasts_status`, replaced by `AddSignalBroadcastExpiry` to allow `expired`; `CK_signal_broadcasts_expiry`, added by `AddSignalBroadcastExpiry` (`ExpiredCount` between 0 and `SkippedCount`; a row without `ExpiresAt` has no expired delivery and not the status `expired`; an `expired` row has at least one expired delivery); `_counts` (non-negative counters whose sum is at most `TotalDeliveryCount`, which is at most 250,000 since `RaiseSignalBroadcastRecipientCap` and 100,000 before; its down migration refuses while a broadcast has more than 100,000 deliveries); `_payload` (null, or a JSON object of at most 262,144 bytes as `octet_length("PayloadJson"::text)` measures it); `_thrower`, replaced by `AddSignalThrowEvents` (`ThrownByKind` is `user`, `client`, or `instance`; an `instance` row has a positive `ThrowerInstanceId`, a `ThrowerNodeId`, no `IdempotencyKey`, and an `AutomaticActivationCount` of 0 or more; a `user` or `client` row has null thrower columns and an `AutomaticActivationCount` of 0); `_terminal_time`; `_scope` (`BusinessKey` and `InstanceId` not both set, `WorkflowKey` set when either is, a nonempty `BusinessKey`, and a positive `InstanceId`), added by `AddSignalBroadcastScope`
 - **Lifecycle events:** the deferred constraint triggers `TR_signal_broadcasts_lifecycle_insert` and `TR_signal_broadcasts_lifecycle_status`, added by `AddSignalBroadcastLifecycleEvents`, call `capture_signal_broadcast_lifecycle()` when a row is inserted finished or its `Status` changes to `completed`, `completedWithIssues`, `cancelled`, or, since `AddSignalBroadcastExpiry` replaced the function, `expired`; see [lifecycle webhooks](#lifecycle-webhooks). A recount that keeps the status, and a change back to `delivering`, queue nothing.
 
 ### `signal_deliveries`
@@ -1375,13 +1375,14 @@ One frozen recipient of a broadcast: a wait, or the start of a workflow family. 
 
 ### `signal_broadcast_jobs`
 
-One row per delivery job of a broadcast: one per represented definition for the throw, and one per definition with failed deliveries for each retry.
+One row per delivery job of a broadcast: for the throw, one per represented definition, or one per share of a definition split into several jobs; for each retry, the same for the definitions with failed deliveries.
 
 | Column | Meaning |
 | --- | --- |
 | `BroadcastId`, `WorkflowDefinitionId` | The broadcast, and the definition whose deliveries the job handles. |
 | `JobId` | The live job; set to null if the job is deleted. |
 | `OriginalJobId` | Permanent copy of the job ID (unique). |
+| `ShareIndex`, `ShareCount` | The job's share of the definition's deliveries ([parallel delivery](deployment.md#signal-events)): share `ShareIndex` of `ShareCount`. `0` of `1`, the default, is the whole definition, as every row written before `AddSignalDeliveryShares` reads. A delivery's share is computed from a hash of its `InstanceId` when it is needed and never stored. |
 | `Reason`, `RequestedBy`, `CreatedAt` | `throw` or `retry`, who threw or retried (the instance ID as text for a throw by a workflow), and when. |
 
 - **Primary key:** `Id`
@@ -1389,9 +1390,9 @@ One row per delivery job of a broadcast: one per represented definition for the 
 - **Referenced by:** none
 - **Unique:** `JobId` where `JobId IS NOT NULL`; `OriginalJobId`
 - **Indexes:** (`BroadcastId`, `Id`)
-- **Checks:** `CK_signal_broadcast_jobs_reason` (`throw` or `retry`)
+- **Checks:** `CK_signal_broadcast_jobs_reason` (`throw` or `retry`); `CK_signal_broadcast_jobs_share` (`ShareCount` from 1 to 32, `ShareIndex` from 0 to `ShareCount - 1`), added by `AddSignalDeliveryShares`
 
-A final lease expiry of a delivery job fails that job's pending deliveries with `lease_exhausted` through this link, or skips them with `broadcast_expired` when the broadcast's `ExpiresAt` is at or before the database's clock, read once for the statement. The down migration of `AddSignalEvents` refuses while any signal subscription, broadcast, `signalBroadcastDeliver` job, or node visit with the reason `signalReceived` exists.
+A final lease expiry of a delivery job fails that job's pending deliveries with `lease_exhausted` through this link, only those of its share when `ShareCount` is above 1, or skips them with `broadcast_expired` when the broadcast's `ExpiresAt` is at or before the database's clock, read once for the statement. The down migration of `AddSignalEvents` refuses while any signal subscription, broadcast, `signalBroadcastDeliver` job, or node visit with the reason `signalReceived` exists; that of `AddSignalDeliveryShares` refuses while a `signalBroadcastDeliver` job with the phase `deliverShare` is not finished, one with an open incident included.
 
 ### `signal_catalog_entries`
 

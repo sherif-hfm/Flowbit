@@ -222,12 +222,18 @@ public sealed record WorkflowJobRecord(
     long? MultiInstanceControlGeneration = null,
     bool PublicationFenceRefreshRequested = false);
 
+/// <summary>
+/// One lease round. <see cref="MaxSignalShareCount"/> bounds the share jobs of split signal
+/// broadcasts (EVENT-04G) the round may lease, inside <see cref="MaxActivityCount"/>; the
+/// default leaves them unbounded, as before the split existed.
+/// </summary>
 public sealed record WorkflowJobLeaseRequest(
     string WorkerId,
     int MaxCount,
     int MaxActivityCount,
     int MaxPerInstance,
-    TimeSpan LeaseDuration);
+    TimeSpan LeaseDuration,
+    int MaxSignalShareCount = int.MaxValue);
 
 public sealed record WorkflowJobLeaseRecord(
     WorkflowJobRecord Job,

@@ -3264,7 +3264,7 @@ namespace Flowbit.Infrastructure.Data.Migrations
 
                     b.ToTable("signal_broadcasts", "flowbit", t =>
                         {
-                            t.HasCheckConstraint("CK_signal_broadcasts_counts", "\"TotalDeliveryCount\" BETWEEN 0 AND 100000 AND \"DeliveredCount\" >= 0 AND \"SkippedCount\" >= 0 AND \"FailedCount\" >= 0 AND \"CancelledCount\" >= 0 AND \"DeliveredCount\" + \"SkippedCount\" + \"FailedCount\" + \"CancelledCount\" <= \"TotalDeliveryCount\"");
+                            t.HasCheckConstraint("CK_signal_broadcasts_counts", "\"TotalDeliveryCount\" BETWEEN 0 AND 250000 AND \"DeliveredCount\" >= 0 AND \"SkippedCount\" >= 0 AND \"FailedCount\" >= 0 AND \"CancelledCount\" >= 0 AND \"DeliveredCount\" + \"SkippedCount\" + \"FailedCount\" + \"CancelledCount\" <= \"TotalDeliveryCount\"");
 
                             t.HasCheckConstraint("CK_signal_broadcasts_expiry", "\"ExpiredCount\" BETWEEN 0 AND \"SkippedCount\" AND (\"ExpiresAt\" IS NOT NULL OR (\"ExpiredCount\" = 0 AND \"Status\" <> 'expired')) AND (\"Status\" <> 'expired' OR \"ExpiredCount\" > 0)");
 
@@ -3312,6 +3312,16 @@ namespace Flowbit.Infrastructure.Data.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");
 
+                    b.Property<int>("ShareCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
+                    b.Property<int>("ShareIndex")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
                     b.Property<long>("WorkflowDefinitionId")
                         .HasColumnType("bigint");
 
@@ -3329,6 +3339,8 @@ namespace Flowbit.Infrastructure.Data.Migrations
                     b.ToTable("signal_broadcast_jobs", "flowbit", t =>
                         {
                             t.HasCheckConstraint("CK_signal_broadcast_jobs_reason", "\"Reason\" IN ('throw', 'retry')");
+
+                            t.HasCheckConstraint("CK_signal_broadcast_jobs_share", "\"ShareCount\" BETWEEN 1 AND 32 AND \"ShareIndex\" >= 0 AND \"ShareIndex\" < \"ShareCount\"");
                         });
                 });
 

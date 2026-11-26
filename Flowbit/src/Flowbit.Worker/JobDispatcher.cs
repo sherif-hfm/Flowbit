@@ -42,11 +42,13 @@ public sealed class JobDispatcher(
                 await schemaGate.WaitUntilReadyAsync(stoppingToken);
             }
 
+            var signalShareSlots = options.EffectiveSignalShareConcurrency;
             logger.LogInformation(
-                "Flowbit worker {WorkerId} started with concurrency {Concurrency} ({ActivityConcurrency} activity slots).",
+                "Flowbit worker {WorkerId} started with concurrency {Concurrency} ({ActivityConcurrency} activity slots, {SignalShareConcurrency} of them for the share jobs of split signal broadcasts).",
                 _workerId,
                 options.MaxConcurrency,
-                options.ActivityConcurrency);
+                options.ActivityConcurrency,
+                signalShareSlots);
 
             // Startup jitter avoids a polling herd when many replicas deploy together.
             await Task.Delay(
@@ -60,6 +62,8 @@ public sealed class JobDispatcher(
                 var runningActivities = _running.Values.Count(item =>
                     item.QueueClass == WorkflowJobClasses.Activity);
                 var activityFree = Math.Max(0, options.ActivityConcurrency - runningActivities);
+                var runningShares = _running.Values.Count(item => item.IsSignalShare);
+                var shareFree = Math.Max(0, signalShareSlots - runningShares);
 
                 IReadOnlyList<WorkflowJobLeaseRecord> leases = [];
                 DateTimeOffset? nextWakeAt = null;
@@ -76,11 +80,16 @@ public sealed class JobDispatcher(
                                 Math.Min(free, options.BatchSize),
                                 Math.Min(activityFree, options.BatchSize),
                                 options.MaxPerInstance,
-                                options.LeaseDuration),
+                                options.LeaseDuration,
+                                shareFree),
                             stoppingToken);
                         if (leases.Count == 0)
                         {
-                            nextWakeAt = await repository.GetNextWakeAtAsync(stoppingToken);
+                            // A Worker with no share slot never leases a share job, so a due
+                            // one must not keep it polling (EVENT-04G).
+                            nextWakeAt = await repository.GetNextWakeAtAsync(
+                                includeSignalShares: signalShareSlots > 0,
+                                stoppingToken);
                         }
                         telemetry.RecordAcquisition(
                             leases,
@@ -113,14 +122,17 @@ public sealed class JobDispatcher(
                     // complete fence identity so the fresh generation is never
                     // leased and then accidentally dropped.
                     var key = new RunningKey(lease.Job.Id, lease.LeaseGeneration);
-                    var running = new RunningJob(lease.Job.QueueClass, _hardStop.Token);
+                    var running = new RunningJob(
+                        lease.Job.QueueClass,
+                        SignalDeliveryShares.IsShareJob(lease.Job.Kind, lease.Job.Phase),
+                        _hardStop.Token);
                     if (!_running.TryAdd(key, running))
                     {
                         running.Dispose();
                         continue;
                     }
                     var isActivity = lease.Job.QueueClass == WorkflowJobClasses.Activity;
-                    telemetry.JobStarted(isActivity);
+                    telemetry.JobStarted(isActivity, running.IsSignalShare);
                     running.Task = ProcessLeaseAsync(lease, running);
                     // Refill the slot as soon as the job finishes instead of
                     // waiting for the next poll. The continuation runs only
@@ -220,7 +232,8 @@ public sealed class JobDispatcher(
             telemetry.JobFinished(
                 isActivity,
                 succeeded,
-                Stopwatch.GetElapsedTime(started));
+                Stopwatch.GetElapsedTime(started),
+                running.IsSignalShare);
         }
 
         if (succeeded)
@@ -526,14 +539,18 @@ public sealed class JobDispatcher(
     {
         private int _leaseLost;
 
-        public RunningJob(string queueClass, CancellationToken hardStopToken)
+        public RunningJob(string queueClass, bool isSignalShare, CancellationToken hardStopToken)
         {
             QueueClass = queueClass;
+            IsSignalShare = isSignalShare;
             LeaseCancellation = CancellationTokenSource
                 .CreateLinkedTokenSource(hardStopToken);
         }
 
         public string QueueClass { get; }
+
+        /// <summary>A share job of a split signal broadcast, counted against the share slots.</summary>
+        public bool IsSignalShare { get; }
         public CancellationTokenSource LeaseCancellation { get; }
         public Task? Task { get; set; }
         public bool LeaseLost => Volatile.Read(ref _leaseLost) == 1;

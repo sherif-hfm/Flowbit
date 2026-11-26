@@ -951,6 +951,26 @@ public interface IWorkflowSettingsRepository
 public interface IEngineSettingsRepository
 {
     Task<EngineSettingRecord?> GetByKeyAsync(string key, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads several settings at once, each matched as <see cref="GetByKeyAsync"/> matches it;
+    /// a key without a row has no entry. The database repository reads them in one query.
+    /// </summary>
+    async Task<IReadOnlyDictionary<string, EngineSettingRecord>> GetByKeysAsync(
+        IReadOnlyCollection<string> keys,
+        CancellationToken cancellationToken)
+    {
+        var found = new Dictionary<string, EngineSettingRecord>(StringComparer.Ordinal);
+        foreach (var key in keys.Distinct(StringComparer.Ordinal))
+        {
+            if (await GetByKeyAsync(key, cancellationToken) is { } setting)
+            {
+                found[key] = setting;
+            }
+        }
+
+        return found;
+    }
     Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(string pattern, CancellationToken cancellationToken);
     Task<EngineSettingRecord> SetAsync(string key, string value, string actor, CancellationToken cancellationToken);
     Task<bool> DeleteAsync(string key, string actor, CancellationToken cancellationToken);

@@ -35,6 +35,7 @@ public sealed class WorkerTelemetry : IDisposable
     private readonly Histogram<double> _timerLateness;
     private int _active;
     private int _activeActivities;
+    private int _activeSignalShares;
     private int _ready;
     private long _runnableDepth;
     private long _openIncidents;
@@ -163,6 +164,10 @@ public sealed class WorkerTelemetry : IDisposable
             () => Volatile.Read(ref _activeActivities),
             description: "External activity jobs currently executing in this worker replica.");
         _meter.CreateObservableGauge(
+            "flowbit.worker.jobs.signal_share.active",
+            () => Volatile.Read(ref _activeSignalShares),
+            description: "Share jobs of split signal broadcasts currently executing in this worker replica.");
+        _meter.CreateObservableGauge(
             "flowbit.worker.ready",
             () => Volatile.Read(ref _ready),
             description: "One after this worker has successfully queried the durable queue.");
@@ -210,6 +215,13 @@ public sealed class WorkerTelemetry : IDisposable
         Interlocked.Add(ref _acquiredTotal, leases.Count);
         foreach (var lease in leases)
         {
+            // A share job of a split signal broadcast waits for a share slot on purpose
+            // (EVENT-04G); its wait is not queue lag.
+            if (SignalDeliveryShares.IsShareJob(lease.Job.Kind, lease.Job.Phase))
+            {
+                continue;
+            }
+
             var queueLag = Math.Max(0, (now - lease.Job.DueAt).TotalMilliseconds);
             _queueLag.Record(queueLag);
             RecordSample(ref _queueLagSamples, ref _queueLagMicroseconds, queueLag);
@@ -225,21 +237,29 @@ public sealed class WorkerTelemetry : IDisposable
         }
     }
 
-    public void JobStarted(bool activity)
+    public void JobStarted(bool activity, bool signalShare = false)
     {
         Interlocked.Increment(ref _active);
         if (activity)
         {
             Interlocked.Increment(ref _activeActivities);
         }
+        if (signalShare)
+        {
+            Interlocked.Increment(ref _activeSignalShares);
+        }
     }
 
-    public void JobFinished(bool activity, bool succeeded, TimeSpan elapsed)
+    public void JobFinished(bool activity, bool succeeded, TimeSpan elapsed, bool signalShare = false)
     {
         Interlocked.Decrement(ref _active);
         if (activity)
         {
             Interlocked.Decrement(ref _activeActivities);
+        }
+        if (signalShare)
+        {
+            Interlocked.Decrement(ref _activeSignalShares);
         }
         _processingDuration.Record(elapsed.TotalMilliseconds);
         RecordSample(
@@ -367,6 +387,9 @@ public sealed class WorkerTelemetry : IDisposable
 
     public bool IsReady => Volatile.Read(ref _ready) == 1;
 
+    /// <summary>Share jobs of split signal broadcasts running now, as the gauge reports them.</summary>
+    public int ActiveSignalShares => Volatile.Read(ref _activeSignalShares);
+
     public string ExportPrometheus()
     {
         var output = new StringBuilder(2048);
@@ -376,6 +399,10 @@ public sealed class WorkerTelemetry : IDisposable
             output,
             "flowbit_worker_jobs_activity_active",
             Volatile.Read(ref _activeActivities));
+        WriteGauge(
+            output,
+            "flowbit_worker_jobs_signal_share_active",
+            Volatile.Read(ref _activeSignalShares));
         WriteGauge(
             output,
             "flowbit_worker_queue_runnable_depth",

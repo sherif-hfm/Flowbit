@@ -1,3 +1,5 @@
+using Flowbit.Service.Models;
+
 namespace Flowbit.Worker;
 
 public sealed class WorkerOptions
@@ -6,6 +8,21 @@ public sealed class WorkerOptions
 
     public int MaxConcurrency { get; set; } = 8;
     public int ActivityConcurrency { get; set; } = 6;
+
+    /// <summary>
+    /// How many share jobs of split signal broadcasts (EVENT-04G) this Worker runs at once,
+    /// inside its activity slots. Unset, it is the default number of jobs of one split
+    /// definition (2), so at the defaults one split definition runs at a time; it is also never
+    /// more than two fewer than <see cref="ActivityConcurrency"/>, and never below 1 unless that
+    /// is 0. Every other job, the delivery jobs of small broadcasts included, ignores it.
+    /// </summary>
+    public int? SignalShareConcurrency { get; set; }
+
+    /// <summary>The share slots this Worker has: <see cref="SignalShareConcurrency"/>, or its default.</summary>
+    public int EffectiveSignalShareConcurrency =>
+        SignalShareConcurrency ?? (ActivityConcurrency == 0
+            ? 0
+            : Math.Clamp(ActivityConcurrency - 2, 1, SignalSettings.DefaultMaxDeliveryJobsPerDefinition));
     public int BatchSize { get; set; } = 32;
     public int MaxPerInstance { get; set; } = 4;
     public int LeaseSeconds { get; set; } = 60;
@@ -44,6 +61,8 @@ public sealed class WorkerOptions
             throw new InvalidOperationException($"{SectionName}:MaxConcurrency must be between 1 and 1024.");
         if (ActivityConcurrency < 0 || ActivityConcurrency > MaxConcurrency)
             throw new InvalidOperationException($"{SectionName}:ActivityConcurrency must be between 0 and MaxConcurrency.");
+        if (SignalShareConcurrency is { } shares && (shares < 0 || shares > ActivityConcurrency))
+            throw new InvalidOperationException($"{SectionName}:SignalShareConcurrency must be between 0 and ActivityConcurrency.");
         if (BatchSize is < 1 or > 1000)
             throw new InvalidOperationException($"{SectionName}:BatchSize must be between 1 and 1000.");
         if (MaxPerInstance is < 1 or > 1000)

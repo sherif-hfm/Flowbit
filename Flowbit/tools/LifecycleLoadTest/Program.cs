@@ -98,6 +98,19 @@ catch (Exception ex) when (ex is InvalidOperationException or HttpRequestExcepti
     return Fail(ex.Message);
 }
 
+BroadcastRun? broadcast = null;
+if (options.Broadcast > 0)
+{
+    try
+    {
+        broadcast = await PrepareBroadcastAsync();
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or IOException or JsonException)
+    {
+        return Fail("--broadcast: " + ex.Message);
+    }
+}
+
 WebhookRun? webhooks = null;
 if (options.Webhooks > 0)
 {
@@ -146,6 +159,9 @@ if (rest is not null)
         $"{(options.RestMix != "sync" ? $"; {options.RestFailShare:P0} of jobs fail once" : "")}; stub answers after {options.StubDelayMilliseconds} ms");
 if (webhooks is not null)
     Console.WriteLine($"  {"Webhooks:",-28}{webhooks.Subscriptions.Count} subscriptions to {webhooks.EventTypes} event types at {stub!.BaseAddress}/hooks");
+if (broadcast is not null)
+    Console.WriteLine($"  {"Large broadcast:",-28}one throw to {broadcast.Waits:N0} waits in {broadcast.WorkflowIds.Length} " +
+        $"version{(broadcast.WorkflowIds.Length == 1 ? "" : "s")} of {broadcast.Key}");
 Console.WriteLine($"  {"Limit:",-28}{(options.Cases == int.MaxValue ? "" : options.Cases.ToString("N0", CultureInfo.InvariantCulture) + " of each kind")}" +
     $"{(options.Cases != int.MaxValue && options.DurationSeconds > 0 ? ", " : "")}{(options.DurationSeconds > 0 ? $"new work for {options.DurationSeconds} s" : "")}");
 Console.WriteLine($"  {"Run tag:",-28}{options.Tag}");
@@ -188,13 +204,19 @@ var reporter = Task.Run(async () =>
             last[s] = done;
             return text + (s.Failed > 0 ? $" {s.Failed} failed" : "");
         });
+        if (broadcast is not null)
+            parts = parts.Append($"broadcast {Volatile.Read(ref broadcast.Finished):N0} of {broadcast.Waits:N0} deliveries done");
         Console.WriteLine($"  {seconds,6:F0}s  {string.Join("  ", parts)}  {(requests - lastRequests) / interval:F1} HTTP requests/s");
         lastRequests = requests;
         lastSeconds = seconds;
     }
 });
 
-await Task.WhenAll(scenarios.Select(s => s.RunAsync(deadline, options.Cases, TimeSpan.FromSeconds(options.RampSeconds), elapsed)));
+// The broadcast is thrown as the measured window opens, so the other kinds of case run while it delivers.
+var following = broadcast is null ? Task.CompletedTask : FollowBroadcastAsync(broadcast);
+await Task.WhenAll(scenarios
+    .Select(s => s.RunAsync(deadline, options.Cases, TimeSpan.FromSeconds(options.RampSeconds), elapsed))
+    .Append(following));
 elapsed.Stop();
 stopReporting.Cancel();
 await reporter;
@@ -218,8 +240,11 @@ if (webhooks is not null)
     }
 }
 
+var broadcastJobs = broadcast?.BroadcastId is { } thrownId && options.Database is { } broadcastConnection
+    ? await BroadcastJob.ReadAsync(broadcastConnection, thrownId)
+    : null;
 PrintSummary();
-return scenarios.Any(s => s.Failed > 0) || stub?.ProblemCount > 0 || webhookFailures > 0 ? 1 : 0;
+return scenarios.Any(s => s.Failed > 0) || stub?.ProblemCount > 0 || webhookFailures > 0 || broadcast?.Problem is not null ? 1 : 0;
 
 // ---------------------------------------------------------------- setup
 
@@ -478,6 +503,125 @@ async Task<JsonNode> ThrowAsync(object request)
             Interlocked.Increment(ref throwRetries);
             await Task.Delay(250);
         }
+    }
+}
+
+// ---------------------------------------------------------------- large broadcast
+
+// Publishes signal Example 01 under a family of its own in the chosen number of versions and
+// starts the waiting claims, before the measured window opens. Each version gets its own
+// delivery jobs, so versions show what several jobs for one broadcast deliver.
+async Task<BroadcastRun> PrepareBroadcastAsync()
+{
+    var key = $"lt-broadcast-{options.Tag}";
+    var path = Path.Combine(options.ExamplesDirectory, BroadcastIds.File);
+    var definition = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+    if (definition["id"]?.GetValue<string>() != BroadcastIds.ExampleKey)
+        throw new InvalidOperationException($"{path} does not define workflow '{BroadcastIds.ExampleKey}'.");
+    definition["id"] = key;
+    definition["name"] = $"Load test broadcast {options.Tag}";
+    var family = new Family(key, 0, 1, definition);
+    var start = family.Node("START_CLAIM");
+    family.Node("SIGNAL_POLICY_CHANGED");
+
+    var workflowIds = new List<long>();
+    var created = await api.SendAsync("setup", HttpMethod.Post, "api/workflows", admin, new { definition, publish = true });
+    workflowIds.Add(created!["id"]!.GetValue<long>());
+    while (workflowIds.Count < options.BroadcastVersions)
+    {
+        var next = await api.SendAsync("setup", HttpMethod.Put, $"api/workflows/{workflowIds[^1]}", admin, new { definition, publish = true });
+        workflowIds.Add(next!["id"]!.GetValue<long>());
+    }
+
+    Console.WriteLine($"Starting {options.Broadcast:N0} waiting claims in {workflowIds.Count} version{(workflowIds.Count == 1 ? "" : "s")} of {key} " +
+        $"(definitions {string.Join(", ", workflowIds)}) with {options.BroadcastUsers} users...");
+    var clerk = new Actor("lt-claims-clerk", []);
+    var watch = Stopwatch.StartNew();
+    var nextCase = -1;
+    var startedCount = 0;
+    using var stopProgress = new CancellationTokenSource();
+    var progress = Task.Run(async () =>
+    {
+        while (!stopProgress.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(15), stopProgress.Token); }
+            catch (OperationCanceledException) { break; }
+            var done = Volatile.Read(ref startedCount);
+            Console.WriteLine($"  {watch.Elapsed.TotalSeconds,6:F0}s  {done:N0} started ({done / watch.Elapsed.TotalSeconds:F1}/s)");
+        }
+    });
+    await Task.WhenAll(Enumerable.Range(0, options.BroadcastUsers).Select(async _ =>
+    {
+        while (true)
+        {
+            var n = Interlocked.Increment(ref nextCase);
+            if (n >= options.Broadcast) return;
+            var started = await StartInstanceAsync("setup", clerk, workflowIds[n % workflowIds.Count], start, new { claimNumber = $"CL-{options.Tag}-{n}" });
+            if (!string.Equals(started["status"]?.ToString(), "running", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"claim {n} is '{started["status"]}', not waiting for the signal.");
+            Interlocked.Increment(ref startedCount);
+        }
+    }));
+    stopProgress.Cancel();
+    await progress;
+    Console.WriteLine($"  Started {startedCount:N0} claims in {watch.Elapsed.TotalSeconds:F0} s ({startedCount / watch.Elapsed.TotalSeconds:F1}/s).");
+    Console.WriteLine();
+    return new BroadcastRun(key, workflowIds.ToArray(), startedCount);
+}
+
+// Throws once to every waiting claim, then reads the broadcast once a second until it finishes.
+// The delivery time is the server's, from the throw to the completion; processor use and, when
+// pg_stat_statements is installed, statements are measured over the same window.
+async Task FollowBroadcastAsync(BroadcastRun run)
+{
+    try
+    {
+        run.ProcessorBefore = ProcessorUse.Read(options.PgContainer, options.WorkerPids, options.OtherPids);
+        run.StatementsBefore = options.Database is { } db ? await StatementCounter.ReadAsync(db) : null;
+        var watch = Stopwatch.StartNew();
+        var thrown = await ThrowAsync(new
+        {
+            name = BroadcastIds.SignalName,
+            workflowKey = run.Key,
+            payload = new { version = 2, effectiveDate = "2026-12-01" }
+        });
+        run.ThrowMilliseconds = watch.Elapsed.TotalMilliseconds;
+        run.BroadcastId = thrown["id"]!.GetValue<long>();
+        if (thrown["totalDeliveryCount"]!.GetValue<int>() != run.Waits)
+            run.Problem = $"the throw froze {thrown["totalDeliveryCount"]} recipients, not {run.Waits:N0}";
+
+        var giveUp = DateTime.UtcNow.AddHours(6);
+        while (true)
+        {
+            await Task.Delay(1000);
+            var current = (await api.SendAsync("broadcast.read", HttpMethod.Get, $"api/signal-broadcasts/{run.BroadcastId}", signalThrower, null))!;
+            var pending = current["pendingCount"]!.GetValue<int>();
+            Volatile.Write(ref run.Finished, current["totalDeliveryCount"]!.GetValue<int>() - pending);
+            var status = current["status"]!.GetValue<string>();
+            if (status != "delivering")
+            {
+                run.ProcessorAfter = ProcessorUse.Read(options.PgContainer, options.WorkerPids, options.OtherPids);
+                run.StatementsAfter = options.Database is { } db2 ? await StatementCounter.ReadAsync(db2) : null;
+                run.Status = status;
+                run.Delivered = current["deliveredCount"]!.GetValue<int>();
+                run.Skipped = current["skippedCount"]!.GetValue<int>();
+                run.Failed = current["failedCount"]!.GetValue<int>();
+                run.DeliverySeconds = (ReadTime(current["completedAt"]) - ReadTime(current["createdAt"])).TotalSeconds;
+                if (status != "completed" || run.Delivered != run.Waits)
+                    run.Problem ??= $"the broadcast ended '{status}' with {run.Delivered:N0} of {run.Waits:N0} delivered";
+                return;
+            }
+
+            if (DateTime.UtcNow > giveUp)
+            {
+                run.Problem = $"the broadcast was still delivering after 6 hours, with {pending:N0} pending";
+                return;
+            }
+        }
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or JsonException or NpgsqlException)
+    {
+        run.Problem = ex.Message;
     }
 }
 
@@ -953,6 +1097,8 @@ void PrintSummary()
             (remindersStillQueued > 0 ? $"; tasks closed with reminder work still queued: {remindersStillQueued:N0}" : ""));
     if (signals is not null)
         Console.WriteLine($"  Signal deliveries observed: {signalDeliveries:N0} ({signalDeliveries / seconds:F2}/s); throws retried at the open-broadcast limit: {throwRetries:N0}");
+    if (broadcast is not null)
+        PrintBroadcast(broadcast);
 
     if (before is not null && after is not null)
     {
@@ -992,10 +1138,10 @@ void PrintSummary()
     {
         Console.WriteLine();
         Console.WriteLine("  Worker jobs finished during the run (start = how long after its due time a job began):");
-        Console.WriteLine($"  {"kind",-24} {"queue",-9} {"status",-10} {"count",7} {"per s",7} {"start p50 s",12} {"start p95 s",12} {"start max s",12} {"run p50 ms",11}");
+        Console.WriteLine($"  {"kind",-28} {"queue",-9} {"status",-10} {"count",7} {"per s",7} {"start p50 s",12} {"start p95 s",12} {"start max s",12} {"run p50 ms",11}");
         foreach (var job in jobs)
             Console.WriteLine(
-                $"  {job.Kind,-24} {job.Queue,-9} {job.Status,-10} {job.Count,7:N0} {job.Count / seconds,7:F2} " +
+                $"  {job.Kind,-28} {job.Queue,-9} {job.Status,-10} {job.Count,7:N0} {job.Count / seconds,7:F2} " +
                 $"{Seconds(job.StartP50),12} {Seconds(job.StartP95),12} {Seconds(job.StartMax),12} {(job.RunP50 is { } run ? (run * 1000).ToString("F0", CultureInfo.InvariantCulture) : "-"),11}");
     }
 
@@ -1030,6 +1176,60 @@ void PrintSummary()
         Console.WriteLine();
         Console.WriteLine($"Sample errors ({scenario.Title}):");
         foreach (var error in scenario.Errors.Take(10)) Console.WriteLine("  - " + error);
+    }
+}
+
+void PrintBroadcast(BroadcastRun run)
+{
+    Console.WriteLine($"  Large broadcast to {run.Waits:N0} waits in {run.WorkflowIds.Length} version{(run.WorkflowIds.Length == 1 ? "" : "s")} of {run.Key}" +
+        (run.BroadcastId is { } id ? $" (broadcast {id})" : ""));
+    if (run.Problem is not null)
+        Console.WriteLine($"    PROBLEM: {run.Problem}");
+    if (run.ThrowMilliseconds is { } throwMs)
+        Console.WriteLine($"    throw request: {throwMs:F0} ms");
+    if (run.DeliverySeconds is { } deliverySeconds)
+        Console.WriteLine($"    {run.Status} {deliverySeconds:F1} s after the throw (server clock): {run.Waits / deliverySeconds:F2} deliveries/s; " +
+            $"delivered {run.Delivered:N0}, skipped {run.Skipped:N0}, failed {run.Failed:N0}");
+    if (run.ProcessorBefore is { } a && run.ProcessorAfter is { } b)
+    {
+        var wall = (b.Wall - a.Wall).TotalSeconds;
+        var busy = (b.MachineBusy - a.MachineBusy) / Math.Max(1e-9, b.MachineTotal - a.MachineTotal) * Environment.ProcessorCount;
+        var parts = new List<string> { $"machine {busy:F2} of {Environment.ProcessorCount} processors busy" };
+        var known = 0.0;
+        if (a.Postgres is { } pg0 && b.Postgres is { } pg1)
+        {
+            var pg = (pg1 - pg0).TotalSeconds / wall;
+            known += pg;
+            parts.Add($"PostgreSQL {pg:F2}");
+        }
+
+        if (a.Workers is { } w0 && b.Workers is { } w1)
+        {
+            var worker = (w1 - w0).TotalSeconds / wall;
+            known += worker;
+            parts.Add($"Worker {worker:F2}");
+        }
+
+        if (a.Others is { } o0 && b.Others is { } o1)
+        {
+            var other = (o1 - o0).TotalSeconds / wall;
+            known += other;
+            parts.Add($"--other-pid processes {other:F2}");
+        }
+
+        if (known > 0)
+            parts.Add($"the rest {Math.Max(0, busy - known):F2}");
+        Console.WriteLine($"    processor use over the delivery: {string.Join(", ", parts)}");
+    }
+
+    if (run.StatementsBefore is { } s0 && run.StatementsAfter is { } s1 && run.Waits > 0)
+        Console.WriteLine($"    statements: {s1 - s0:N0} in the database during the delivery, {(double)(s1 - s0) / run.Waits:F1} per delivery (pg_stat_statements; includes other clients)");
+    if (broadcastJobs is { Count: > 0 })
+    {
+        Console.WriteLine($"    delivery jobs: {broadcastJobs.Count}");
+        foreach (var job in broadcastJobs)
+            Console.WriteLine($"      job {job.Id} definition {job.WorkflowDefinitionId} {job.Phase,-12} {job.Status,-10} attempts {job.Attempts}  " +
+                $"started {Seconds(job.StartDelay)} s after due, ran {Seconds(job.RunSeconds)} s");
     }
 }
 
@@ -1156,6 +1356,164 @@ sealed record RestIds(
     public static RestIds Resolve(Family sync, Family job) => new(
         sync.Id, sync.Node("START_MOCK_ORDER"), sync.Node("TASK_INSPECT_SERVICE_OUTPUTS"), sync.Flow("FLOW_OUTPUT_REVIEW_TO_END"),
         job.Id, job.Node("START_EVENT_1"), job.Node("USER_TASK_3"), job.Flow("FLOW_301"));
+}
+
+static class BroadcastIds
+{
+    public const string ExampleKey = "example-signal-catch-policy-change";
+    public const string File = "signals/01-signal-catch-policy-change.json";
+    public const string SignalName = "claims.policy-changed";
+}
+
+/// <summary>One large broadcast: the family and versions it reaches, and what its delivery measured.</summary>
+sealed class BroadcastRun(string key, long[] workflowIds, int waits)
+{
+    public int Finished;
+
+    public string Key { get; } = key;
+    public long[] WorkflowIds { get; } = workflowIds;
+    public int Waits { get; } = waits;
+    public long? BroadcastId { get; set; }
+    public double? ThrowMilliseconds { get; set; }
+    public double? DeliverySeconds { get; set; }
+    public string? Status { get; set; }
+    public int Delivered { get; set; }
+    public int Skipped { get; set; }
+    public int Failed { get; set; }
+    public string? Problem { get; set; }
+    public ProcessorUse? ProcessorBefore { get; set; }
+    public ProcessorUse? ProcessorAfter { get; set; }
+    public long? StatementsBefore { get; set; }
+    public long? StatementsAfter { get; set; }
+}
+
+/// <summary>
+/// Cumulative processor time: the whole machine's, the PostgreSQL container's (from its cgroup,
+/// read through docker exec), and the given Worker processes'. Two readings give the processors
+/// each kept busy between them.
+/// </summary>
+sealed record ProcessorUse(DateTime Wall, double MachineBusy, double MachineTotal, TimeSpan? Postgres, TimeSpan? Workers, TimeSpan? Others)
+{
+    public static ProcessorUse Read(string? pgContainer, int[]? workerPids, int[]? otherPids)
+    {
+        var (busy, total) = ReadMachine();
+        return new ProcessorUse(DateTime.UtcNow, busy, total, pgContainer is null ? null : ReadContainer(pgContainer),
+            Sum(workerPids, "--worker-pid"), Sum(otherPids, "--other-pid"));
+    }
+
+    private static TimeSpan? Sum(int[]? pids, string option)
+    {
+        if (pids is not { Length: > 0 })
+            return null;
+        var sum = TimeSpan.Zero;
+        foreach (var pid in pids)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                sum += process.TotalProcessorTime;
+            }
+            catch (ArgumentException)
+            {
+                throw new InvalidOperationException($"{option}: no process {pid} is running.");
+            }
+        }
+
+        return sum;
+    }
+
+    private static (double Busy, double Total) ReadMachine()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (!GetSystemTimes(out var idle, out var kernel, out var user))
+                throw new InvalidOperationException("GetSystemTimes failed.");
+            // Kernel time includes idle time.
+            return (kernel + user - idle, kernel + user);
+        }
+
+        var fields = File.ReadLines("/proc/stat").First()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1)
+            .Select(field => double.Parse(field, CultureInfo.InvariantCulture)).ToArray();
+        var all = fields.Take(8).Sum();
+        return (all - fields[3] - fields[4], all);
+    }
+
+    // cgroup v2 reports usage_usec in cpu.stat; cgroup v1, which Docker Desktop on Windows uses,
+    // reports nanoseconds in cpuacct.usage.
+    private static TimeSpan ReadContainer(string container)
+    {
+        var start = new ProcessStartInfo("docker")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in new[] { "exec", container, "sh", "-c", "cat /sys/fs/cgroup/cpu.stat 2>/dev/null || cat /sys/fs/cgroup/cpuacct/cpuacct.usage" })
+            start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("docker could not be started.");
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"--pg-container: docker exec {container} failed: {process.StandardError.ReadToEnd().Trim()}");
+        var usage = output.Split('\n').FirstOrDefault(line => line.StartsWith("usage_usec ", StringComparison.Ordinal));
+        return usage is not null
+            ? TimeSpan.FromMicroseconds(long.Parse(usage["usage_usec ".Length..].Trim(), CultureInfo.InvariantCulture))
+            : TimeSpan.FromTicks(long.Parse(output.Trim(), CultureInfo.InvariantCulture) / 100);
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+}
+
+/// <summary>Statements run in this database so far, from pg_stat_statements; null when it is not installed.</summary>
+static class StatementCounter
+{
+    public static async Task<long?> ReadAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT coalesce(sum(calls), 0)::bigint FROM pg_stat_statements
+            WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+            """, connection);
+        try
+        {
+            return (long)(await command.ExecuteScalarAsync())!;
+        }
+        catch (PostgresException ex) when (ex.SqlState is "42P01" or "55000")
+        {
+            return null;
+        }
+    }
+}
+
+/// <summary>The delivery jobs of one broadcast, through its job links.</summary>
+sealed record BroadcastJob(long Id, long WorkflowDefinitionId, string Phase, string Status, int Attempts, double? StartDelay, double? RunSeconds)
+{
+    public static async Task<List<BroadcastJob>> ReadAsync(string connectionString, long broadcastId)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT j."Id", j."WorkflowDefinitionId", j."Phase", j."Status", j."AttemptCount",
+                   extract(epoch FROM j."StartedAt" - j."DueAt")::float8,
+                   extract(epoch FROM j."CompletedAt" - j."StartedAt")::float8
+            FROM flowbit.signal_broadcast_jobs l
+            JOIN flowbit.workflow_jobs j ON j."Id" = l."JobId"
+            WHERE l."BroadcastId" = @id
+            ORDER BY j."Id"
+            """, connection);
+        command.Parameters.AddWithValue("id", broadcastId);
+        await using var reader = await command.ExecuteReaderAsync();
+        var rows = new List<BroadcastJob>();
+        while (await reader.ReadAsync())
+            rows.Add(new BroadcastJob(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4),
+                reader.IsDBNull(5) ? null : reader.GetDouble(5), reader.IsDBNull(6) ? null : reader.GetDouble(6)));
+        return rows;
+    }
 }
 
 sealed class Scenario(string name, string title, int users, Func<int, Task> body)
@@ -1412,16 +1770,19 @@ sealed record JobSummary(string Kind, string Queue, string Status, long Count, d
     {
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync();
+        // Signal delivery jobs of a split broadcast wait for a share slot on purpose, so they get a
+        // line of their own.
         await using var command = new NpgsqlCommand(
             """
-            SELECT "Kind", "QueueClass", "Status", count(*),
+            SELECT CASE WHEN "Phase" = 'deliverShare' THEN "Kind" || ' share' ELSE "Kind" END AS kind,
+                   "QueueClass", "Status", count(*),
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM "StartedAt" - "DueAt")::float8),
                    percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM "StartedAt" - "DueAt")::float8),
                    max(extract(epoch FROM "StartedAt" - "DueAt")::float8),
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM "CompletedAt" - "StartedAt")::float8)
             FROM flowbit.workflow_jobs
             WHERE "CompletedAt" >= @since
-            GROUP BY "Kind", "QueueClass", "Status"
+            GROUP BY 1, "QueueClass", "Status"
             ORDER BY count(*) DESC
             """, connection);
         command.Parameters.AddWithValue("since", since);
@@ -1448,6 +1809,12 @@ sealed record Options(
     int TimerUsers = 0,
     int SignalUsers = 0,
     int RestUsers = 0,
+    int Broadcast = 0,
+    int BroadcastVersions = 1,
+    int BroadcastUsers = 16,
+    string? PgContainer = null,
+    int[]? WorkerPids = null,
+    int[]? OtherPids = null,
     int PollMilliseconds = 1000,
     int RampSeconds = 10,
     double BoardShare = 0.2,
@@ -1488,6 +1855,18 @@ sealed record Options(
                 "--timer-users" => options with { TimerUsers = Math.Min(2000, Number(args[++i], "--timer-users", 0)) },
                 "--signal-users" => options with { SignalUsers = Math.Min(512, Number(args[++i], "--signal-users", 0)) },
                 "--rest-users" => options with { RestUsers = Math.Min(512, Number(args[++i], "--rest-users", 0)) },
+                "--broadcast" => options with { Broadcast = Number(args[++i], "--broadcast", 1) },
+                "--broadcast-versions" => options with { BroadcastVersions = Math.Min(100, Number(args[++i], "--broadcast-versions", 1)) },
+                "--broadcast-users" => options with { BroadcastUsers = Math.Min(512, Number(args[++i], "--broadcast-users", 1)) },
+                "--pg-container" => options with { PgContainer = args[++i] },
+                "--worker-pid" => options with
+                {
+                    WorkerPids = List(args[++i], "--worker-pid").Select(pid => Number(pid, "--worker-pid", 1)).ToArray()
+                },
+                "--other-pid" => options with
+                {
+                    OtherPids = List(args[++i], "--other-pid").Select(pid => Number(pid, "--other-pid", 1)).ToArray()
+                },
                 "--poll-ms" => options with { PollMilliseconds = Number(args[++i], "--poll-ms", 50) },
                 "--ramp" => options with { RampSeconds = Number(args[++i], "--ramp", 0) },
                 "--board-share" => options with { BoardShare = Share(args[++i], "--board-share") },
@@ -1524,8 +1903,8 @@ sealed record Options(
         if (options.CheckCopies > 0 && options.Database is null)
             throw new ArgumentException("--check-copies needs --database.");
         if (!options.StubOnly && !options.Probe && options.CheckCopies == 0
-            && options.PurchaseUsers + options.TimerUsers + options.SignalUsers + options.RestUsers == 0)
-            throw new ArgumentException("Give at least one of --users, --timer-users, --signal-users, and --rest-users a value above zero.");
+            && options.PurchaseUsers + options.TimerUsers + options.SignalUsers + options.RestUsers + options.Broadcast == 0)
+            throw new ArgumentException("Give at least one of --users, --timer-users, --signal-users, --rest-users, and --broadcast a value above zero.");
         return options.Cases == int.MaxValue && options.DurationSeconds == 0
             ? options with { Cases = 500 }
             : options;
@@ -1569,8 +1948,10 @@ sealed record Options(
             that starts an instance through a signal start event.
           REST cases (--rest-users): a service task that calls the stub inside the start request,
             and an asyncBefore service task that a Worker job runs, each followed by a task.
+          A large broadcast (--broadcast): n claims of signal example 01 wait in a family of their
+            own, and one API throw reaches them all as the measured window opens.
 
-        Timer, signal, and REST job cases need a running Worker. Each virtual user acts again as
+        Timer, signal, and REST job cases and the large broadcast need a running Worker. Each virtual user acts again as
         soon as its last request returns, so the result is the maximum rate, not response time at
         real usage.
 
@@ -1581,6 +1962,12 @@ sealed record Options(
           --timer-users <n>      Timer-case virtual users (default: 0)
           --signal-users <n>     Signal-case virtual users (default: 0)
           --rest-users <n>       REST-case virtual users (default: 0); needs --stub
+          --broadcast <n>        Start n claims waiting for one signal, then throw it once (default: 0)
+          --broadcast-versions <k> Publish the claims' family in k versions, one delivery job set each (default: 1)
+          --broadcast-users <n>  Concurrent starts while the claims are set up (default: 16)
+          --pg-container <name>  PostgreSQL's Docker container, for its processor use during the broadcast
+          --worker-pid <pid[,pid]> Worker process ids, for their processor use during the broadcast
+          --other-pid <pid[,pid]> Other processes to measure the same way, such as Docker Desktop's network backend
           --cases <n>            Cases of each kind to run (default: 500 when no --duration)
           --duration <seconds>   Stop starting new cases after this time; started cases finish
           --poll-ms <n>          Inbox polling interval while waiting for the Worker (default: 1000)

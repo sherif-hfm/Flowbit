@@ -26,6 +26,44 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
         return entity is null ? null : MapToRecord(entity);
     }
 
+    public async Task<IReadOnlyDictionary<string, EngineSettingRecord>> GetByKeysAsync(
+        IReadOnlyCollection<string> keys,
+        CancellationToken cancellationToken)
+    {
+        var wanted = keys.Distinct(StringComparer.Ordinal).ToArray();
+        var found = new Dictionary<string, EngineSettingRecord>(StringComparer.Ordinal);
+        if (wanted.Length == 0)
+        {
+            return found;
+        }
+
+        // One query for every key, matched as QueryByLogicalKey matches one; the row it would
+        // pick first is chosen here in the same order.
+        var entities = await dbContext.EngineSettings
+            .AsNoTracking()
+            .Where(setting =>
+                (setting.Namespace != null && setting.Namespace.Trim() != "" &&
+                 wanted.Contains(setting.Namespace.Trim() + "." + setting.Key.Trim())) ||
+                ((setting.Namespace == null || setting.Namespace.Trim() == "") &&
+                 wanted.Contains(setting.Key.Trim())))
+            .ToListAsync(cancellationToken);
+        foreach (var key in wanted)
+        {
+            var (canonicalNamespace, canonicalKey) = SplitCanonicalKey(key);
+            var best = entities
+                .Where(setting => BuildLogicalKey(setting.Namespace, setting.Key) == key)
+                .OrderBy(setting => LogicalKeyRank(setting, canonicalNamespace, canonicalKey))
+                .ThenBy(setting => setting.Id)
+                .FirstOrDefault();
+            if (best is not null)
+            {
+                found[key] = MapToRecord(best);
+            }
+        }
+
+        return found;
+    }
+
     public async Task<IReadOnlyList<EngineSettingRecord>> SearchAsync(
         string pattern,
         CancellationToken cancellationToken)
@@ -331,6 +369,24 @@ public sealed class EngineSettingsRepository(AppDbContext dbContext) : IEngineSe
                                 : 3)
                 .ThenBy(setting => setting.Id);
     }
+
+    // The order of QueryByLogicalKey, for rows already read.
+    private static int LogicalKeyRank(EngineSettingEntity setting, string? canonicalNamespace, string canonicalKey) =>
+        canonicalNamespace is null
+            ? string.IsNullOrEmpty(setting.Namespace) && setting.Key == canonicalKey
+                ? 0
+                : (setting.Namespace is null || setting.Namespace.Trim() == "") && setting.Key.Trim() == canonicalKey
+                    ? 1
+                    : 2
+            : setting.Namespace == canonicalNamespace && setting.Key == canonicalKey
+                ? 0
+                : setting.Namespace is not null
+                  && setting.Namespace.Trim() == canonicalNamespace
+                  && setting.Key.Trim() == canonicalKey
+                    ? 1
+                    : setting.Namespace is not null && setting.Namespace.Trim() != ""
+                        ? 2
+                        : 3;
 
     private static (string? Namespace, string Key) SplitCanonicalKey(string key)
     {

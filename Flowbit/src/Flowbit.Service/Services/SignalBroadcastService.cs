@@ -354,13 +354,16 @@ public sealed class SignalBroadcastService(
         }
 
         // A failed start whose family no longer starts on the name ends as skipped, so a
-        // retry can leave nothing pending; the recount then finishes the broadcast.
-        if (retried.DefinitionIds.Count > 0)
+        // retry can leave nothing pending; the recount then finishes the broadcast. Each
+        // definition gets its jobs by its pending count, with the split settings as they are
+        // now (EVENT-04G): a few failed deliveries of a split broadcast become one job.
+        var jobCount = 0;
+        if (retried.Definitions.Count > 0)
         {
             await broadcasts.ReopenAsync(broadcastId, now, cancellationToken);
-            await writer.EnqueueDeliveryJobsAsync(
+            jobCount = await writer.EnqueueDeliveryJobsAsync(
                 broadcastId,
-                retried.DefinitionIds,
+                retried.Definitions,
                 SignalBroadcastJobReasons.Retry,
                 caller.Id,
                 now,
@@ -371,7 +374,7 @@ public sealed class SignalBroadcastService(
         await transaction.CommitAsync(cancellationToken);
         logger.LogInformation(
             "Signal broadcast {BroadcastId} queued its failed deliveries again in {JobCount} jobs.",
-            broadcastId, retried.DefinitionIds.Count);
+            broadcastId, jobCount);
         return ToDetail(updated!, caller);
     }
 

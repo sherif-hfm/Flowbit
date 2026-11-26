@@ -4,6 +4,7 @@ using Flowbit.Service.Abstractions;
 using Flowbit.Service.Models;
 using Flowbit.Shared.Dtos;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Flowbit.Infrastructure.Repositories;
 
@@ -404,7 +405,7 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
 
     public async Task AddJobLinksAsync(
         long broadcastId,
-        IReadOnlyList<(long WorkflowDefinitionId, long JobId)> links,
+        IReadOnlyList<SignalBroadcastJobLink> links,
         string reason,
         string requestedBy,
         DateTimeOffset now,
@@ -421,6 +422,8 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             WorkflowDefinitionId = link.WorkflowDefinitionId,
             JobId = link.JobId,
             OriginalJobId = link.JobId,
+            ShareIndex = link.ShareIndex,
+            ShareCount = link.ShareCount,
             Reason = reason,
             RequestedBy = requestedBy,
             CreatedAt = now
@@ -705,17 +708,52 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
         long workflowDefinitionId,
         long afterId,
         int limit,
-        CancellationToken cancellationToken) =>
-        await dbContext.SignalDeliveries.AsNoTracking()
-            .Where(delivery =>
-                delivery.BroadcastId == broadcastId
-                && delivery.WorkflowDefinitionId == workflowDefinitionId
-                && delivery.Status == SignalDeliveryStatuses.Pending
-                && delivery.Id > afterId)
-            .OrderBy(delivery => delivery.Id)
-            .Select(delivery => delivery.Id)
-            .Take(limit)
+        CancellationToken cancellationToken,
+        int shareIndex = 0,
+        int shareCount = 1)
+    {
+        if (shareCount <= 1)
+        {
+            return await dbContext.SignalDeliveries.AsNoTracking()
+                .Where(delivery =>
+                    delivery.BroadcastId == broadcastId
+                    && delivery.WorkflowDefinitionId == workflowDefinitionId
+                    && delivery.Status == SignalDeliveryStatuses.Pending
+                    && delivery.Id > afterId)
+                .OrderBy(delivery => delivery.Id)
+                .Select(delivery => delivery.Id)
+                .Take(limit)
+                .ToListAsync(cancellationToken);
+        }
+
+        // The same paging index serves a share job (EVENT-04G); the share condition filters the
+        // rows it reads, so a page reads about shareCount index entries for each ID it returns.
+        return await dbContext.Database
+            .SqlQueryRaw<long>(
+                SharePageSql,
+                new NpgsqlParameter("broadcastId", broadcastId),
+                new NpgsqlParameter("definitionId", workflowDefinitionId),
+                new NpgsqlParameter("afterId", afterId),
+                new NpgsqlParameter("shareIndex", shareIndex),
+                new NpgsqlParameter("shareCount", shareCount),
+                new NpgsqlParameter("limit", limit))
             .ToListAsync(cancellationToken);
+    }
+
+    // The page query of a share job, built once. Its only non-literal part is the static share
+    // condition; every value is a parameter.
+    private static readonly string SharePageSql =
+        $$"""
+        SELECT d."Id" AS "Value"
+        FROM flowbit.signal_deliveries AS d
+        WHERE d."BroadcastId" = @broadcastId
+          AND d."WorkflowDefinitionId" = @definitionId
+          AND d."Status" = 'pending'
+          AND d."Id" > @afterId
+          AND {{SignalDeliveryShareSql.Condition("d", "@shareIndex", "@shareCount")}}
+        ORDER BY d."Id"
+        LIMIT @limit
+        """;
 
     public async Task<SignalDeliveryRecord?> GetDeliveryAsync(
         long deliveryId,
@@ -917,16 +955,10 @@ public sealed class SignalBroadcastRepository(AppDbContext dbContext) : ISignalB
             cancellationToken);
 
         // Only a delivering broadcast has pending deliveries, and the caller retries a
-        // finished one under its row lock, so the pending rows are exactly those retried.
-        var definitionIds = await dbContext.SignalDeliveries.AsNoTracking()
-            .Where(delivery =>
-                delivery.BroadcastId == broadcastId
-                && delivery.Status == SignalDeliveryStatuses.Pending)
-            .Select(delivery => delivery.WorkflowDefinitionId)
-            .Distinct()
-            .OrderBy(id => id)
-            .ToListAsync(cancellationToken);
-        return new SignalRetryResult(definitionIds, changed);
+        // finished one under its row lock, so the pending rows are exactly those retried. Their
+        // count for each definition decides how many jobs the retry gets (EVENT-04G).
+        var definitions = await ListPendingDefinitionsAsync(broadcastId, cancellationToken);
+        return new SignalRetryResult(definitions, changed);
     }
 
     public Task MarkCancelledAsync(

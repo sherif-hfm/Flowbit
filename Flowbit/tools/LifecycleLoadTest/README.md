@@ -14,6 +14,9 @@ virtual users:
 - **REST cases** (`--rest-users`) run service tasks that call a stub the tool
   starts, inside the API's request or as Worker jobs.
 
+Beside them, `--broadcast` measures one [large broadcast](#large-broadcast):
+many waiting instances, one throw, and how fast the Worker delivers it.
+
 It reports each kind's completed cases per second, the latency of every
 operation, how late each timer and signal arrived, and, with `--database`, how
 much the database grew, how long Worker jobs waited, and how many sessions
@@ -107,6 +110,39 @@ polls the inbox, starting at `--poll-ms` and backing off to 10 seconds, as a
 person refreshing a page would; delays come from server timestamps, so the
 polling interval does not change them. The tool finds every node and flow it
 uses by its external id and stops with an error if one is missing.
+
+### Large broadcast
+
+`--broadcast <n>` publishes
+[signal example 01](../../../examples/signals/01-signal-catch-policy-change.json)
+under a family of its own (`lt-broadcast-<tag>`), in `--broadcast-versions`
+versions, and starts `n` claims spread evenly over them, `--broadcast-users` at a
+time. The starts happen before the measured window. As the window opens, the tool
+throws `claims.policy-changed` once to the family and reads the broadcast every
+second until it finishes, so purchase, timer, signal, and REST cases given in the
+same run measure what the broadcast costs them.
+
+The broadcast gets delivery jobs for each version, and a version with enough
+claims is split into several jobs by
+[`Signals.MaxDeliveryJobsPerDefinition`](../../../docs/engine-settings.md#signalsmaxdeliveryjobsperdefinition).
+Versions are how to measure several jobs with a build that does not split; the
+setting is how to measure the split itself. The throw is refused above
+`Signals.MaxSubscriptionsPerBroadcast` (10,000 by default).
+
+The tool reports the throw request's time, the delivery time from the throw to
+the finish by the server's clock, the deliveries per second, and the final
+counts. Over the same window it reports processor use: the whole machine's, the
+PostgreSQL container's with `--pg-container`, the Worker's with `--worker-pid`,
+and other processes' with `--other-pid`. On Docker Desktop, give `--other-pid`
+the ids of `com.docker.backend`, which carries every statement between a Worker
+on the host and PostgreSQL in a container. With `--database` it also lists the
+broadcast's delivery jobs with how long each waited and ran, and, when the
+database has `pg_stat_statements`, the statements per delivery, which include
+other clients of that database. The Worker jobs table lists the share jobs of
+split broadcasts on a line of their own, `signalBroadcastDeliver share`, because
+they wait for a share slot on purpose. The delivery needs a running Worker, and
+the tool exits with `1` if the broadcast does not end `completed` with every
+claim delivered.
 
 ## Run it
 
@@ -422,6 +458,41 @@ start PostgreSQL with `-c shared_preload_libraries=pg_stat_statements`, run
 `--print-token` prints an administrator's token for direct API calls, such as
 starting a [retention](../../../docs/deployment.md#retention-and-backup) run.
 
+## Large broadcasts
+
+Start PostgreSQL with `-c shared_preload_libraries=pg_stat_statements` after the
+image name in `docker run`, and run `CREATE EXTENSION pg_stat_statements` in the
+database once, if you want the statements per delivery. The commands below throw
+to 10,000 waits in one version, then in four versions, and then during purchase
+requests. Between runs, change `Signals.MaxDeliveryJobsPerDefinition` on the
+**Engine settings** page to compare one job with several: the throw reads it, so
+a broadcast already delivering keeps its jobs. Each run starts 10,000 new claims
+in a new family, which takes a few minutes before the throw.
+
+```powershell
+$db = 'Host=127.0.0.1;Port=55447;Database=flowbit_load;Username=flowbit;Password=load-test-only'
+$worker = (Get-NetTCPConnection -LocalPort 8081 -State Listen).OwningProcess
+dotnet run -c Release --project ./Flowbit/tools/LifecycleLoadTest -- --users 0 --broadcast 10000 --database $db --pg-container flowbit-load-pg --worker-pid $worker
+dotnet run -c Release --project ./Flowbit/tools/LifecycleLoadTest -- --users 0 --broadcast 10000 --broadcast-versions 4 --database $db --pg-container flowbit-load-pg --worker-pid $worker
+dotnet run -c Release --project ./Flowbit/tools/LifecycleLoadTest -- --users 8 --duration 300 --broadcast 10000 --database $db --pg-container flowbit-load-pg --worker-pid $worker
+```
+
+```bash
+db='Host=127.0.0.1;Port=55447;Database=flowbit_load;Username=flowbit;Password=load-test-only'
+worker=$(ss -ltnp 'sport = :8081' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+dotnet run -c Release --project ./Flowbit/tools/LifecycleLoadTest -- --users 0 --broadcast 10000 --database "$db" --pg-container flowbit-load-pg --worker-pid "$worker"
+dotnet run -c Release --project ./Flowbit/tools/LifecycleLoadTest -- --users 0 --broadcast 10000 --broadcast-versions 4 --database "$db" --pg-container flowbit-load-pg --worker-pid "$worker"
+dotnet run -c Release --project ./Flowbit/tools/LifecycleLoadTest -- --users 8 --duration 300 --broadcast 10000 --database "$db" --pg-container flowbit-load-pg --worker-pid "$worker"
+```
+
+On Docker Desktop for Windows, also pass `--other-pid` with the ids of
+`(Get-Process com.docker.backend).Id -join ','`: the network backend that carries
+every statement between the Worker and the container uses a processor share of
+its own, which otherwise appears under "the rest". Read the result as
+[Reading the result](#reading-the-result) describes: a gain from more jobs counts
+only while the run with one job left a processor idle, because a machine that one
+job already keeps busy cannot deliver faster with more.
+
 ## Options
 
 ```text
@@ -431,6 +502,12 @@ starting a [retention](../../../docs/deployment.md#retention-and-backup) run.
 --timer-users <n>      Timer-case virtual users (default: 0)
 --signal-users <n>     Signal-case virtual users (default: 0)
 --rest-users <n>       REST-case virtual users (default: 0); needs --stub
+--broadcast <n>        Start n claims waiting for one signal, then throw it once (default: 0)
+--broadcast-versions <k> Publish the claims' family in k versions, one delivery job set each (default: 1)
+--broadcast-users <n>  Concurrent starts while the claims are set up (default: 16)
+--pg-container <name>  PostgreSQL's Docker container, for its processor use during the broadcast
+--worker-pid <pid[,pid]> Worker process ids, for their processor use during the broadcast
+--other-pid <pid[,pid]> Other processes to measure the same way, such as Docker Desktop's network backend
 --cases <n>            Cases of each kind to run (default: 500 when no --duration)
 --duration <seconds>   Stop starting new cases after this time; started cases finish
 --poll-ms <n>          Inbox polling interval while waiting for the Worker (default: 1000)

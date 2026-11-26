@@ -2530,9 +2530,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_signal_broadcasts_expiry",
                     SignalBroadcastExpiryCheck);
+                // EVENT-04G raised the limit from 100,000 to SignalSettings.MaxSubscriptionsPerBroadcastCap
+                // after every statement that touches a whole broadcast passed its gate at that size.
                 table.HasCheckConstraint(
                     "CK_signal_broadcasts_counts",
-                    "\"TotalDeliveryCount\" BETWEEN 0 AND 100000 "
+                    "\"TotalDeliveryCount\" BETWEEN 0 AND 250000 "
                     + "AND \"DeliveredCount\" >= 0 AND \"SkippedCount\" >= 0 "
                     + "AND \"FailedCount\" >= 0 AND \"CancelledCount\" >= 0 "
                     + "AND \"DeliveredCount\" + \"SkippedCount\" + \"FailedCount\" + \"CancelledCount\" <= \"TotalDeliveryCount\"");
@@ -2658,10 +2660,17 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 table.HasCheckConstraint(
                     "CK_signal_broadcast_jobs_reason",
                     "\"Reason\" IN ('throw', 'retry')");
+                // EVENT-04G: a job owns share ShareIndex of ShareCount of its definition's
+                // deliveries; 0 of 1 is the whole definition.
+                table.HasCheckConstraint(
+                    "CK_signal_broadcast_jobs_share",
+                    "\"ShareCount\" BETWEEN 1 AND 32 AND \"ShareIndex\" >= 0 AND \"ShareIndex\" < \"ShareCount\"");
             });
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Reason).HasMaxLength(16).IsRequired();
             entity.Property(e => e.RequestedBy).HasMaxLength(300).IsRequired();
+            entity.Property(e => e.ShareIndex).HasDefaultValue(0);
+            entity.Property(e => e.ShareCount).HasDefaultValue(1);
             entity.HasIndex(e => new { e.BroadcastId, e.Id });
             entity.HasIndex(e => e.OriginalJobId).IsUnique();
             entity.HasIndex(e => e.JobId)

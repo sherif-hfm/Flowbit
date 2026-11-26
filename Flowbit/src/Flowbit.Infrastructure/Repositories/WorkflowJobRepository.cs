@@ -720,7 +720,9 @@ public sealed class WorkflowJobRepository(
     }
 
     // A signal delivery job whose final lease expired fails its own pending deliveries,
-    // those of its broadcast and definition, and recounts the broadcast. Like cancel, it
+    // those of its broadcast and definition, and recounts the broadcast. A share job of a
+    // split definition fails only its own share, through the same condition its page query
+    // uses (EVENT-04G); the other jobs of the definition keep delivering. Like cancel, it
     // locks the broadcast before the delivery rows. A delivery of a broadcast whose expiry
     // has passed did not run either, so it ends as expired rather than failed (EVENT-04E).
     // The recount derives the status from the rows as SignalBroadcastRepository's
@@ -760,7 +762,7 @@ public sealed class WorkflowJobRepository(
 
         // The clock is read once, so one job's deliveries all end on one side of the expiry.
         await using (var deliveries = new NpgsqlCommand(
-            """
+            $$"""
             WITH database_now AS (SELECT clock_timestamp() AS value)
             UPDATE flowbit.signal_deliveries AS delivery
             SET "Status" = CASE WHEN expired.yes THEN 'skipped' ELSE 'failed' END,
@@ -785,6 +787,7 @@ public sealed class WorkflowJobRepository(
               AND delivery."BroadcastId" = link."BroadcastId"
               AND delivery."WorkflowDefinitionId" = link."WorkflowDefinitionId"
               AND delivery."Status" = 'pending'
+              AND {{SignalDeliveryShareSql.Condition("delivery", "link.\"ShareIndex\"", "link.\"ShareCount\"")}}
             """,
             connection,
             transaction))
@@ -1546,6 +1549,9 @@ public sealed class WorkflowJobRepository(
         CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        // The share jobs of split signal broadcasts (EVENT-04G) are left out: a Worker holds
+        // them back on purpose while its share slots are busy, so counted as runnable they would
+        // read as a backlog the Worker cannot clear. The signal gauges show their pending work.
         await using var command = new NpgsqlCommand(
             """
             WITH observed AS MATERIALIZED
@@ -1562,6 +1568,7 @@ public sealed class WorkflowJobRepository(
                 WHERE j."Status" IN ('queued', 'retry')
                   AND j."DueAt" <= o.observed_at
                   AND j."AttemptCount" < j."MaxAttempts"
+                  AND (j."Kind" <> 'signalBroadcastDeliver' OR j."Phase" <> 'deliverShare')
 
                 UNION ALL
 
@@ -1573,6 +1580,7 @@ public sealed class WorkflowJobRepository(
                 WHERE j."Status" = 'running'
                   AND j."LeaseExpiresAt" <= o.observed_at
                   AND j."AttemptCount" < j."MaxAttempts"
+                  AND (j."Kind" <> 'signalBroadcastDeliver' OR j."Phase" <> 'deliverShare')
 
                 UNION ALL
 
@@ -1583,6 +1591,7 @@ public sealed class WorkflowJobRepository(
                 CROSS JOIN observed AS o
                 WHERE j."Status" = 'resultReady'
                   AND j."LeaseExpiresAt" <= o.observed_at
+                  AND (j."Kind" <> 'signalBroadcastDeliver' OR j."Phase" <> 'deliverShare')
             ),
             job_statistics AS
             (
@@ -1633,10 +1642,17 @@ public sealed class WorkflowJobRepository(
             ReadUtc(reader, 5));
     }
 
+    public Task<DateTimeOffset?> GetNextWakeAtAsync(
+        CancellationToken cancellationToken) =>
+        GetNextWakeAtAsync(includeSignalShares: true, cancellationToken);
+
     public async Task<DateTimeOffset?> GetNextWakeAtAsync(
+        bool includeSignalShares,
         CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        // A Worker with no share slot never leases the share jobs of split signal broadcasts
+        // (EVENT-04G), so their due times must not keep it polling.
         await using var command = new NpgsqlCommand(
             """
             SELECT min(wake_at)
@@ -1646,6 +1662,7 @@ public sealed class WorkflowJobRepository(
                 FROM flowbit.workflow_jobs AS j
                 WHERE j."Status" IN ('queued', 'retry')
                   AND j."AttemptCount" < j."MaxAttempts"
+                  AND (@include_shares OR j."Kind" <> 'signalBroadcastDeliver' OR j."Phase" <> 'deliverShare')
 
                 UNION ALL
 
@@ -1654,6 +1671,7 @@ public sealed class WorkflowJobRepository(
                 WHERE j."Status" = 'running'
                   AND j."AttemptCount" < j."MaxAttempts"
                   AND j."LeaseExpiresAt" IS NOT NULL
+                  AND (@include_shares OR j."Kind" <> 'signalBroadcastDeliver' OR j."Phase" <> 'deliverShare')
 
                 UNION ALL
 
@@ -1661,9 +1679,11 @@ public sealed class WorkflowJobRepository(
                 FROM flowbit.workflow_jobs AS j
                 WHERE j."Status" = 'resultReady'
                   AND j."LeaseExpiresAt" IS NOT NULL
+                  AND (@include_shares OR j."Kind" <> 'signalBroadcastDeliver' OR j."Phase" <> 'deliverShare')
             ) AS durable_wakeups
             """,
             connection);
+        command.Parameters.AddWithValue("include_shares", includeSignalShares);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken) || reader.IsDBNull(0))
         {
@@ -2495,6 +2515,9 @@ public sealed class WorkflowJobRepository(
                 WHERE j."QueueClass" = @queue_class
                   AND j."Status" = 'resultReady'
                   AND j."LeaseExpiresAt" <= clock_timestamp()
+                  AND (@signal_shares_allowed
+                       OR j."Kind" <> 'signalBroadcastDeliver'
+                       OR j."Phase" <> 'deliverShare')
                   AND
                   (
                       @enforce_instance_cap = FALSE
@@ -2526,7 +2549,8 @@ public sealed class WorkflowJobRepository(
                 j."WorkflowKey",
                 j."Status",
                 j."AttemptCount",
-                j."MaxAttempts"
+                j."MaxAttempts",
+                (j."Kind" = 'signalBroadcastDeliver' AND j."Phase" = 'deliverShare') AS is_signal_share
             FROM fair AS f
             INNER JOIN flowbit.workflow_jobs AS j ON j."Id" = f."Id"
             ORDER BY f."LeaseExpiresAt", f."Id"
@@ -2552,6 +2576,9 @@ public sealed class WorkflowJobRepository(
                   AND j."Status" = 'running'
                   AND j."LeaseExpiresAt" <= clock_timestamp()
                   AND j."AttemptCount" < j."MaxAttempts"
+                  AND (@signal_shares_allowed
+                       OR j."Kind" <> 'signalBroadcastDeliver'
+                       OR j."Phase" <> 'deliverShare')
                   AND
                   (
                       @enforce_instance_cap = FALSE
@@ -2583,7 +2610,8 @@ public sealed class WorkflowJobRepository(
                 j."WorkflowKey",
                 j."Status",
                 j."AttemptCount",
-                j."MaxAttempts"
+                j."MaxAttempts",
+                (j."Kind" = 'signalBroadcastDeliver' AND j."Phase" = 'deliverShare') AS is_signal_share
             FROM fair AS f
             INNER JOIN flowbit.workflow_jobs AS j ON j."Id" = f."Id"
             ORDER BY f."LeaseExpiresAt", f."Id"
@@ -2610,6 +2638,9 @@ public sealed class WorkflowJobRepository(
                   AND j."Status" IN ('queued', 'retry')
                   AND j."DueAt" <= clock_timestamp()
                   AND j."AttemptCount" < j."MaxAttempts"
+                  AND (@signal_shares_allowed
+                       OR j."Kind" <> 'signalBroadcastDeliver'
+                       OR j."Phase" <> 'deliverShare')
                   AND
                   (
                       @enforce_instance_cap = FALSE
@@ -2641,7 +2672,8 @@ public sealed class WorkflowJobRepository(
                 j."WorkflowKey",
                 j."Status",
                 j."AttemptCount",
-                j."MaxAttempts"
+                j."MaxAttempts",
+                (j."Kind" = 'signalBroadcastDeliver' AND j."Phase" = 'deliverShare') AS is_signal_share
             FROM fair AS f
             INNER JOIN flowbit.workflow_jobs AS j ON j."Id" = f."Id"
             ORDER BY f."Priority" DESC, f."DueAt", f."Id"
@@ -2661,6 +2693,10 @@ public sealed class WorkflowJobRepository(
                 "enforce_instance_cap",
                 queueClass == WorkflowJobClasses.Activity);
             command.Parameters.AddWithValue("max_per_instance", request.MaxPerInstance);
+            // EVENT-04G: a Worker with no share slot left leaves the share jobs of split
+            // signal broadcasts out before the ranking, so a family's other jobs are not
+            // held behind a share job it would skip.
+            command.Parameters.AddWithValue("signal_shares_allowed", request.MaxSignalShareCount > 0);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
@@ -2670,7 +2706,8 @@ public sealed class WorkflowJobRepository(
                     reader.GetString(2),
                     reader.GetString(3),
                     reader.GetInt32(4),
-                    reader.GetInt32(5)));
+                    reader.GetInt32(5),
+                    reader.GetBoolean(6)));
             }
         }
 
@@ -2699,8 +2736,16 @@ public sealed class WorkflowJobRepository(
             await advisory.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        var signalShares = 0;
         foreach (var candidate in distinctCandidates)
         {
+            // The allowance counts only the share jobs of split broadcasts; every other job,
+            // a small broadcast's delivery job included, is leased as before.
+            if (candidate.IsSignalShare && signalShares >= request.MaxSignalShareCount)
+            {
+                continue;
+            }
+
             if (queueClass == WorkflowJobClasses.Activity
                 && candidate.InstanceId is not null)
             {
@@ -2764,6 +2809,10 @@ public sealed class WorkflowJobRepository(
                 lease.LeaseGeneration,
                 lease.AttemptNumber));
             selectedFairnessKeys.Add(candidate.FairnessKey);
+            if (candidate.IsSignalShare)
+            {
+                signalShares++;
+            }
             if (selected.Count >= request.MaxCount)
             {
                 break;
@@ -3149,7 +3198,8 @@ public sealed class WorkflowJobRepository(
         string WorkflowKey,
         string Status,
         int AttemptCount,
-        int MaxAttempts)
+        int MaxAttempts,
+        bool IsSignalShare)
     {
         public string FairnessKey => InstanceId is long instanceId
             ? $"instance:{instanceId}"

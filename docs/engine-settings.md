@@ -2,7 +2,7 @@
 
 [Documentation home](index.md) · [Deployment and operations](deployment.md#configuration) · [Settings API](api-guide.md#settings) · [Settings UI](ui-guide.md#engine-and-workflow-settings)
 
-This is the complete reference for the **25 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
+This is the complete reference for the **27 current built-in settings** read from PostgreSQL's `flowbit.engine_settings` table. These are deployment-wide string records, shared by API and Worker replicas using that database. They are distinct from [host configuration](deployment.md#configuration) in `appsettings.json` or environment variables, JSON [workflow-context settings](developer-guide.md#output-mappings-and-expression-context), and properties authored in workflow definitions.
 
 A **runtime default** is what a consumer uses without a usable setting. A **seed value** is a row inserted by a migration when the setting is missing. Deleting a seeded row does not rerun an already-applied migration; consumers still apply their documented fallback. The AI catalog, `AiAuthoring.Models`, is reserved and has its own management API. `Webhooks.CaptureEnabled` is a protected Boolean setting that can be edited but cannot be deleted.
 
@@ -30,6 +30,8 @@ A **runtime default** is what a consumer uses without a usable setting. A **seed
 | [Signals.MaxSubscriptionsPerBroadcast](#signalsmaxsubscriptionsperbroadcast) | Waiting signal events one broadcast may reach. | `10000` |
 | [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) | Signal broadcasts thrown through the API that may be delivering at once. | `20` |
 | [Signals.MaxOpenWorkflowBroadcasts](#signalsmaxopenworkflowbroadcasts) | Signal broadcasts thrown by workflows that may be delivering at once. | `10000` |
+| [Signals.MaxDeliveryJobsPerDefinition](#signalsmaxdeliveryjobsperdefinition) | Delivery jobs a broadcast gets for one workflow definition with many recipients; `1` turns splitting off. | `2` |
+| [Signals.MinDeliveriesPerJob](#signalsmindeliveriesperjob) | The fewest recipients of one definition a delivery job is created for when a broadcast is split. | `500` |
 | [Signals.CatalogMode](#signalscatalogmode) | Whether publishing and API throws need a signal catalog entry for every signal name. | `optional` |
 | [UserTasks.DueSoonThreshold](#usertasksduesoonthreshold) | How long before its due time an open user task counts as due soon. | `P1D` |
 | [Authentication.UserIdentityClaim](#authenticationuseridentityclaim) | Authoritative JWT claim identifying the actor. | Unset: identity selection chain |
@@ -349,16 +351,18 @@ See [administrative variable updates](api-guide.md#variable-update-batches) and 
 
 ## Signal settings
 
-Three limits bound signal broadcasts, and [Signals.CatalogMode](#signalscatalogmode) decides whether every signal name needs a catalog entry; the [Signals.RequiredRole](#signalsrequiredrole) permission setting controls who throws them through the API, and a workflow's signal throw or end event needs no role. The three limits accept a positive signed 32-bit integer as a string, with surrounding whitespace and a leading `+` allowed. A parseable value above the hard cap is capped; missing, blank, malformed, overflowing, zero, or negative values use the default. No value disables a limit. The limits are read for each throw, so a change applies to the next throw without a restart and never changes a broadcast already thrown. See [signals](bpmn-support.md#signals) and [signal operations](deployment.md#signal-events).
+Three limits bound signal broadcasts, two settings [split the delivery](#signalsmaxdeliveryjobsperdefinition) of a large one, and [Signals.CatalogMode](#signalscatalogmode) decides whether every signal name needs a catalog entry; the [Signals.RequiredRole](#signalsrequiredrole) permission setting controls who throws them through the API, and a workflow's signal throw or end event needs no role. The three limits and the two split settings accept a positive signed 32-bit integer as a string, with surrounding whitespace and a leading `+` allowed. A parseable value above the hard cap is capped; missing, blank, malformed, overflowing, zero, or negative values use the default. No value disables a limit. The limits are read for each throw, and the split settings at each throw and each retry of failed deliveries, so a change applies to the next throw without a restart and never changes a broadcast already thrown. See [signals](bpmn-support.md#signals) and [signal operations](deployment.md#signal-events).
 
 ### Signals.MaxSubscriptionsPerBroadcast
 
 - **Namespace / key:** `Signals` / `MaxSubscriptionsPerBroadcast`.
-- **Value / fallback:** the integer format above; default `10000`, hard cap `100000`; example `50000`.
-- **Seed:** `10000` in `AddSignalEvents` when missing.
+- **Value / fallback:** the integer format above; default `10000`, hard cap `250000` (`100000` before `RaiseSignalBroadcastRecipientCap`); example `50000`.
+- **Seed:** `10000` in `AddSignalEvents` when missing; `RaiseSignalBroadcastRecipientCap` updates the seeded description to name the new cap, and leaves a description you changed.
 - **Takes effect:** the next throw.
 
 The most recipients one broadcast may reach: waiting signal events and the [signal starts](node-reference.md#signalstartevent) of listening families, counted together. A throw freezes its recipients; when more match than this limit, it returns `400` and stores nothing, rather than reaching only some of them. Narrow the throw's scope (one workflow family, one business key, or one instance), or raise the limit. A throw inserts all its recipients in one statement, so the limit also bounds the work of one request. It applies to a workflow's signal throw and end events too: such a throw is refused, and fails its step, with `... would reach more than 10000 recipients; narrow its scope or raise Signals.MaxSubscriptionsPerBroadcast.`
+
+Every statement that handles a whole broadcast grows with this limit. On the [reference machine](deployment.md#the-signal-recipient-cap) at 250,000 recipients a throw took 3.3–4.3 s, a refused throw 3.9–4.0 s, a cancel 4.3–4.9 s, and a retry of 250,000 failed deliveries 5.2–5.5 s, against about 1.5–2 s at 100,000, and one throw wrote about 145 MB of write-ahead log. A throw from a workflow holds the throwing instance for its freeze, and a cancel holds the broadcast for its update. Delivering 250,000 recipients at the default of two jobs takes over two hours at the measured rate, so size [expiries](developer-guide.md#let-a-signal-expire) for it. Above 100,000 keep [splitting](#signalsmaxdeliveryjobsperdefinition) on: a job that owns a whole definition and loses its last lease fails all of that definition's deliveries in one statement inside a Worker's lease round, which took about 5 s at 250,000, against about 1.5 s for one share of four. Raise the limit only for the broadcasts that need it, and see retention's [batch note](deployment.md#the-signal-recipient-cap).
 
 ### Signals.MaxOpenBroadcasts
 
@@ -379,6 +383,37 @@ How many broadcasts thrown through the API, by users and managed clients, may be
 How many broadcasts thrown by workflows' [signal throw and end events](node-reference.md#intermediatesignalthrowevent) may be delivering at once. When this many or more are `delivering`, a further throw from a workflow is refused with `... was not thrown: 10000 signal broadcasts thrown by workflows are still delivering; see Signals.MaxOpenWorkflowBroadcasts.`, and its step fails: a request returns `400` and changes nothing, a Worker job retries and then opens an incident, and a signal delivery fails with `signal_delivery_rejected`. The count is read without a lock, so concurrent throws can pass the limit by a few, and a broadcast without recipients is `completed` at once and never counts. A broadcast past its expiry would not count either; broadcasts that workflows throw have no expiry in this release. Broadcasts thrown through the API count toward [Signals.MaxOpenBroadcasts](#signalsmaxopenbroadcasts) instead, so the two kinds of thrower never use up each other's budget.
 
 The budget is large because each instance that throws keeps one broadcast open until the Worker has delivered it, which takes seconds while a Worker runs. While no Worker runs, these broadcasts accumulate, and a workflow whose user action leads to a throw can then fail that action at the limit; an automatic task with `asyncBefore: true` in front of the event moves the throw, and such a failure, into a Worker job. Raise the limit for a deployment whose workflows throw many narrow signals at once. Implementation: [setting rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [engine throw](../Flowbit/src/Flowbit.Service/Services/WorkflowEngineService.SignalThrows.cs).
+
+### Signals.MaxDeliveryJobsPerDefinition
+
+- **Namespace / key:** `Signals` / `MaxDeliveryJobsPerDefinition`.
+- **Value / fallback:** the integer format above; default `2`, hard cap `32`; `1` turns splitting off.
+- **Seed:** `2` in `AddSignalDeliveryShares` when missing; an existing row is left as it is.
+- **Takes effect:** the next throw, and the next retry of failed deliveries.
+
+The most delivery jobs a broadcast gets for one workflow definition. A broadcast gets delivery jobs for each definition among its recipients. A definition with `n` recipients gets `n` divided by [Signals.MinDeliveriesPerJob](#signalsmindeliveriesperjob) jobs, rounded down, at least one and at most this setting:
+
+| Recipients of one definition | Jobs at the defaults | Jobs with a maximum of 4 | Jobs with a maximum of 16 |
+| ---: | ---: | ---: | ---: |
+| 999 | 1 | 1 | 1 |
+| 1,000 | 2 | 2 | 2 |
+| 1,999 | 2 | 3 | 3 |
+| 2,000 | 2 | 4 | 4 |
+| 10,000 | 2 | 4 | 16 |
+| 250,000 | 2 | 4 | 16 |
+
+Each job of a split definition delivers the deliveries whose instance falls in its share, by a hash of the instance ID, so all the waits of one instance are in one job and the jobs never queue on one instance. The jobs run at the same time, up to the share slots of the Workers ([`FlowbitWorker:SignalShareConcurrency`](deployment.md#worker-operation), by default 2 for each Worker). A definition with one job is delivered exactly as before. Workflows throw thousands of signals that reach one wait each, so the two split settings are read only when a definition has two or more recipients.
+
+Size the two together, and with the database's spare capacity. At the defaults a split definition takes both of a Worker's two share slots, so another split definition, of the same broadcast or a later one, starts when one of its jobs ends, about six minutes later at 10,000 recipients on the reference machine; its expiry keeps counting meanwhile. Several jobs help while PostgreSQL and the Worker have processors to spare, and they take that capacity from API requests and from the Worker's other activity jobs while they run. On the [reference machine](deployment.md#one-large-signal-broadcast), with one job delivering at about 17 a second and half the machine idle, four jobs delivered 3.1 times as fast; under a timer and signal load, two jobs delivered 1.7 times as fast as one and other activity jobs began well under a second late at the median, while four jobs on a Worker with six activity slots delayed them by seconds. The default is therefore 2, and so is each Worker's default number of share slots. Raise it to 4 or more where the database has processors to spare during large broadcasts, raise the Workers' share slots with it, and give each Worker more activity slots than its share slots plus the activity jobs it runs at once; give the Workers more share slots in total than this setting when large broadcasts are thrown close together. A broadcast already delivering keeps its jobs when the setting changes; a retry of failed deliveries splits again by each definition's pending count with the settings at that moment, so a few failed deliveries become one job. Implementation: [split rules](../Flowbit/src/Flowbit.Service/Models/SignalModels.cs) and [writer](../Flowbit/src/Flowbit.Service/Services/SignalBroadcastWriter.cs).
+
+### Signals.MinDeliveriesPerJob
+
+- **Namespace / key:** `Signals` / `MinDeliveriesPerJob`.
+- **Value / fallback:** the integer format above; default `500`, hard cap `100000`.
+- **Seed:** `500` in `AddSignalDeliveryShares` when missing; an existing row is left as it is.
+- **Takes effect:** the next throw, and the next retry of failed deliveries.
+
+The fewest recipients of one definition a delivery job is created for when a broadcast is split, so a definition needs at least twice this many to get more than one job. A small value splits small broadcasts, whose single job already finishes in seconds, and gains nothing for them; keep it in the hundreds. See [Signals.MaxDeliveryJobsPerDefinition](#signalsmaxdeliveryjobsperdefinition) for the job count.
 
 ### Signals.CatalogMode
 
@@ -481,6 +516,8 @@ Migration names below link to their actual seed implementation. Seeds are applie
 | [AddSignalEvents](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261116135625_AddSignalEvents.cs) | `Signals.RequiredRole` = `admin`, `Signals.MaxSubscriptionsPerBroadcast` = `10000`, and `Signals.MaxOpenBroadcasts` = `20`, with descriptions. Down removes the three rows. |
 | [AddSignalThrowEvents](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261121134938_AddSignalThrowEvents.cs) | `Signals.MaxOpenWorkflowBroadcasts` = `10000`, with a description. Down removes the row, after refusing while a broadcast thrown by an instance remains. |
 | [AddSignalCatalog](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261124193857_AddSignalCatalog.cs) | `Signals.CatalogMode` = `optional`, with a description, unless a row with that key exists. Down refuses while any signal catalog entry exists, then removes the row only when its value is still `optional`. |
+| [AddSignalDeliveryShares](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261126122213_AddSignalDeliveryShares.cs) | `Signals.MaxDeliveryJobsPerDefinition` = `2` and `Signals.MinDeliveriesPerJob` = `500`, with descriptions, unless a row with that key exists. Down refuses while a share job of a split broadcast is not finished, then removes each row only when its value is still the seeded one. |
+| [RaiseSignalBroadcastRecipientCap](../Flowbit/src/Flowbit.Infrastructure/Data/Migrations/20261126185620_RaiseSignalBroadcastRecipientCap.cs) | Seeds nothing. Rewrites the description of `Signals.MaxSubscriptionsPerBroadcast` to name the cap of 250000 while it is still the description `AddSignalEvents` wrote, and widens `CK_signal_broadcasts_counts` to match. Down refuses while a broadcast has more than 100,000 deliveries, then restores both. |
 
 Capture consolidation requires a coordinated upgrade of API/UI/Worker versions; stop API and Worker writers before migration. It removes the old capture table without a compatibility view and refuses any existing canonical or equivalent capture key rather than overwrite it. The imported setting uses the old `ChangedAt` for both initial timestamps (its original creation time is unknown), copies `ChangedBy` to `UpdatedBy`, and leaves `CreatedBy` null. Other existing rows retain null actors. Down restores the current capture state and original functions but removes the new actor columns. See [rollout](deployment.md#rollout).
 

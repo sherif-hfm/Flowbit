@@ -967,8 +967,9 @@ starts from the (`WorkflowKey`, `BusinessKey`, `Status`) index of
 has no foreign key, because the check would wait for a transaction holding the
 instance row. More than `Signals.MaxSubscriptionsPerBroadcast` rows rolls
 the throw back. It then stores the counts and the recipients per family and
-enqueues one `signalBroadcastDeliver` job per represented definition, with a
-`signal_broadcast_jobs` link row. It snapshots the thrower (`user` or `client`,
+enqueues `signalBroadcastDeliver` jobs, each with a `signal_broadcast_jobs` link
+row: one per represented definition, or, for a definition with enough
+recipients, several share jobs ([parallel delivery](#parallel-signal-delivery)). It snapshots the thrower (`user` or `client`,
 its identity, roles, and the claims `WorkflowAudit:AllowedClaims` selects) and
 never logs the payload or a business key. The open-broadcast count reads only
 `user` and `client` broadcasts (`SignalSettings.ApiThrowerKinds`). Everything
@@ -977,10 +978,11 @@ after the replay and the count, from the insert to the delivery jobs, is
 broadcasts and receives result codes without descriptions.
 
 **Delivery.** `SignalBroadcastJobProcessor` handles one broadcast and one
-definition: it pages through pending deliveries 100 at a time in ascending ID with
-a cursor, so a failing delivery cannot starve later ones, runs each in its own
-scope and transaction through `ISignalDeliveryExecutor.DeliverSignalAsync`, and
-recounts the broadcast after each page. A delivery locks the instance hierarchy
+definition, or one share of a split definition: it pages through pending
+deliveries 100 at a time in ascending ID with a cursor, so a failing delivery
+cannot starve later ones, runs each in its own scope and transaction through
+`ISignalDeliveryExecutor.DeliverSignalAsync`, and recounts the broadcast after
+each page, or a share job at most every two seconds and at its end. A delivery locks the instance hierarchy
 through `GetInstanceForUpdateAsync`, then the subscription row, then the delivery
 row; a delivery that is no longer pending ends there. It takes no shared-variable
 row. An ended subscription or a stopped instance makes it `skipped` with
@@ -1154,6 +1156,56 @@ Instance detail lists the instance's active subscriptions (`signalSubscriptions`
 at most 50, with `signalSubscriptionCount`); the query runs only for a definition
 with signal waits. `signalBroadcasts` is a [retention](#history-and-audit-retention)
 category; subscriptions stay with their instance.
+
+### Parallel signal delivery
+
+A broadcast with many waits of one workflow definition is delivered by several jobs
+at once (EVENT-04G). Nothing a caller, a receiver, or an instance sees changes
+except how soon the last delivery runs.
+
+- **The split.** `SignalBroadcastWriter.EnqueueDeliveryJobsAsync` takes each
+  definition with its recipient count, at a throw, or its pending count, at a retry
+  of failed deliveries. `SignalDeliveryShares.JobCount` gives `n /
+  Signals.MinDeliveriesPerJob` jobs, rounded down and held between 1 and
+  `Signals.MaxDeliveryJobsPerDefinition`. The settings are read once, through
+  `IEngineSettingsRepository.GetByKeysAsync`, and only when a definition has two or
+  more recipients, so a throw that reaches one wait per definition runs no new
+  statement. A definition with one job gets today's job exactly: phase `deliver`
+  and a payload without a share. A definition with several gets jobs with the
+  phase `deliverShare`, whose `SignalBroadcastJobPayload` adds `ShareIndex` and
+  `ShareCount`, and links that record them; a payload without them reads as share
+  0 of 1. The split is decided once: a setting changed later adds no job.
+- **The share.** A delivery belongs to the share
+  `(hashint8(COALESCE("InstanceId", 0))::bigint & 2147483647) % ShareCount`. The
+  database computes it when it is needed, and no row stores it. A hash rather than
+  the remainder of the ID, because instance IDs follow patterns. Every delivery to
+  one instance is in one share, so the jobs of a broadcast never queue on one
+  instance's lock; a start delivery, which has no instance until it is delivered,
+  takes the share of 0. `SignalDeliveryShareSql.Condition` is the one expression,
+  used by the share job's page query (`ListPendingDeliveryIdsAsync`) and by the
+  lost-lease reconciliation; keep the two on it.
+- **Exactly once.** The split never carries correctness. A delivery still locks the
+  instance hierarchy, the subscription, and its own row, and does nothing when the
+  row is no longer pending, so overlapping jobs, such as a retry job beside an
+  earlier job of the same definition, deliver each recipient once. Lock order is
+  unchanged: a delivery never asks for a broadcast row, and every recount, cancel,
+  settle, and retry takes the broadcast row first.
+- **Leasing.** `WorkflowJobLeaseRequest.MaxSignalShareCount` bounds the share jobs a
+  lease round may take; it defaults to unbounded. The three acquisition queries
+  leave share jobs out before their fairness ranking when it is 0, so a family's
+  other jobs never wait behind a share job the round would skip, and the selection
+  loop stops taking share jobs at the bound otherwise. Unsplit delivery jobs are
+  never counted. The Worker passes `FlowbitWorker:SignalShareConcurrency` (by default
+  2, the default number of jobs of one split definition) minus its running share
+  jobs, and asks `GetNextWakeAtAsync(includeSignalShares: false)` when
+  it has no share slot. `GetQueueStatisticsAsync`, retention's overload check, and
+  the `flowbit.worker.queue.lag` histogram leave share jobs out, because a Worker
+  holds them back on purpose; `flowbit.worker.jobs.signal_share.active` counts the
+  running ones.
+- **Failures.** A share job's lost lease fails only its share; the other jobs of
+  the definition keep delivering, and the broadcast stays `delivering` until they
+  finish. Cancel, expiry, and retry are unchanged: each ends or reopens every
+  pending delivery of the broadcast under its row lock, whatever jobs exist.
 
 ### Signal throw and end events
 
