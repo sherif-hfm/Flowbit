@@ -5,6 +5,11 @@ a deployment-controlled mock endpoint and token; the repository contains no
 secret and no public URL. Definition and editor tests only parse and validate
 the JSON—they do not invoke the endpoint.
 
+The [lifecycle load test](../../Flowbit/tools/LifecycleLoadTest/README.md) runs
+example 01 against its own stub to measure synchronous REST calls. It finds the
+start event, task, and flow it uses by their external IDs, so keep those IDs
+when you change the definition.
+
 ## Catalog
 
 | File | Start values | Actor and actions | Expected result | Runtime requirements |

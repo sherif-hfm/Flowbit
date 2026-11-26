@@ -46,7 +46,7 @@ These criteria are revised by this plan on 2026-11-25. The revision names the se
 - A delivery queue separate from `workflow_jobs`.
 - Moving work between the jobs of one broadcast. Until then a job that waits in a retry delay leaves its share waiting while the other jobs finish.
 - A bound on the jobs of a broadcast that reaches many definitions. Such a broadcast takes one activity slot for each definition, as today.
-- Fewer database statements for each delivery, with [PERF-01](perf-01-throughput-and-worker-capacity.md) phase 3.
+- Fewer database statements for each delivery, with [PERF-01](perf-01-throughput-and-worker-capacity.md) phase 5.
 
 ## Current state
 
@@ -137,7 +137,7 @@ No question remains open for the design. One is answered by a measurement that i
 | Do share jobs that wait for a slot count as a backlog? | No. They are held back on purpose. Retention's overload check, the queue gauges, and the lag histogram leave them out, and the signal gauges show the pending deliveries. |
 | What is the new hard cap? | 250,000, if every gate of [section 8](#8-the-recipient-limit) passes; a migration then widens `CK_signal_broadcasts_counts`. The default stays 10,000. |
 | Does the API or the **Signals** page show the jobs? | No. Progress is the stored counters, as today. The jobs are on the **Jobs & incidents** page with their phase. |
-| How does this item relate to PERF-01? | [PERF-01](perf-01-throughput-and-worker-capacity.md) phase 1 changes the baseline, and phase 2 edits the same leasing code. Build this item after both, or rebase whichever lands second. The default of the share cap follows `ActivityConcurrency`, so it keeps its meaning if phase 2 changes the slots. |
+| How does this item relate to PERF-01? | [PERF-01](perf-01-throughput-and-worker-capacity.md) phase 1 changes the baseline, and phase 4 edits the same leasing code. Build this item after both, or rebase whichever lands second. The default of the share cap follows `ActivityConcurrency`, so it keeps its meaning if phase 4 changes the slots. |
 
 ## Plan
 
@@ -422,7 +422,7 @@ Full solution runs have had order-dependent failures at the base commit, so comp
 
 1. **Measure.** Add the large-broadcast case to the load test and run the first row of the evidence table with today's code. Measure the retention delete at 100,000 in the same step. Then decide by the processor use of the run with one job:
    - **At least one processor idle, and two jobs deliver at least 1.5 times what one does:** continue.
-   - **At least one processor idle, and two jobs deliver less:** the design does not help. Record the figures and the statement profile here, set the status back to Not started, and hand the per-delivery cost to [PERF-01](perf-01-throughput-and-worker-capacity.md) phase 3.
+   - **At least one processor idle, and two jobs deliver less:** the design does not help. Record the figures and the statement profile here, set the status back to Not started, and hand the per-delivery cost to [PERF-01](perf-01-throughput-and-worker-capacity.md) phase 5.
    - **No processor idle:** the run says nothing about the design. Repeat it with PostgreSQL on another machine, or on a machine with more processors, before deciding.
 2. **Split.** `SignalDeliveryShares`, the two settings, the migration, the payload, the phase, the links, the throw, and the retry. Exit with the job-count, throw, and migration tests green and every existing signal test unchanged.
 3. **Deliver.** The share query, the recount rule, and the lost-lease statement. Exit with `SignalDeliveryShareTests` green.
@@ -465,6 +465,6 @@ Rollout:
 | The new cap makes one throw, cancel, lost lease, or retention pass too slow. | The gates of [section 8](#8-the-recipient-limit) decide whether the cap rises at all, the worst case of one job for a whole definition included. Retention's delete gets both of its timeouts raised. |
 | The gates are measured on rows that no engine wrote. | They time statements only, and the page records how the rows were made. Every delivery figure comes from real waiting instances. |
 | A split broadcast still expires before it is delivered. | The guides give the measured rate for four jobs and tell callers to size the expiry for the whole broadcast. |
-| PERF-01 phase 2 and this item edit the same leasing code. | Build this item after phase 2, or rebase the second one. The share cap is a separate condition and does not depend on how the classes share slots. |
+| PERF-01 phase 4 and this item edit the same leasing code. | Build this item after phase 4, or rebase the second one. The share cap is a separate condition and does not depend on how the classes share slots. |
 | Deployments that tuned `ActivityConcurrency` get a share cap they did not choose. | The default follows their value, and the cap applies only to split broadcasts, which exist only after this release. |
 | Several Worker restarts during a long delivery use up a job's attempts. | Unchanged from today. A share job runs for a fraction of the time one job did, so it meets fewer restarts. |

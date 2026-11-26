@@ -37,19 +37,43 @@ using var http = new HttpClient(new SocketsHttpHandler
     PooledConnectionLifetime = TimeSpan.FromMinutes(30)
 })
 {
-    BaseAddress = new Uri(options.ApiBase.TrimEnd('/') + "/"),
     Timeout = TimeSpan.FromMinutes(2)
 };
 var api = new ApiClient(http, options);
 var admin = new Actor("lt-admin", ["admin"]);
 var signalThrower = new Actor("lt-signal-system", ["admin"]);
 
+if (options.PrintToken)
+{
+    Console.WriteLine(api.Token(admin));
+    return 0;
+}
+
 if (options.Setup)
     return await SetupAsync();
+
+LoadStub? stub;
+try
+{
+    stub = options.StubPort is { } stubPort ? await LoadStub.StartAsync(stubPort, options.StubDelayMilliseconds) : null;
+}
+catch (IOException ex)
+{
+    return Fail($"--stub: cannot listen on 127.0.0.1:{options.StubPort}: {ex.Message}");
+}
+
+await using var stubLifetime = stub;
+if (options.StubOnly)
+    return await RunStubOnlyAsync(stub!);
+if (options.Probe)
+    return await ProbeAsync();
+if (options.CheckCopies > 0)
+    return await CheckCopiesAsync();
 
 PurchaseIds? purchase = null;
 TimerIds? timers = null;
 SignalIds? signals = null;
+RestIds? rest = null;
 try
 {
     var published = await ReadPublishedAsync();
@@ -64,10 +88,27 @@ try
             await LoadFamilyAsync(published, Families.SignalOrders),
             await LoadFamilyAsync(published, Families.SignalRecall),
             await LoadFamilyAsync(published, Families.SignalNotices));
+    if (options.RestUsers > 0)
+        rest = RestIds.Resolve(
+            await LoadFamilyAsync(published, Families.RestSync),
+            await LoadFamilyAsync(published, Families.RestJob));
 }
 catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or JsonException)
 {
     return Fail(ex.Message);
+}
+
+WebhookRun? webhooks = null;
+if (options.Webhooks > 0)
+{
+    try
+    {
+        webhooks = await StartWebhooksAsync(stub!);
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or JsonException)
+    {
+        return Fail("--webhooks: " + ex.Message);
+    }
 }
 
 api.Stats.Clear();
@@ -80,19 +121,31 @@ var signalDeliveries = 0;
 var throwRetries = 0;
 var scenarios = new List<Scenario>();
 if (purchase is not null)
-    scenarios.Add(new Scenario("purchase", options.StartsOnly ? "Purchase requests started" : "Purchase requests", options.PurchaseUsers,
-        n => options.StartsOnly ? StartPurchaseAsync(purchase, n, board: false) : RunPurchaseRequestAsync(purchase, n)));
+    scenarios.Add(new Scenario("purchase", options.ParkAt switch
+        {
+            "manager" => "Purchase requests parked at the manager review",
+            "budget" => "Purchase requests parked at the budget check",
+            _ => "Purchase requests"
+        }, options.PurchaseUsers,
+        n => options.ParkAt is null ? RunPurchaseRequestAsync(purchase, n) : ParkPurchaseAsync(purchase, n)));
 if (timers is not null)
     scenarios.Add(new Scenario("timer", "Timer cases", options.TimerUsers, n => RunTimerCaseAsync(timers, n)));
 if (signals is not null)
     scenarios.Add(new Scenario("signal", "Signal cases", options.SignalUsers, n => RunSignalCaseAsync(signals, n)));
+if (rest is not null)
+    scenarios.Add(new Scenario("rest", "REST cases", options.RestUsers, n => RunRestCaseAsync(rest, n)));
 
 Console.WriteLine("Flowbit lifecycle load test");
-Console.WriteLine($"  {"API:",-28}{options.ApiBase}");
+Console.WriteLine($"  {(options.ApiBases.Length == 1 ? "API:" : "APIs (requests rotate):"),-28}{string.Join(", ", options.ApiBases)}");
 foreach (var scenario in scenarios)
     Console.WriteLine($"  {scenario.Title + ":",-28}{scenario.Users} virtual users");
-if (purchase is not null && !options.StartsOnly)
+if (purchase is not null && options.ParkAt is null)
     Console.WriteLine($"  {"Purchase mix:",-28}{options.BoardShare:P0} to the board vote; browsing reads {(options.Browse ? "on" : "off")}");
+if (rest is not null)
+    Console.WriteLine($"  {"REST mix:",-28}{options.RestMix switch { "sync" => "synchronous calls only", "job" => "Worker jobs only", _ => "half synchronous, half Worker jobs" }}" +
+        $"{(options.RestMix != "sync" ? $"; {options.RestFailShare:P0} of jobs fail once" : "")}; stub answers after {options.StubDelayMilliseconds} ms");
+if (webhooks is not null)
+    Console.WriteLine($"  {"Webhooks:",-28}{webhooks.Subscriptions.Count} subscriptions to {webhooks.EventTypes} event types at {stub!.BaseAddress}/hooks");
 Console.WriteLine($"  {"Limit:",-28}{(options.Cases == int.MaxValue ? "" : options.Cases.ToString("N0", CultureInfo.InvariantCulture) + " of each kind")}" +
     $"{(options.Cases != int.MaxValue && options.DurationSeconds > 0 ? ", " : "")}{(options.DurationSeconds > 0 ? $"new work for {options.DurationSeconds} s" : "")}");
 Console.WriteLine($"  {"Run tag:",-28}{options.Tag}");
@@ -107,6 +160,11 @@ catch (Exception ex) when (ex is NpgsqlException or ArgumentException)
 {
     return Fail("--database: " + ex.Message);
 }
+
+using var stopSampling = new CancellationTokenSource();
+var sampler = options.Database is { } sampled ? new ActivitySampler(sampled) : null;
+var sampling = sampler?.RunAsync(stopSampling.Token) ?? Task.CompletedTask;
+stub?.ResetHookClock();
 
 var deadline = options.DurationSeconds > 0 ? DateTime.UtcNow.AddSeconds(options.DurationSeconds) : DateTime.MaxValue;
 var elapsed = Stopwatch.StartNew();
@@ -140,11 +198,28 @@ await Task.WhenAll(scenarios.Select(s => s.RunAsync(deadline, options.Cases, Tim
 elapsed.Stop();
 stopReporting.Cancel();
 await reporter;
+stopSampling.Cancel();
+await sampling;
 
 var after = options.Database is { } connection ? await DatabaseSnapshot.ReadAsync(connection) : null;
 var jobs = options.Database is { } jobConnection && before is not null ? await JobSummary.ReadAsync(jobConnection, before.Now) : null;
+var webhookDrain = TimeSpan.Zero;
+var webhookFailures = 0L;
+if (webhooks is not null)
+{
+    try
+    {
+        (webhookDrain, webhookFailures) = await FinishWebhooksAsync(webhooks, stub!);
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or JsonException or NpgsqlException)
+    {
+        Console.Error.WriteLine("Webhook cleanup failed: " + ex.Message);
+        webhookFailures++;
+    }
+}
+
 PrintSummary();
-return scenarios.Any(s => s.Failed > 0) ? 1 : 0;
+return scenarios.Any(s => s.Failed > 0) || stub?.ProblemCount > 0 || webhookFailures > 0 ? 1 : 0;
 
 // ---------------------------------------------------------------- setup
 
@@ -219,6 +294,16 @@ async Task<long> StartPurchaseAsync(PurchaseIds ids, int n, bool board)
         ["managerUser"] = $"lt-manager-{n % 100}"
     });
     return started["id"]!.GetValue<long>();
+}
+
+// Leaves open work behind: a task assigned to one of 100 managers, or, after the manager's
+// approval, an unclaimed budget check that every Finance user sees in one shared pool.
+async Task ParkPurchaseAsync(PurchaseIds ids, int n)
+{
+    var instanceId = await StartPurchaseAsync(ids, n, board: false);
+    if (options.ParkAt == "budget")
+        await ActAsync("approve", new Actor($"lt-manager-{n % 100}", ["Manager"]), instanceId, ids.Review, ids.Approve,
+            new { managerComment = "Parked by the load test" }, claim: false);
 }
 
 async Task RunPurchaseRequestAsync(PurchaseIds ids, int n)
@@ -396,6 +481,401 @@ async Task<JsonNode> ThrowAsync(object request)
     }
 }
 
+// ---------------------------------------------------------------- REST service tasks
+
+async Task RunRestCaseAsync(RestIds ids, int n)
+{
+    var requester = new Actor($"lt-requester-{n % 200}", ["ExampleRequester"]);
+    var sync = options.RestMix switch { "sync" => true, "job" => false, _ => n % 2 == 0 };
+    if (sync)
+    {
+        // The service task has no asyncBefore, so the API calls the stub inside the start request.
+        var reviewer = new Actor($"lt-reviewer-{n % 20}", ["ExampleReviewer"]);
+        var started = await StartInstanceAsync("rest.sync", requester, ids.SyncWorkflowId, ids.SyncStart,
+            new { requestId = $"RQ-{options.Tag}-{n}", customerId = $"C-{n % 500}" });
+        var instanceId = started["id"]!.GetValue<long>();
+        var task = await WaitForTaskAsync("rest.sync", reviewer, new { instanceId, page = 1, pageSize = 50 }, ids.SyncTask, "synchronous REST call");
+        ExpectCompleted(await CompleteTaskAsync("rest.sync", "review", reviewer, task.TaskId, ids.SyncReviewed, new { }), instanceId, "REST review");
+        return;
+    }
+
+    // asyncBefore: a Worker job calls the stub. 'fail-once' answers 503 first, so the job retries
+    // after its 2-second delay; the stub's service is always recovered, so 'recover' succeeds at once.
+    var k = options.RestMix == "job" ? n : n / 2;
+    var failOnce = k * 61 % 100 < (int)Math.Round(options.RestFailShare * 100);
+    var operatorActor = new Actor($"lt-operator-{n % 20}", ["ExampleOperator"]);
+    var job = await StartInstanceAsync("rest.job", requester, ids.JobWorkflowId, ids.JobStart, new { scenario = failOnce ? "fail-once" : "recover" });
+    var jobInstanceId = job["id"]!.GetValue<long>();
+    var result = await WaitForTaskAsync("rest.job", operatorActor, new { instanceId = jobInstanceId, page = 1, pageSize = 50 }, ids.JobTask, "REST job");
+    RecordDelay(failOnce ? DelayKinds.RestRetried : DelayKinds.RestJob, result.CreatedAt - ReadTime(job["createdAt"]));
+    ExpectCompleted(await CompleteTaskAsync("rest.job", "confirm", operatorActor, result.TaskId, ids.JobConfirmed, new { }), jobInstanceId, "REST job confirmation");
+}
+
+// ---------------------------------------------------------------- webhooks
+
+async Task<WebhookRun> StartWebhooksAsync(LoadStub receiver)
+{
+    var captureWasOn = await SetCaptureAsync(true);
+    var catalog = await api.SendAsync("setup", HttpMethod.Get, "api/webhook-event-types", admin, null);
+    var types = catalog!["eventTypes"]!.AsArray()
+        .Where(t => t!["subscribable"]?.GetValue<bool>() == true)
+        .Select(t => t!["type"]!.GetValue<string>())
+        .Where(t => options.WebhookEvents is null || options.WebhookEvents.Contains(t, StringComparer.Ordinal))
+        .ToArray();
+    if (types.Length == 0)
+        throw new InvalidOperationException("no subscribable event type matches --webhook-events.");
+
+    var ids = new List<Guid>();
+    for (var i = 0; i < options.Webhooks; i++)
+    {
+        var created = await api.SendAsync("setup", HttpMethod.Post, "api/webhook-subscriptions", admin, new
+        {
+            name = $"lt-{options.Tag}-{i}",
+            description = "Lifecycle load test receiver",
+            endpointUrl = $"{receiver.BaseAddress}/hooks/{i}",
+            eventTypes = types,
+            workflowKey = (string?)null,
+            maxConcurrency = (int?)null
+        });
+        receiver.RegisterSecret(i, created!["secret"]!.GetValue<string>());
+        var subscription = created["subscription"]!;
+        var id = subscription["id"]!.GetValue<Guid>();
+        ids.Add(id);
+        // A new subscription starts paused.
+        await api.SendAsync("setup", HttpMethod.Post, $"api/webhook-subscriptions/{id}/resume", admin,
+            new { expectedRevision = subscription["revision"]!.GetValue<long>() });
+    }
+
+    Console.WriteLine($"  Created and resumed {ids.Count} webhook subscriptions{(captureWasOn ? "" : "; turned lifecycle capture on for the run")}.");
+    return new WebhookRun(ids, captureWasOn, types.Length);
+}
+
+// Turns Webhooks.CaptureEnabled on or off and returns whether it was on before.
+async Task<bool> SetCaptureAsync(bool enabled)
+{
+    var settings = (await api.SendAsync("setup", HttpMethod.Get, "api/engine-settings", admin, null))!.AsArray();
+    var row = settings.FirstOrDefault(s => s!["namespace"]?.GetValue<string>() == "Webhooks" && s["key"]?.GetValue<string>() == "CaptureEnabled")
+        ?? throw new InvalidOperationException("the Webhooks.CaptureEnabled engine setting is missing; apply the migrations first.");
+    var wasOn = string.Equals(row["value"]?.GetValue<string>(), "true", StringComparison.OrdinalIgnoreCase);
+    if (wasOn != enabled)
+        await api.SendAsync("setup", HttpMethod.Put, $"api/engine-settings/{row["id"]}", admin, new
+        {
+            value = enabled ? "true" : "false",
+            description = row["description"]?.GetValue<string>(),
+            expectedUpdatedAt = row["updatedAt"]!.GetValue<string>()
+        });
+    return wasOn;
+}
+
+async Task<List<JsonNode>> ReadSubscriptionsAsync(WebhookRun run)
+{
+    var found = new List<JsonNode>();
+    for (var page = 1; ; page++)
+    {
+        var result = await api.SendAsync("setup", HttpMethod.Get, $"api/webhook-subscriptions?page={page}&pageSize=100", admin, null);
+        var items = result!["items"]!.AsArray();
+        found.AddRange(items.OfType<JsonNode>().Where(s => run.Subscriptions.Contains(s["id"]!.GetValue<Guid>())));
+        if (items.Count < 100) return found;
+    }
+}
+
+// Waits for the run's deliveries to reach the stub, archives the subscriptions, and puts lifecycle
+// capture back as it was. Returns how long the queue took to drain and the deliveries that failed.
+async Task<(TimeSpan Drain, long Failed)> FinishWebhooksAsync(WebhookRun run, LoadStub receiver)
+{
+    var drain = Stopwatch.StartNew();
+    var failed = 0L;
+    if (options.WebhookWaitSeconds > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"  Waiting up to {options.WebhookWaitSeconds} s for webhook deliveries to drain...");
+        var giveUp = DateTime.UtcNow.AddSeconds(options.WebhookWaitSeconds);
+        var lastReport = TimeSpan.Zero;
+        while (true)
+        {
+            var subscriptions = await ReadSubscriptionsAsync(run);
+            long Queue(string name) => subscriptions.Sum(s => s["queue"]![name]!.GetValue<long>());
+            var outstanding = Queue("pending") + Queue("retryScheduled") + Queue("delivering");
+            failed = Queue("failed");
+            var unfanned = options.Database is { } db ? await CountUnfannedEventsAsync(db) : 0;
+            if (drain.Elapsed - lastReport >= TimeSpan.FromSeconds(15))
+            {
+                lastReport = drain.Elapsed;
+                Console.WriteLine($"  {drain.Elapsed.TotalSeconds,6:F0}s  outstanding deliveries {outstanding:N0}, events not fanned out {unfanned:N0}, received {receiver.HookCount:N0}");
+            }
+
+            if (outstanding == 0 && unfanned == 0 && receiver.SecondsSinceLastHook >= 10)
+                break;
+            if (DateTime.UtcNow > giveUp)
+            {
+                Console.WriteLine($"  Gave up waiting with {outstanding:N0} deliveries outstanding.");
+                failed += outstanding;
+                break;
+            }
+
+            await Task.Delay(2000);
+        }
+    }
+
+    drain.Stop();
+    foreach (var subscription in await ReadSubscriptionsAsync(run))
+        await api.SendAsync("setup", HttpMethod.Post, $"api/webhook-subscriptions/{subscription["id"]}/archive", admin,
+            new { expectedRevision = subscription["revision"]!.GetValue<long>() });
+    if (!run.CaptureWasOn)
+        await SetCaptureAsync(false);
+    Console.WriteLine($"  Archived the {run.Subscriptions.Count} subscriptions{(run.CaptureWasOn ? "" : " and turned lifecycle capture off again")}.");
+    return (drain.Elapsed, failed);
+}
+
+static async Task<long> CountUnfannedEventsAsync(string connectionString)
+{
+    await using var connection = new NpgsqlConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = new NpgsqlCommand("""SELECT count(*) FROM flowbit.lifecycle_events WHERE "FanoutCompletedAt" IS NULL""", connection);
+    return (long)(await command.ExecuteScalarAsync())!;
+}
+
+// ---------------------------------------------------------------- stub only
+
+async Task<int> RunStubOnlyAsync(LoadStub receiver)
+{
+    Console.WriteLine($"Stub listening on {receiver.BaseAddress}; it reports every minute while calls arrive. Stop it with Ctrl+C.");
+    using var stop = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
+    var last = -1L;
+    while (!stop.IsCancellationRequested)
+    {
+        try { await Task.Delay(TimeSpan.FromMinutes(1), stop.Token); }
+        catch (OperationCanceledException) { }
+        if (receiver.CallCount == last) continue;
+        last = receiver.CallCount;
+        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}]");
+        foreach (var line in receiver.Report()) Console.WriteLine("  " + line);
+    }
+
+    return receiver.ProblemCount > 0 ? 1 : 0;
+}
+
+// ---------------------------------------------------------------- read probes
+
+// Runs a fixed set of reads one at a time, so each time is the server's, not a queue's: inboxes,
+// searches, and detail pages as people and administrators open them on a full database.
+async Task<int> ProbeAsync()
+{
+    string? purchaseKey = null;
+    long? oldest, newest;
+    string? businessKey = null;
+    try
+    {
+        var published = await ReadPublishedAsync();
+        if (published.ContainsKey(Families.Purchase.Key))
+            purchaseKey = Families.Purchase.Key;
+        oldest = await FirstInstanceAsync("asc");
+        newest = await FirstInstanceAsync("desc");
+        if (purchaseKey is not null)
+        {
+            var latest = await api.SendAsync("probe", HttpMethod.Post, "api/instances/search", admin,
+                new { workflowKey = purchaseKey, sort = new[] { new { field = "id", direction = "desc" } }, page = 1, pageSize = 1 });
+            businessKey = latest!["items"]!.AsArray().FirstOrDefault()?["businessKey"]?.GetValue<string>();
+        }
+    }
+    catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or JsonException)
+    {
+        return Fail(ex.Message);
+    }
+
+    var manager = new Actor("lt-manager-7", ["Manager"]);
+    var finance = new Actor("lt-finance-3", ["Finance"]);
+    var lead = new Actor("lt-lead-0", ["ProcurementLead"]);
+    var amountFilter = JsonNode.Parse("""{ "amount": { "$gte": 20000 } }""");
+    var now = DateTimeOffset.UtcNow;
+    const string Inbox = "api/instances/inbox/search";
+    const string Instances = "api/instances/search";
+    const string Executions = "api/node-executions/search";
+    var probes = new List<(string Name, Func<Task<JsonNode?>> Call)>
+    {
+        ("inbox: a manager's own tasks", () => Post(manager, Inbox, new { page = 1, pageSize = 50 })),
+        ("inbox: the Finance pool", () => Post(finance, Inbox, new { page = 1, pageSize = 50 })),
+        ("inbox: Finance, by due date", () => Post(finance, Inbox, new { sort = new[] { new { field = "dueAt", direction = "asc" } }, page = 1, pageSize = 50 })),
+        ("inbox: Finance, page 100", () => Post(finance, Inbox, new { page = 100, pageSize = 50 })),
+        ("inbox: Finance, amount filter", () => Post(finance, Inbox, new { variableFilter = amountFilter, page = 1, pageSize = 50 })),
+        ("instances: running", () => Post(admin, Instances, new { status = "running", page = 1, pageSize = 50 })),
+        ("instances: completed", () => Post(admin, Instances, new { status = "completed", page = 1, pageSize = 50 })),
+        ("instances: amount filter", () => Post(admin, Instances, new { variableFilter = amountFilter, page = 1, pageSize = 50 })),
+        ("task management: open tasks", () => Post(lead, "api/user-tasks/manage/search", new { page = 1, pageSize = 50 })),
+        ("node executions: active", () => Post(admin, Executions, new { statuses = new[] { "active" }, page = 1, pageSize = 50 })),
+        ("node executions: completed, last day", () => Post(admin, Executions,
+            new { statuses = new[] { "completed" }, completedFrom = now.AddDays(-1), completedTo = now, page = 1, pageSize = 50 })),
+    };
+    if (businessKey is not null)
+    {
+        probes.Add(("inbox: Finance, business key", () => Post(finance, Inbox, new { businessKey, page = 1, pageSize = 50 })));
+        probes.Add(("instances: business key", () => Post(admin, Instances, new { workflowKey = purchaseKey, businessKey, page = 1, pageSize = 50 })));
+    }
+
+    foreach (var (label, id) in new[] { ("oldest", oldest), ("newest", newest) })
+    {
+        if (id is not { } instanceId) continue;
+        probes.Add(($"instance detail: {label}", () => api.SendAsync("probe", HttpMethod.Get, $"api/instances/{instanceId}", admin, null)));
+        probes.Add(($"diagram history: {label}", () => api.SendAsync("probe", HttpMethod.Get, $"api/instances/{instanceId}/diagram-history", admin, null)));
+    }
+
+    Console.WriteLine("Flowbit read probes");
+    Console.WriteLine($"  {"API:",-28}{string.Join(", ", options.ApiBases)}");
+    Console.WriteLine($"  {"Repeats:",-28}{options.ProbeRepeat} after one warm-up, one request at a time");
+    if (options.Database is { } connectionString)
+    {
+        try
+        {
+            foreach (var line in await DatabaseSnapshot.DescribeAsync(connectionString))
+                Console.WriteLine("  " + line);
+        }
+        catch (NpgsqlException ex)
+        {
+            return Fail("--database: " + ex.Message);
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"  {"probe",-40} {"rows",10} {"p50 ms",8} {"p95 ms",8} {"max ms",8}");
+    var errors = 0;
+    foreach (var (name, call) in probes)
+    {
+        var samples = new List<double>();
+        string rows = "-";
+        string? error = null;
+        for (var i = 0; i <= options.ProbeRepeat && error is null; i++)
+        {
+            var watch = Stopwatch.StartNew();
+            try
+            {
+                var result = await call();
+                if (i == 0)
+                {
+                    rows = result?["totalCount"] is { } total ? total.ToString()
+                        : result?["items"] is JsonArray items ? items.Count.ToString(CultureInfo.InvariantCulture)
+                        : "-";
+                    continue;
+                }
+
+                samples.Add(watch.Elapsed.TotalMilliseconds);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+            {
+                error = ex.Message;
+            }
+        }
+
+        if (error is not null)
+        {
+            errors++;
+            Console.WriteLine($"  {name,-40} error: {(error.Length > 200 ? error[..200] + "..." : error)}");
+            continue;
+        }
+
+        var sorted = samples.OrderBy(x => x).ToArray();
+        Console.WriteLine($"  {name,-40} {rows,10} {Percentile(sorted, .5),8:F1} {Percentile(sorted, .95),8:F1} {sorted[^1],8:F1}");
+    }
+
+    return errors > 0 ? 1 : 0;
+
+    Task<JsonNode?> Post(Actor actor, string url, object body) => api.SendAsync("probe", HttpMethod.Post, url, actor, body);
+}
+
+// After sql/copy-history.sql: reads random copied instances and their originals through the API
+// and compares what a person would see. Ids, times, and business keys differ by design.
+async Task<int> CheckCopiesAsync()
+{
+    var pairs = new List<(long Original, long Copy, int K)>();
+    try
+    {
+        await using var connection = new NpgsqlConnection(options.Database);
+        await connection.OpenAsync();
+        long offset;
+        int copies;
+        await using (var command = new NpgsqlCommand(
+            "SELECT original_max, copies FROM public.lt_history_copy WHERE table_name = 'workflow_instances'", connection))
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            if (!await reader.ReadAsync())
+                return Fail("This database has no copies: run sql/copy-history.sql first.");
+            offset = reader.GetInt64(0);
+            copies = reader.GetInt32(1);
+        }
+
+        await using var pick = new NpgsqlCommand(
+            """
+            SELECT i."Id" FROM flowbit.workflow_instances i
+            WHERE i."Id" <= @offset AND EXISTS (SELECT 1 FROM flowbit.workflow_instances c WHERE c."Id" = i."Id" + @offset)
+            ORDER BY random() LIMIT @n
+            """, connection);
+        pick.Parameters.AddWithValue("offset", offset);
+        pick.Parameters.AddWithValue("n", options.CheckCopies);
+        await using var ids = await pick.ExecuteReaderAsync();
+        while (await ids.ReadAsync())
+            for (var k = 1; k <= copies; k++)
+                pairs.Add((ids.GetInt64(0), ids.GetInt64(0) + k * offset, k));
+    }
+    catch (NpgsqlException ex)
+    {
+        return Fail("--database: " + ex.Message);
+    }
+
+    Console.WriteLine($"Comparing {pairs.Count} copied instances with their originals (every copy of {pairs.Select(p => p.Original).Distinct().Count()} originals)");
+    var mismatches = 0;
+    foreach (var (original, copy, k) in pairs)
+    {
+        var problems = new List<string>();
+        try
+        {
+            var a = await api.SendAsync("check", HttpMethod.Get, $"api/instances/{original}", admin, null);
+            var b = await api.SendAsync("check", HttpMethod.Get, $"api/instances/{copy}", admin, null);
+            if (Shape(a) != Shape(b)) problems.Add("instance detail differs");
+            a = await api.SendAsync("check", HttpMethod.Get, $"api/instances/{original}/diagram-history", admin, null);
+            b = await api.SendAsync("check", HttpMethod.Get, $"api/instances/{copy}/diagram-history", admin, null);
+            if (Shape(a) != Shape(b)) problems.Add("diagram history differs");
+            a = await api.SendAsync("check", HttpMethod.Post, "api/node-executions/search", admin, new { instanceId = original, page = 1, pageSize = 200 });
+            b = await api.SendAsync("check", HttpMethod.Post, "api/node-executions/search", admin, new { instanceId = copy, page = 1, pageSize = 200 });
+            if (Shape(a) != Shape(b)) problems.Add("node executions differ");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
+        {
+            problems.Add(ex.Message);
+        }
+
+        if (problems.Count > 0) mismatches++;
+        Console.WriteLine($"  instance {original} and copy {copy} (copy {k}): {(problems.Count == 0 ? "same" : string.Join("; ", problems))}");
+    }
+
+    Console.WriteLine(mismatches == 0 ? "Every copy matched its original." : $"{mismatches} copies did not match.");
+    return mismatches == 0 ? 0 : 1;
+
+    // Everything a reader compares, without the values a copy changes on purpose.
+    static string Shape(JsonNode? node) => node switch
+    {
+        JsonObject o => "{" + string.Join(",", o
+            .Where(p => !IsChangedOnPurpose(p.Key))
+            .OrderBy(p => p.Key, StringComparer.Ordinal)
+            .Select(p => p.Key + ":" + Shape(p.Value))) + "}",
+        JsonArray a => "[" + string.Join(",", a.Select(Shape)) + "]",
+        null => "null",
+        _ => node.GetValueKind() == JsonValueKind.String && DateTimeOffset.TryParse(node.GetValue<string>(), CultureInfo.InvariantCulture, out _)
+            ? "time"
+            : node.ToJsonString()
+    };
+
+    static bool IsChangedOnPurpose(string key) =>
+        key.EndsWith("Id", StringComparison.Ordinal) || key.EndsWith("Ids", StringComparison.Ordinal) || key == "id"
+        || key.EndsWith("At", StringComparison.Ordinal) || key is "businessKey" or "cursor" or "nextCursor";
+}
+
+async Task<long?> FirstInstanceAsync(string direction)
+{
+    var page = await api.SendAsync("probe", HttpMethod.Post, "api/instances/search", admin,
+        new { sort = new[] { new { field = "id", direction } }, page = 1, pageSize = 1 });
+    return page!["items"]!.AsArray().FirstOrDefault()?["id"]?.GetValue<long>();
+}
+
 // ---------------------------------------------------------------- shared steps
 
 async Task<JsonNode> StartInstanceAsync(string scenario, Actor actor, long workflowId, int startEventId, object? variables)
@@ -482,7 +962,30 @@ void PrintSummary()
         Console.WriteLine($"  Database: +{instances:N0} instances, +{bytes / 1048576.0:F1} MB" +
             (instances > 0 ? $" ({bytes / 1024.0 / instances:F1} KB per instance)" : "") +
             $", {transactions / seconds:F0} transactions/s" +
-            (api.Stats.Requests > 0 ? $" ({(double)transactions / api.Stats.Requests:F1} per HTTP request)" : ""));
+            (api.Stats.Requests > 0 ? $" ({(double)transactions / api.Stats.Requests:F1} per HTTP request)" : "") +
+            $", {after.Deadlocks - before.Deadlocks} deadlocks, {after.Rollbacks - before.Rollbacks:N0} rollbacks");
+        Console.WriteLine($"  Database clock minus this machine's clock: {before.ClockSkew.TotalMilliseconds:F0} ms");
+    }
+
+    if (sampler is { Samples: > 0 })
+        Console.WriteLine($"  Sessions sampled each second over {sampler.Samples:N0} s: waiting on a lock avg {sampler.Average(0):F1}, max {sampler.Max(0)}; " +
+            $"idle in a transaction avg {sampler.Average(1):F1}, max {sampler.Max(1)}; running a statement avg {sampler.Average(2):F1}, max {sampler.Max(2)}; " +
+            $"connected avg {sampler.Average(3):F0}, max {sampler.Max(3)}");
+
+    if (options.ApiBases.Length > 1)
+        for (var i = 0; i < options.ApiBases.Length; i++)
+        {
+            var sorted = api.Stats.ForApi(i).OrderBy(x => x).ToArray();
+            if (sorted.Length == 0) continue;
+            Console.WriteLine($"  API {options.ApiBases[i]}: {sorted.Length:N0} requests, p50 {Percentile(sorted, .5):F1} ms, p95 {Percentile(sorted, .95):F1} ms");
+        }
+
+    if (stub is not null)
+    {
+        foreach (var line in stub.Report())
+            Console.WriteLine("  " + line);
+        if (webhooks is not null && options.WebhookWaitSeconds > 0)
+            Console.WriteLine($"  Webhook queue drained {webhookDrain.TotalSeconds:F0} s after the last case finished; deliveries failed or left outstanding: {webhookFailures:N0}");
     }
 
     if (jobs is { Count: > 0 })
@@ -555,9 +1058,11 @@ static class Families
     public static readonly FamilyFile SignalOrders = new("example-signal-boundaries-recall", "signals/02-signal-boundaries-recall.json");
     public static readonly FamilyFile SignalRecall = new("example-signal-end-recall-decision", "signals/04-signal-end-recall-decision.json");
     public static readonly FamilyFile SignalNotices = new("example-signal-start-recall-notice", "signals/05-signal-start-recall-notice.json");
+    public static readonly FamilyFile RestSync = new("example-rest-templating-typed-output", "service-tasks/01-rest-templating-and-typed-output.json");
+    public static readonly FamilyFile RestJob = new("example-retries-and-incident-recovery", "durable-jobs/02-retries-and-incident-recovery.json");
 
     // The recall decision throws to the orders family, so publication needs that family first.
-    public static readonly FamilyFile[] All = [Purchase, TimerDelay, TimerReminder, SignalOrders, SignalRecall, SignalNotices];
+    public static readonly FamilyFile[] All = [Purchase, TimerDelay, TimerReminder, SignalOrders, SignalRecall, SignalNotices, RestSync, RestJob];
 }
 
 static class DelayKinds
@@ -567,8 +1072,12 @@ static class DelayKinds
     public const string ApiThrow = "API throw by business key to a boundary";
     public const string EndEvent = "Signal end event to another instance";
     public const string Start = "API throw to a signal start event";
-    public static readonly string[] Order = [TimerWait, Deadline, ApiThrow, EndEvent, Start];
+    public const string RestJob = "REST job: start to the next task";
+    public const string RestRetried = "REST job retried after a 503: start to task";
+    public static readonly string[] Order = [TimerWait, Deadline, ApiThrow, EndEvent, Start, RestJob, RestRetried];
 }
+
+sealed record WebhookRun(List<Guid> Subscriptions, bool CaptureWasOn, int EventTypes);
 
 /// <summary>A published definition's node and flow ids, looked up by external id.</summary>
 sealed class Family
@@ -640,6 +1149,15 @@ sealed record SignalIds(
         notices.Key, notices.Node("TASK_WRITE_NOTICE"), notices.Flow("FLOW_SEND_NOTICE"));
 }
 
+sealed record RestIds(
+    long SyncWorkflowId, int SyncStart, int SyncTask, int SyncReviewed,
+    long JobWorkflowId, int JobStart, int JobTask, int JobConfirmed)
+{
+    public static RestIds Resolve(Family sync, Family job) => new(
+        sync.Id, sync.Node("START_MOCK_ORDER"), sync.Node("TASK_INSPECT_SERVICE_OUTPUTS"), sync.Flow("FLOW_OUTPUT_REVIEW_TO_END"),
+        job.Id, job.Node("START_EVENT_1"), job.Node("USER_TASK_3"), job.Flow("FLOW_301"));
+}
+
 sealed class Scenario(string name, string title, int users, Func<int, Task> body)
 {
     public int Completed;
@@ -691,20 +1209,29 @@ sealed class ApiClient(HttpClient http, Options options)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<string, string> _tokens = new(StringComparer.Ordinal);
+    private readonly Uri[] _bases = options.ApiBases.Select(b => new Uri(b.TrimEnd('/') + "/")).ToArray();
+    private int _next = -1;
 
-    public Stats Stats { get; } = new();
+    public Stats Stats { get; } = new(options.ApiBases.Length);
 
+    public string Token(Actor actor) =>
+        _tokens.GetOrAdd(actor.Name + "|" + string.Join(',', actor.Roles), _ => CreateToken(actor));
+
+    // With several API base URLs each request goes to the next one, so the steps of one case
+    // cross replicas and every read must see what another replica committed.
     public async Task<JsonNode?> SendAsync(string op, HttpMethod method, string url, Actor actor, object? body, bool write = false)
     {
-        using var request = new HttpRequestMessage(method, url);
-        var tokenKey = actor.Name + "|" + string.Join(',', actor.Roles);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tokens.GetOrAdd(tokenKey, _ => CreateToken(actor)));
+        var index = (int)((uint)Interlocked.Increment(ref _next) % (uint)_bases.Length);
+        using var request = new HttpRequestMessage(method, new Uri(_bases[index], url));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token(actor));
         if (body is not null)
             request.Content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8, "application/json");
         var watch = Stopwatch.StartNew();
         using var response = await http.SendAsync(request);
         var text = await response.Content.ReadAsStringAsync();
-        Stats.Record(op, watch.Elapsed.TotalMilliseconds, write, response.IsSuccessStatusCode);
+        // The tool's own setup and webhook management are not part of the measured load.
+        if (op != "setup")
+            Stats.Record(op, watch.Elapsed.TotalMilliseconds, write, response.IsSuccessStatusCode, index);
         if (!response.IsSuccessStatusCode)
             throw new ApiException(
                 $"{op}: {method} {url} as {actor.Name} returned {(int)response.StatusCode} {(text.Length > 300 ? text[..300] + "..." : text)}",
@@ -724,19 +1251,23 @@ sealed class ApiClient(HttpClient http, Options options)
     }
 }
 
-sealed class Stats
+sealed class Stats(int apis)
 {
     private readonly ConcurrentDictionary<string, Operation> _operations = new();
+    private readonly ConcurrentBag<double>[] _perApi = Enumerable.Range(0, apis).Select(_ => new ConcurrentBag<double>()).ToArray();
     private long _requests;
     private long _writes;
 
     public long Requests => Interlocked.Read(ref _requests);
     public long Writes => Interlocked.Read(ref _writes);
 
-    public void Record(string op, double milliseconds, bool write, bool succeeded)
+    public IEnumerable<double> ForApi(int index) => _perApi[index];
+
+    public void Record(string op, double milliseconds, bool write, bool succeeded, int api)
     {
         var operation = _operations.GetOrAdd(op, _ => new Operation(write));
         operation.Samples.Add(milliseconds);
+        _perApi[api].Add(milliseconds);
         if (!succeeded) Interlocked.Increment(ref operation.Errors);
         Interlocked.Increment(ref _requests);
         if (write) Interlocked.Increment(ref _writes);
@@ -745,6 +1276,7 @@ sealed class Stats
     public void Clear()
     {
         _operations.Clear();
+        foreach (var bag in _perApi) bag.Clear();
         Interlocked.Exchange(ref _requests, 0);
         Interlocked.Exchange(ref _writes, 0);
     }
@@ -761,7 +1293,7 @@ sealed class Stats
     }
 }
 
-sealed record DatabaseSnapshot(long Bytes, long Instances, long Transactions, DateTime Now)
+sealed record DatabaseSnapshot(long Bytes, long Instances, long Transactions, long Rollbacks, long Deadlocks, DateTime Now, TimeSpan ClockSkew)
 {
     public static async Task<DatabaseSnapshot> ReadAsync(string connectionString)
     {
@@ -771,12 +1303,105 @@ sealed record DatabaseSnapshot(long Bytes, long Instances, long Transactions, Da
             """
             SELECT pg_database_size(current_database()),
                    (SELECT count(*) FROM flowbit.workflow_instances),
-                   (SELECT xact_commit FROM pg_stat_database WHERE datname = current_database()),
-                   now()
+                   d.xact_commit, d.xact_rollback, d.deadlocks,
+                   now(), clock_timestamp()
+            FROM pg_stat_database d
+            WHERE d.datname = current_database()
             """, connection);
+        var sent = DateTime.UtcNow;
         await using var reader = await command.ExecuteReaderAsync();
         await reader.ReadAsync();
-        return new DatabaseSnapshot(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetDateTime(3));
+        var received = DateTime.UtcNow;
+        // The database's clock against this machine's, taken from the middle of the round trip.
+        var skew = reader.GetDateTime(6) - (sent + (received - sent) / 2);
+        return new DatabaseSnapshot(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4),
+            reader.GetDateTime(5), skew);
+    }
+
+    /// <summary>What a probe run measured against: size, instances by status, open tasks, and the largest tables.</summary>
+    public static async Task<List<string>> DescribeAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var lines = new List<string>();
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT pg_size_pretty(pg_database_size(current_database())),
+                   (SELECT string_agg(s, ', ' ORDER BY s) FROM (
+                       SELECT format('%s %s', to_char(count(*), 'FM999,999,999'), "Status") AS s
+                       FROM flowbit.workflow_instances GROUP BY "Status") x),
+                   (SELECT count(*) FROM flowbit.user_tasks WHERE "Status" IN ('active', 'pending')),
+                   (SELECT count(*) FROM flowbit.node_executions)
+            """, connection))
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            await reader.ReadAsync();
+            lines.Add($"{"Database:",-28}{reader.GetString(0)}; instances {(reader.IsDBNull(1) ? "none" : reader.GetString(1))}");
+            lines.Add($"{"Open tasks:",-28}{reader.GetInt64(2):N0}; node executions {reader.GetInt64(3):N0}");
+        }
+
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT c.relname, pg_size_pretty(pg_total_relation_size(c.oid)), c.reltuples::bigint
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'flowbit' AND c.relkind = 'r'
+            ORDER BY pg_total_relation_size(c.oid) DESC
+            LIMIT 6
+            """, connection))
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            var tables = new List<string>();
+            while (await reader.ReadAsync())
+                tables.Add($"{reader.GetString(0)} {reader.GetString(1)} (~{reader.GetInt64(2):N0} rows)");
+            lines.Add($"{"Largest tables:",-28}{string.Join("; ", tables)}");
+        }
+
+        return lines;
+    }
+}
+
+/// <summary>Samples the database's sessions once a second: lock waits, idle transactions, running statements, connections.</summary>
+sealed class ActivitySampler(string connectionString)
+{
+    private readonly List<int[]> _samples = [];
+
+    public int Samples => _samples.Count;
+    public double Average(int column) => _samples.Count == 0 ? 0 : _samples.Average(s => s[column]);
+    public int Max(int column) => _samples.Count == 0 ? 0 : _samples.Max(s => s[column]);
+
+    public async Task RunAsync(CancellationToken stop)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync(stop);
+            await using var command = new NpgsqlCommand(
+                """
+                SELECT count(*) FILTER (WHERE wait_event_type = 'Lock')::int,
+                       count(*) FILTER (WHERE state = 'idle in transaction')::int,
+                       count(*) FILTER (WHERE state = 'active')::int,
+                       count(*)::int
+                FROM pg_stat_activity
+                WHERE datname = current_database() AND backend_type = 'client backend' AND pid <> pg_backend_pid()
+                """, connection);
+            while (!stop.IsCancellationRequested)
+            {
+                await using (var reader = await command.ExecuteReaderAsync(stop))
+                {
+                    await reader.ReadAsync(stop);
+                    _samples.Add([reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2), reader.GetInt32(3)]);
+                }
+
+                await Task.Delay(1000, stop);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (NpgsqlException ex)
+        {
+            Console.Error.WriteLine("Session sampling stopped: " + ex.Message);
+        }
     }
 }
 
@@ -814,7 +1439,7 @@ sealed record JobSummary(string Kind, string Queue, string Status, long Count, d
 }
 
 sealed record Options(
-    string ApiBase = "http://127.0.0.1:5017",
+    string[] ApiBases,
     bool Setup = false,
     string ExamplesDirectory = "examples",
     int Cases = int.MaxValue,
@@ -822,11 +1447,24 @@ sealed record Options(
     int PurchaseUsers = 16,
     int TimerUsers = 0,
     int SignalUsers = 0,
+    int RestUsers = 0,
     int PollMilliseconds = 1000,
     int RampSeconds = 10,
     double BoardShare = 0.2,
     bool Browse = true,
-    bool StartsOnly = false,
+    string? ParkAt = null,
+    string RestMix = "both",
+    double RestFailShare = 0,
+    int Webhooks = 0,
+    string[]? WebhookEvents = null,
+    int WebhookWaitSeconds = 600,
+    int? StubPort = null,
+    bool StubOnly = false,
+    int StubDelayMilliseconds = 100,
+    bool Probe = false,
+    int ProbeRepeat = 30,
+    int CheckCopies = 0,
+    bool PrintToken = false,
     string? Database = null,
     string JwtKey = "dev-only-symmetric-signing-key-change-me-please-32+",
     string Issuer = "workflow-engine-dev",
@@ -836,12 +1474,12 @@ sealed record Options(
 {
     public static Options Parse(string[] args)
     {
-        var options = new Options(Tag: Guid.NewGuid().ToString("N")[..4]);
+        var options = new Options(["http://127.0.0.1:5017"], Tag: Guid.NewGuid().ToString("N")[..4]);
         for (var i = 0; i < args.Length; i++)
         {
             options = args[i] switch
             {
-                "--api" => options with { ApiBase = args[++i] },
+                "--api" => options with { ApiBases = List(args[++i], "--api") },
                 "--setup" => options with { Setup = true },
                 "--examples" => options with { ExamplesDirectory = args[++i] },
                 "--cases" => options with { Cases = Number(args[++i], "--cases", 1) },
@@ -849,11 +1487,25 @@ sealed record Options(
                 "--users" => options with { PurchaseUsers = Math.Min(512, Number(args[++i], "--users", 0)) },
                 "--timer-users" => options with { TimerUsers = Math.Min(2000, Number(args[++i], "--timer-users", 0)) },
                 "--signal-users" => options with { SignalUsers = Math.Min(512, Number(args[++i], "--signal-users", 0)) },
+                "--rest-users" => options with { RestUsers = Math.Min(512, Number(args[++i], "--rest-users", 0)) },
                 "--poll-ms" => options with { PollMilliseconds = Number(args[++i], "--poll-ms", 50) },
                 "--ramp" => options with { RampSeconds = Number(args[++i], "--ramp", 0) },
-                "--board-share" => options with { BoardShare = Share(args[++i]) },
+                "--board-share" => options with { BoardShare = Share(args[++i], "--board-share") },
                 "--no-browse" => options with { Browse = false },
-                "--starts-only" => options with { StartsOnly = true },
+                "--starts-only" => options with { ParkAt = "manager" },
+                "--park-at" => options with { ParkAt = OneOf(args[++i], "--park-at", "manager", "budget") },
+                "--rest-mix" => options with { RestMix = OneOf(args[++i], "--rest-mix", "both", "sync", "job") },
+                "--rest-fail-share" => options with { RestFailShare = Share(args[++i], "--rest-fail-share") },
+                "--webhooks" => options with { Webhooks = Math.Min(100, Number(args[++i], "--webhooks", 0)) },
+                "--webhook-events" => options with { WebhookEvents = List(args[++i], "--webhook-events") },
+                "--webhook-wait" => options with { WebhookWaitSeconds = Number(args[++i], "--webhook-wait", 0) },
+                "--stub" => options with { StubPort = Number(args[++i], "--stub", 1) },
+                "--stub-only" => options with { StubOnly = true },
+                "--stub-delay-ms" => options with { StubDelayMilliseconds = Number(args[++i], "--stub-delay-ms", 0) },
+                "--probe" => options with { Probe = true },
+                "--probe-repeat" => options with { ProbeRepeat = Number(args[++i], "--probe-repeat", 1) },
+                "--check-copies" => options with { CheckCopies = Number(args[++i], "--check-copies", 1) },
+                "--print-token" => options with { PrintToken = true },
                 "--database" => options with { Database = args[++i] },
                 "--jwt-key" => options with { JwtKey = args[++i] },
                 "--issuer" => options with { Issuer = args[++i] },
@@ -863,8 +1515,17 @@ sealed record Options(
             };
         }
 
-        if (!options.Setup && !options.Help && options.PurchaseUsers + options.TimerUsers + options.SignalUsers == 0)
-            throw new ArgumentException("Give at least one of --users, --timer-users, and --signal-users a value above zero.");
+        if (options.Help || options.Setup || options.PrintToken)
+            return options;
+        if (options.StubOnly && options.StubPort is null)
+            throw new ArgumentException("--stub-only needs --stub <port>.");
+        if ((options.RestUsers > 0 || options.Webhooks > 0) && options.StubPort is null)
+            throw new ArgumentException("--rest-users and --webhooks need --stub <port>: the port the API and Worker were told to call.");
+        if (options.CheckCopies > 0 && options.Database is null)
+            throw new ArgumentException("--check-copies needs --database.");
+        if (!options.StubOnly && !options.Probe && options.CheckCopies == 0
+            && options.PurchaseUsers + options.TimerUsers + options.SignalUsers + options.RestUsers == 0)
+            throw new ArgumentException("Give at least one of --users, --timer-users, --signal-users, and --rest-users a value above zero.");
         return options.Cases == int.MaxValue && options.DurationSeconds == 0
             ? options with { Cases = 500 }
             : options;
@@ -876,10 +1537,21 @@ sealed record Options(
         return number >= minimum ? number : throw new ArgumentException($"{name} must be at least {minimum}.");
     }
 
-    private static double Share(string value)
+    private static double Share(string value, string name)
     {
         var share = double.Parse(value, CultureInfo.InvariantCulture);
-        return share is >= 0 and <= 1 ? share : throw new ArgumentException("--board-share must be from 0 to 1.");
+        return share is >= 0 and <= 1 ? share : throw new ArgumentException($"{name} must be from 0 to 1.");
+    }
+
+    private static string OneOf(string value, string name, params string[] allowed) =>
+        allowed.Contains(value, StringComparer.Ordinal)
+            ? value
+            : throw new ArgumentException($"{name} must be one of: {string.Join(", ", allowed)}.");
+
+    private static string[] List(string value, string name)
+    {
+        var items = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return items.Length > 0 ? items : throw new ArgumentException($"{name} needs at least one value.");
     }
 
     public static void PrintHelp() => Console.WriteLine(
@@ -895,25 +1567,48 @@ sealed record Options(
           Signal cases (--signal-users): an API throw by business key that opens a branch on an
             order, a signal end event in another workflow that interrupts it, and an API throw
             that starts an instance through a signal start event.
+          REST cases (--rest-users): a service task that calls the stub inside the start request,
+            and an asyncBefore service task that a Worker job runs, each followed by a task.
 
-        Timer and signal cases need a running Worker. Each virtual user acts again as soon as its
-        last request returns, so the result is the maximum rate, not response time at real usage.
+        Timer, signal, and REST job cases need a running Worker. Each virtual user acts again as
+        soon as its last request returns, so the result is the maximum rate, not response time at
+        real usage.
 
         Options:
-          --setup                Import and publish the six example definitions that are missing, then exit
+          --setup                Import and publish the eight example definitions that are missing, then exit
           --examples <dir>       Example catalog folder for --setup (default: examples)
           --users <n>            Purchase-request virtual users (default: 16; 0 runs none)
           --timer-users <n>      Timer-case virtual users (default: 0)
           --signal-users <n>     Signal-case virtual users (default: 0)
+          --rest-users <n>       REST-case virtual users (default: 0); needs --stub
           --cases <n>            Cases of each kind to run (default: 500 when no --duration)
           --duration <seconds>   Stop starting new cases after this time; started cases finish
           --poll-ms <n>          Inbox polling interval while waiting for the Worker (default: 1000)
           --ramp <seconds>       Spread each kind's users' first case over this time (default: 10)
           --board-share <0-1>    Share of purchase requests that go to the board vote (default: 0.2)
           --no-browse            Skip the purchase inbox page before each action and the final detail read
-          --starts-only          Only start purchase requests; they stay at the manager review
-          --database <conn>      Npgsql connection string; reports growth, transactions, and Worker jobs
-          --api <url>            API base URL (default: http://127.0.0.1:5017)
+          --park-at <step>       Leave purchase requests open: 'manager' stops at the manager's review,
+                                 assigned to one of 100 managers; 'budget' also approves, leaving an
+                                 unclaimed task in the Finance pool
+          --starts-only          The same as --park-at manager
+          --rest-mix <mix>       both (default), sync, or job
+          --rest-fail-share <0-1> Share of REST jobs whose first call gets a 503 and retries (default: 0)
+          --stub <port>          Answer the REST examples' calls and webhooks on http://127.0.0.1:<port>;
+                                 give the API and Worker WorkflowContext:Config:exampleApiBaseUrl with it
+          --stub-delay-ms <n>    How long the stub waits before it answers (default: 100)
+          --stub-only            Only run the stub, reporting each minute, until Ctrl+C
+          --webhooks <n>         Create n webhook subscriptions to the stub (at most 100), turn lifecycle
+                                 capture on, and afterwards archive them and restore capture
+          --webhook-events <a,b> Subscribe to these event types only (default: every subscribable type)
+          --webhook-wait <s>     After the run, wait up to this long for deliveries to drain (default: 600; 0 skips)
+          --probe                Only time a fixed set of reads, one at a time, and exit
+          --probe-repeat <n>     Timed repeats of each probe (default: 30)
+          --check-copies <n>     After sql/copy-history.sql, compare n random copies with their originals
+                                 through the API, and exit; needs --database
+          --print-token          Print an administrator's token for this API and exit
+          --database <conn>      Npgsql connection string; reports growth, transactions, deadlocks,
+                                 lock waits, and Worker jobs
+          --api <url[,url]>      API base URL, or several to rotate requests across (default: http://127.0.0.1:5017)
           --jwt-key <key>        DevelopmentToken signing key (default: the API's Development key)
           --issuer <issuer>      Token issuer (default: workflow-engine-dev)
           --audience <audience>  Token audience (default: workflow-engine-api)

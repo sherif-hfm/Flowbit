@@ -1234,7 +1234,7 @@ Recorded on 2026-11-25 at commit `a367ede` on one Windows machine with 4 logical
 - **Reads are cheap.** Leaving out the browsing reads raised throughput by about 10%; the writes set the rate.
 - **Storage.** A completed request added about 50–54 KB and about 100 rows. `node_executions` was the largest table, at about 1.7 KB a row. A request that only started added about 12 KB.
 
-These runs used a small database: about 5,500 instances and 205 MB, with at most about 2,600 open. They did not cover months of history, 100,000 or more open tasks, REST service tasks, or webhooks; timers and signals are covered below.
+These runs used a small database: about 5,500 instances and 205 MB, with at most about 2,600 open. Timers and signals, REST service tasks, webhooks, several API and Worker processes, many open tasks, and months of history are covered below.
 
 ### Timers, signals, and the Worker
 
@@ -1261,16 +1261,127 @@ Timer and signal cases alone, with 8 signal users, to find the Worker's limit:
 - **Past capacity, work is late, not lost.** With 600 timer users more jobs came due each second than the Worker finished. Timers fired 7–12 seconds late, activity jobs and signal deliveries waited 2–3 minutes, and no case failed; the backlog drained once the load stopped. A task can then close while its reminder scripts are still queued, and its instance completes when they run.
 - **Connection pools.** The first mixed run, started before the cap and with all 132 users at once, failed 42 instance starts with `500` (`53300: sorry, too many clients already`) in its first minute. An API connection string without `Maximum Pool Size` lets Npgsql open 100 connections per API process, PostgreSQL's default `max_connections` is also 100, and the Worker needs its own. The Compose stack's connection string sets no pool size either.
 
+### REST service tasks
+
+Recorded on 2026-11-25 on the same machine with the load test's [REST cases](../Flowbit/tools/LifecycleLoadTest/README.md#rest-cases), one API with 60 connections, and one Worker at its default settings. A stub inside the load tool answered each call after a fixed delay. A REST case is shorter than a purchase request: a start, whose service task calls the stub, then one task.
+
+A service task without `asyncBefore` calls the service inside the start request's transaction:
+
+| Call time | Users | Cases per second | Start request, p50 / p95 | Sessions idle in a transaction, average / most | Host CPU |
+| --- | ---: | ---: | --- | --- | ---: |
+| 100 ms | 16 | 19.5 | 406 / 624 ms | 7.8 / 15 | 97% |
+| 100 ms | 64 | 21.3 | 1.38 / 1.99 s | 21.4 / 43 | 99% |
+| 1 s | 16 | 11.8 | 1.14 / 1.22 s | 13.2 / 16 | 68% |
+| 1 s | 64 | 20.9 | 1.82 / 2.23 s | 32.9 / 54 | 97% |
+
+A service task with `asyncBefore` is a Worker job that calls the service between its own short transactions:
+
+| Call time | Users | Cases per second | Job began after its due time, p50 / p95 | Start to the next task, p50 / p95 | Host CPU |
+| --- | ---: | ---: | --- | --- | ---: |
+| 100 ms | 16 | 11.0 | 0.10 / 0.22 s | 0.40 / 0.58 s | 92% |
+| 100 ms | 64 | 11.9 | 2.31 / 3.42 s | 2.84 / 4.01 s | 95% |
+| 1 s | 16 | 4.7 | 0.05 / 0.47 s | 1.18 / 1.61 s | 53% |
+| 1 s | 64 | 5.0 | 6.77 / 10.21 s | 7.91 / 11.37 s | 52% |
+
+- **A synchronous call holds its transaction.** While the service answers, the request keeps the instance's row lock and one pooled connection. With 1-second calls and 64 users, up to 54 of the API's 60 connections sat idle inside a transaction. A slower service or more simultaneous starts would exhaust the pool, and requests would then wait for a connection until Npgsql's connection timeout, 15 seconds by default, and fail. Use `asyncBefore` for any service that can take more than a few hundred milliseconds, or size `Maximum Pool Size` for the calls in flight at once.
+- **A Worker makes about six calls at once.** A job holds no transaction during its call, but it occupies one of the Worker's `ActivityConcurrency` slots (6 by default). One Worker finished about 12 jobs per second with 100 ms calls, with the host saturated, and 5 per second with 1-second calls, with the host half idle. For slow services, raise `ActivityConcurrency` and `MaxConcurrency` or add Workers; see [Worker operation](#worker-operation).
+- **Retries.** With 5% of jobs answered `503` once, each of those jobs was called exactly twice and its task existed 2.6 seconds after the start at the median, the example's 2-second retry delay plus the call. The other jobs were unaffected.
+- **Storage.** A REST case added 13–24 KB.
+
+### Webhooks
+
+Recorded the same day with the load test's stub as the [receiver](../Flowbit/tools/LifecycleLoadTest/README.md#rest-service-tasks-and-webhooks), answering each delivery after 100 ms, and the default webhook settings: 4 concurrent sends per subscription and 16 per Worker. Every subscription took every event type; a purchase request raised about 15 events.
+
+Capture and fanout alone, with delivery turned off on the Worker, 8 purchase-request users, and 3 minutes per run:
+
+| Subscriptions | Purchase requests per second | Change | Database growth per request |
+| ---: | ---: | ---: | ---: |
+| 0 | 3.75 | — | 51 KB |
+| 1 | 3.47 | −7% | 72 KB |
+| 10 | 3.39 | −10% | 134 KB |
+| 100 | 3.32 | −11% | 790 KB |
+
+- **Delivery rate.** While a backlog drained, one subscription received 22.6 deliveries per second and ten together 94.7 per second. The host was 40–66% busy, so the send limits, not the processors, set the rate. That is slightly below the targets in [INT-02](enhancements/int-02-webhook-verification-follow-ups.md): 25 and 100 per second.
+- **Delivery under load.** With one subscription and 8 purchase-request users, the requests raised about 42 events per second, more than one subscription delivers, so the backlog grew for the whole run. Deliveries arrived 2 minutes after their event at the median and 2.9 minutes at p95, the queue drained 3 minutes after the run, and purchase requests ran at 2.99 per second, 20% fewer than without webhooks.
+- **Correctness.** No delivery repeated or failed, and every signature verified.
+- **Planning.** Multiply the events per second at peak by the subscriptions that take them, and keep the result below the rates above; subscribe each receiver to the event types it needs. Each delivery row adds about 0.5 KB, and lifecycle events and deliveries stay until their [retention](#retention-and-backup) categories remove them.
+
+### Several API and Worker processes
+
+Recorded overnight on 2026-11-25 on the same machine: the mixed load of 8 purchase-request, 120 timer, and 4 signal users for 3 minutes against one database. The load tool sent each request to the next API in turn, so the steps of one case ran on different APIs. One API had 60 connections; two had 30 each.
+
+| APIs + Workers | Purchase requests per second | Timer cases per second | Signal cases per second | Worker script jobs began after due, p50 / p95 | Signal throw to task, p95 | Host CPU |
+| --- | ---: | ---: | ---: | --- | --- | ---: |
+| 1 + 1 | 1.83 | 2.20 | 0.56 | 0.32 / 3.09 s | 1.7–1.9 s | 81% |
+| 2 + 1 | 1.79 | 2.21 | 0.54 | 0.36 / 3.75 s | 1.9–2.3 s | 82% |
+| 1 + 2 | 1.57 | 2.20 | 0.60 | 0.29 / 0.59 s | 0.6–0.7 s | 83% |
+| 2 + 2 | 1.59 | 2.20 | 0.58 | 0.29 / 0.94 s | 0.7–0.8 s | 83% |
+
+At the Worker's limit, with 300 timer users and 8 signal users and two APIs:
+
+| Workers | Jobs finished per second | Job run time, p50 | Worker script jobs began after due, p50 / p95 | Signal throw to task, p95 |
+| ---: | ---: | --- | --- | --- |
+| 1 | 21.6 | 0.18–0.20 s | 9.6 / 16.5 s | 13–16 s |
+| 2 | 21.5 | 0.31–0.41 s | 4.4 / 10.4 s | 7.6–8.4 s |
+
+- **Correct across processes.** In every run no request failed, every case completed, no job completed twice, no incident opened, and no transaction deadlocked. Two APIs each served half the requests, and two Workers each took jobs.
+- **No added capacity on one machine.** All processes shared four processors and one PostgreSQL. A second API changed nothing, and a second Worker shortened the waits for Worker jobs but made each job and the purchase requests slower. These runs show that replicas work together, not how they scale; measure scaling with PostgreSQL on its own server.
+- **A Worker stopping.** Two Workers with `LeaseSeconds` 15 and `HeartbeatSeconds` 5 ran the mixed load plus 8 REST job users, and one was killed 75 seconds in while it ran a job. Every case completed. Once the stopped Worker's two leases expired, the other Worker ran those jobs again; the stopped attempts are recorded as `leaseLost`, and no job completed twice. One REST call was sent a second time with the same job id, because [external effects are at least once](developer-guide.md#integrate-automatic-work-and-durable-jobs); its task appeared 16 seconds after its start instead of about one second.
+- **Connections.** PostgreSQL saw up to 36 connections with one API and one Worker, up to 57 with two of each, and up to 80 with two of each at the Worker's limit, beside its default limit of 100.
+
+### Many open tasks
+
+Recorded on 2026-11-26 on the same machine, with one API and one Worker. The load test's [`--park-at`](../Flowbit/tools/LifecycleLoadTest/README.md#many-open-tasks) left purchase requests open: 150,000 at the manager's review, each a task assigned to one of 100 managers, then 50,000 at the budget check, each leaving an unclaimed task in the Finance pool and a supplier selection waiting for assignment. Each probe is one request at a time, and the table gives the median of 30; the number in brackets is the rows the probe found.
+
+| Open tasks | Database | A manager's inbox | An inbox from the Finance pool | Task management, first page | Active node executions | Running instances |
+| ---: | ---: | --- | --- | ---: | ---: | ---: |
+| 0 | 35 MB | 7 ms (0) | 7 ms (0) | 7 ms | 4 ms | 6 ms |
+| 50,000 | 617 MB | 381 ms (500) | 110 ms (0) | 2.9 s | 119 ms | 26 ms |
+| 100,000 | 1.2 GB | 3.0 s (1,000) | 1.09 s (0) | 2.9 s | 181 ms | 34 ms |
+| 150,000 | 1.8 GB | 3.3 s (1,500) | 1.12 s (0) | 3.8 s | 255 ms | 42 ms |
+| 250,000 | 3.5 GB | 3.6 s (1,500) | 3.4 s (50,000) | 6.4 s | 499 ms | 44 ms |
+| 250,000, `jit = off` | 3.5 GB | 0.99 s (1,500) | 0.85 s (50,000) | 6.3 s | 458 ms | 36 ms |
+
+Instance detail stayed at 20–30 ms and its diagram history at 3–4 ms, and a search by business key stayed under 90 ms.
+
+- **An inbox costs as much as all open work.** The inbox query reads every active task that the actor's roles could match, joins every running instance, and only then applies the assignee and claim rules; then it counts and ranks the result. The count and the page each do this. A manager with 1,500 tasks waited as long as for a pool of 50,000, and an empty inbox cost 1.1 seconds.
+- **PostgreSQL's JIT compiler adds most of it.** Past about 100,000 open tasks the inbox query's estimated cost crosses PostgreSQL's `jit_above_cost`, and compiling the query took about 0.75 seconds of each call. With `jit = off` the inboxes at 250,000 open tasks took 0.85–1.2 seconds instead of 3.2–3.8. Turn JIT off for Flowbit's database, for example `ALTER DATABASE flowbit SET jit = off`, and restart the API and Workers so their connections pick it up.
+- **Task management counts everything.** Its first page counts every open task a manager may see, joining each to its token and instance: 2.9 seconds at 50,000 open tasks and 6.4 at 250,000, with or without JIT.
+- **Transitions do not slow down.** Starting a request took the same time from 0 to 150,000 open tasks, about 43 per second. On top of 250,000 open tasks, 8 users without the inbox page reads ran 3.76 purchase requests per second. With the inbox page before every action, they ran 0.20 per second, and 0.79 with JIT off: the inbox page then took 8.6 and 1.8 seconds under that load.
+- **The Worker scans every queued job when it polls.** Each request parked at the manager's review held a queued timer job three working days ahead. The Worker's query for its next wake-up read all of them on every poll, 128 ms on average as the queue grew to 150,000. Over the 2.7-hour run that came to about 30% of one processor of PostgreSQL time, though no job was due.
+- **Storage.** A request waiting at the manager's review took about 12 KB, and one waiting at the budget check about 35 KB.
+
+### Months of history
+
+Recorded on 2026-11-26 on the same machine, with one API and one Worker. Eight users ran 100,000 purchase requests in 8.1 hours. The load test's [`copy-history.sql`](../Flowbit/tools/LifecycleLoadTest/README.md#months-of-history) then copied them nine times, each copy moved back 30 more days, for about 1,007,000 completed requests over nine months, about 3,700 a day; copying took 26 minutes, and a comparison through the API found every copy of 20 random requests the same as its original. The PostgreSQL container ran with `--shm-size=1g` for the probes at a million requests; see the first finding. The first row is the small database of the open-task runs, with the 8-user purchase rate recorded [above](#purchase-requests-on-a-development-machine).
+
+| Completed requests | Database | Purchase requests per second, 8 users | A completed instance's detail | Instances, filtered by amount | Instances, by business key | Node executions completed in the last day |
+| ---: | ---: | ---: | ---: | --- | ---: | --- |
+| 300 | 35 MB | 3.87 | 21–26 ms | 17 ms (60) | 14 ms | 23 ms (3,720) |
+| 100,000 | 5.3 GB | 2.37 | 65–68 ms | 307 ms (32,177) | 48 ms | 1.5 s (1.24 million) |
+| 1,007,000 | 48 GB | 1.31 | 128–149 ms | 4.4 s (322,678) | 100 ms | over 30 s, `500` (1.37 million) |
+
+Inboxes, task management, and diagram history stayed under 10 ms with no open tasks. While the 100,000 requests ran, the rate fell steadily from 3.79 per second in the first hour to 2.87 in the eighth, with no failure, deadlock, or rollback, and no request slower than 3.6 seconds; the database grew 54 KB a request, and `node_executions` was the largest table, at 2.3 GB.
+
+- **PostgreSQL in Docker needs more shared memory.** Docker gives a container 64 MB of `/dev/shm` unless told otherwise, and on the large tables PostgreSQL's parallel queries failed with `53100: could not resize shared memory segment`, so the node-execution search and the retention preview returned `500`. Start a PostgreSQL container with `--shm-size=1g` (`shm_size` in Compose) or more.
+- **Every transition reads the instance's gateway history by scanning the table.** `gateway_executions` has only partial indexes on `InstanceId`, for active rows, so the engine's reads of all gateway executions of an instance scan the whole table, about five times for each purchase request. One read averaged 7 ms over the first 33,000 requests, took 114 ms after 100,000, and 320–400 ms after a million. This is why purchase requests slowed as history grew, and why instance detail did too.
+- **Searches across all history get slow.** An instance search filtered by a variable took 4.4 seconds over a million instances, and a node-execution search covering 1.37 million visits did not finish within the API's 30-second command timeout and returned `500`. Searches narrowed to a business key or one instance stayed fast.
+- **Open work on top of history is far worse.** After 32,625 requests were parked at the manager's review on top of the million completed ones, a manager's own inbox of 327 tasks took 57 seconds, with each of its two statements just under the 30-second timeout, and with JIT on or off. Task management's first page took 48 seconds and the first page of running instances 6.3. The inbox statement's generic plan (`EXPLAIN (GENERIC_PLAN)`) reads all 4.6 million task rows and all instances before filtering, although the same filters alone found the 327 tasks through the indexes in 0.19 seconds. Parking slowed from 35 to about 20 requests per second as the open work grew, and up to 14 sessions waited on locks.
+- **Retention cannot keep up with this volume.** Each retention run removes the history of about 20 finished instances per category: one instance per batch, at most 20 batches or 30 seconds per category. A run removed 288 history rows, 8 variable rows (the others are protected current values), 172 node visits, and 5,000 completed jobs, and took about 90 seconds; the Worker's hourly runs therefore clear about 480 finished instances a day per category. The Retention page's preview also failed on this database, at its 5-second statement limit.
+
 ### Estimating daily volume
 
-A rate measured at saturation is a ceiling; latency rises steeply as load approaches it, so plan peaks well below it. At half its ceiling, the machine above would carry about 4.1 × 0.5 × 28,800 ≈ 59,000 purchase requests in an 8-hour business day, and about 83,000 at 70%. A process with more steps costs more, roughly in proportion to its writes.
+A rate measured at saturation is a ceiling; latency rises steeply as load approaches it, so plan peaks well below it. At half its ceiling, the machine above would carry about 4.1 × 0.5 × 28,800 ≈ 59,000 purchase requests in an 8-hour business day, and about 83,000 at 70%, but only while the database is small and little work is open: the same machine ran 2.37 requests per second after 100,000 completed requests and 1.31 after a million, and inboxes slowed with every open task (see [many open tasks](#many-open-tasks) and [months of history](#months-of-history)). A process with more steps costs more, roughly in proportion to its writes.
 
 Measure a production design rather than scaling these figures. As a starting point only, the processor costs above suggest that PostgreSQL on its own 16-processor server at 70% would carry about 20 such requests per second, with about five processors of API replicas; that assumes linear scaling, which has not been tested, and lock waits or WAL writes may limit it first. Also plan for:
 
 - **One instance at a time.** Work inside one instance stays serial on any hardware.
 - **Worker jobs.** Estimate the timer firings, signal deliveries, and Worker-run tasks per second at your peak, and add Workers or slots until activity jobs start within your tolerance; see [timers, signals, and the Worker](#timers-signals-and-the-worker).
 - **Connection limits.** Set `Maximum Pool Size` on every API replica so that all API and [Worker](#worker-operation) pools, plus administrative connections, fit below PostgreSQL's `max_connections`.
-- **Storage growth.** At the figures above, 60,000 requests a day add about 3 GB a day. History is kept forever unless you configure [retention](#retention-and-backup).
+- **Storage growth.** At the figures above, 60,000 requests a day add about 3 GB a day. History is kept forever unless you configure [retention](#retention-and-backup), and retention's hourly runs clear only about 480 finished instances a day per category.
+- **Open work and history.** Inboxes and task management cost more with every open task, and transitions with every completed instance; see the findings above before planning for more than about 50,000 open tasks or 100,000 completed instances. Turn PostgreSQL's JIT off for Flowbit's database.
+- **External calls and webhooks.** Give any service task slower than a few hundred milliseconds `asyncBefore`, size Worker slots for the calls in flight, and keep events per second times subscriptions below the [delivery rates](#webhooks).
+- **PostgreSQL in Docker.** Give the container at least 1 GB of shared memory (`--shm-size=1g`, or `shm_size` in Compose); the default 64 MB fails parallel queries on large tables.
 - **Upgrade downtime.** Several upgrades require stopping every API and Worker replica; see [upgrade and compatibility rules](#upgrade-and-compatibility-rules).
 
 ## Monitoring and recovery

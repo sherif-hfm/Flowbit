@@ -5,6 +5,11 @@ publication enabled. Import and publish them as described in
 [getting started](../../docs/getting-started.md). Short retry delays are local
 demonstration values; scheduling and Worker load may delay an attempt.
 
+The [lifecycle load test](../../Flowbit/tools/LifecycleLoadTest/README.md) runs
+example 02 against its own stub to measure REST calls made by Worker jobs. It
+finds the start event, task, and flow it uses by their external IDs, so keep
+those IDs when you change the definition.
+
 | Example | Inputs and actors | Observable behavior |
 | --- | --- | --- |
 | [Async before and after](01-async-before-after.json) | No input; complete **Inspect Result** after Worker processing. | Async-before executes the script once; async-after persists completion before routing onward. |
